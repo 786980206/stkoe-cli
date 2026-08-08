@@ -1,217 +1,235 @@
-"""catalog 事务 / sniff 差异 / 布局识别测试"""
-import os
-
+"""table 模块测试：scan 差异/幂等/布局识别、meta/consistent、set/rename/del"""
 import polars as pl
 import pytest
 
 import stkoe.data as data
-from stkoe.data import catalog
-from stkoe.data.table import TableNotFoundError
+from stkoe.data.table import DependencyError, TableExistsError, TableNotFoundError
 from stkoe.data.catalog.spec import TableLayout
 
 from conftest import make_df, write_hive, write_single
 
 
-def test_sniff_registers_single(root):
+def test_scan_registers_single(root):
+    """隐式注册：scan 发现未注册目录自动注册，INSERT version=1 不再 bump"""
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0), ("2020-01-02", "b", 2.0)]))
-    r = data.sniff("t1")
+    r = data.table.scan("t1")
     assert r.implicit_registered and r.changed
     assert r.layout == TableLayout.SINGLE
     assert r.version_before == 0 and r.version_after == 1
     assert r.partition_count == 1
 
-    m = data.describe("t1")
+    m = data.table.meta("t1")
     assert m.version == 1
-    assert m.file_count == 1 and m.row_count == 2
+    assert len(m.files) == 1
     assert [c.name for c in m.columns] == ["date", "sym", "r"]
+    assert all(c.data_type for c in m.columns)
 
 
-def test_sniff_idempotent_no_bump(root):
+def test_scan_idempotent_no_bump(root):
+    """无差异重复 scan 不 bump version"""
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.sniff("t1")
-    r = data.sniff("t1")
+    data.table.scan("t1")
+    r = data.table.scan("t1")
     assert not r.changed
     assert r.version_after == 1
+    assert data.table.meta("t1").version == 1
 
 
-def test_sniff_detect_new_file_bumps(root):
+def test_scan_detect_new_file_bumps(root):
     d = root / "tables" / "t1"
     d.mkdir(parents=True, exist_ok=True)
     make_df([("2020-01-01", "a", 1.0)]).write_parquet(d / "a.parquet")
-    data.sniff("t1")
+    data.table.scan("t1")
     make_df([("2020-02-01", "b", 2.0)]).write_parquet(d / "b.parquet")
-    r = data.sniff("t1")
+    r = data.table.scan("t1")
     assert r.changed
     assert [x.kind for x in r.diffs] == ["added"]
     assert r.version_before == 1 and r.version_after == 2
-    assert data.describe("t1").file_count == 2
+    assert data.table.meta("t1").consistent
 
 
-def test_sniff_detect_removed_file(root):
+def test_scan_detect_removed_file(root):
     d = root / "tables" / "t1"
     d.mkdir(parents=True, exist_ok=True)
     make_df([("2020-01-01", "a", 1.0)]).write_parquet(d / "a.parquet")
     make_df([("2020-02-01", "b", 2.0)]).write_parquet(d / "b.parquet")
-    data.sniff("t1")
+    data.table.scan("t1")
     (d / "a.parquet").unlink()
-    r = data.sniff("t1")
+    r = data.table.scan("t1")
     assert [x.kind for x in r.diffs] == ["removed"]
     assert r.version_after == 2
-    assert data.describe("t1").file_count == 1
+    assert len(data.table.meta("t1").files) == 1
 
 
-def test_sniff_detect_inplace_modify(root):
+def test_scan_detect_inplace_modify(root):
     d = root / "tables" / "t1"
     d.mkdir(parents=True, exist_ok=True)
     p = d / "a.parquet"
     make_df([("2020-01-01", "a", 1.0)]).write_parquet(p)
-    data.sniff("t1")
-    old_mtime = p.stat().st_mtime_ns
+    data.table.scan("t1")
     make_df([("2020-01-01", "a", 9.9)]).write_parquet(p)
-    assert p.stat().st_mtime_ns != old_mtime or p.stat().st_size != (d / "a.parquet").stat().st_size
-    r = data.sniff("t1")
+    r = data.table.scan("t1")
     assert [x.kind for x in r.diffs] == ["changed"]
     assert r.version_after == 2
 
 
-def test_sniff_hive_layout(root):
+def test_scan_hive_layout(root):
     df = make_df([("2020-01-01", "a", 1.0), ("2020-06-01", "b", 2.0), ("2021-01-01", "c", 3.0)])
     write_hive(root, "t1", df, partition_by="year")
-    r = data.sniff("t1")
+    r = data.table.scan("t1")
     assert r.layout == TableLayout.HIVE
     assert r.partition_by == ("year",)
     assert r.partition_count == 2
 
-    m = data.describe("t1")
-    assert m.partition_count == 2 and m.row_count == 3
-    assert data.partitions("t1") == ["year=2020", "year=2021"]
+    m = data.table.meta("t1")
+    assert m.partition_count == 2
+    assert len(m.files) == 2
+    assert all(f.partition_path for f in m.files)
 
 
-def test_sniff_flat_layout(root):
+def test_scan_flat_layout(root):
     d = root / "tables" / "t1"
     d.mkdir(parents=True, exist_ok=True)
     make_df([("2020-01-01", "a", 1.0)]).write_parquet(d / "a.parquet")
     make_df([("2020-02-01", "b", 2.0)]).write_parquet(d / "b.parquet")
-    r = data.sniff("t1")
+    r = data.table.scan("t1")
     assert r.layout == TableLayout.FLAT
     assert r.partition_count == 1
 
 
 def test_read_path_auto_sniff(root):
-    """未注册目录：describe/select 读前自动快检 → 隐式注册"""
+    """未注册目录：get 读前快检自动隐式注册并读到数据"""
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    m = data.describe("t1")
+    df = data.table.get("t1")
+    assert df.height == 1
+    m = data.table.meta("t1")
     assert m.name == "t1" and m.version == 1
-    lf = data.select("t1")
-    assert lf.collect().height == 1
 
 
 def test_read_path_detect_manual_change(root):
-    """手工改文件后 select 自动 sniff 到新数据"""
+    """手工改文件后 get 自动 scan 到新数据并 bump"""
     d = root / "tables" / "t1"
     d.mkdir(parents=True, exist_ok=True)
     p = d / "a.parquet"
     make_df([("2020-01-01", "a", 1.0)]).write_parquet(p)
-    data.sniff("t1")
-    v1 = data.describe("t1").version
+    data.table.scan("t1")
+    v1 = data.table.meta("t1").version
     make_df([("2020-01-01", "a", 1.0), ("2020-01-02", "b", 2.0)]).write_parquet(p)
-    lf = data.select("t1")
-    assert lf.collect().height == 2
-    assert data.describe("t1").version == v1 + 1
+    df = data.table.get("t1")
+    assert df.height == 2
+    assert data.table.meta("t1").version == v1 + 1
 
 
-def test_status_readonly(root):
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.sniff("t1")
-    s = data.status("t1")
-    assert s.registered and s.consistent and s.diffs == ()
-
+def test_meta_consistent_readonly(root):
+    """meta 只读对账：磁盘新增文件 → consistent=False 且不 bump；scan 后恢复"""
     d = root / "tables" / "t1"
+    d.mkdir(parents=True, exist_ok=True)
+    make_df([("2020-01-01", "a", 1.0)]).write_parquet(d / "a.parquet")
+    data.table.scan("t1")
+    assert data.table.meta("t1").consistent
+
     make_df([("2020-02-01", "b", 2.0)]).write_parquet(d / "b.parquet")
-    s = data.status("t1")
-    assert not s.consistent
-    assert [x.kind for x in s.diffs] == ["added"]
-    # status 不动手：catalog 版本不变（describe 才会触发读前 sniff）
-    v = catalog().conn.execute("SELECT version FROM stkoe_objects WHERE name='t1'").fetchone()
-    assert v["version"] == 1
+    m = data.table.meta("t1")
+    assert not m.consistent and m.version == 1  # meta 不动手
+
+    r = data.table.scan("t1")
+    assert r.changed and r.version_after == 2
+    assert data.table.meta("t1").consistent
 
 
-def test_create_drop_rename_update(root):
+def test_add_and_list(root):
+    """add 注册已有数据目录；--all 批量发现未注册表"""
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.sniff("t1")
-
-    h = data.create("t2")
-    assert h.status == "succeeded"
-    assert data.describe("t2").version == 1
-
-    m = data.update("t1", display_name="新名字", tags=["x"], bump=True)
-    assert m.display_name == "新名字" and m.version == 2
-
-    # rename 一并移动目录并同步元数据
-    h = data.rename("t1", "t1b")
-    assert h.status == "succeeded"
-    assert (root / "tables" / "t1b").exists()
-    assert not (root / "tables" / "t1").exists()
-    assert data.describe("t1b").file_count == 1
-    assert data.describe("t1b").display_name == "新名字"  # 自定义 display_name 保留
+    write_single(root, "t2", make_df([("2020-01-01", "a", 1.0)]))
+    r = data.table.add("t1")
+    assert r.name == "t1" and r.implicit_registered and r.changed
+    with pytest.raises(TableExistsError):
+        data.table.add("t1")
     with pytest.raises(TableNotFoundError):
-        data.describe("t1")
-
-    h = data.drop("t2")
-    assert h.status == "succeeded"
-    # drop 后注册消失（数据目录还在 → 后续 read 会隐式重新注册，属设计行为）
-    assert catalog().conn.execute("SELECT id FROM stkoe_objects WHERE name='t2'").fetchone() is None
-    assert (root / "tables" / "t2").exists()
+        data.table.add("nope")
+    reports = data.table.add(None, all=True)
+    assert [x.name for x in reports] == ["t2"]
+    assert [m.name for m in data.table.list()] == ["t1", "t2"]
 
 
-def test_rename_follows_display_name_and_stays_consistent(root):
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.sniff("t1")
-    assert data.describe("t1").display_name == "t1"
-
-    h = data.rename("t1", "t1b")
-    assert h.status == "succeeded"
-    m = data.describe("t1b")
-    # display_name 未自定义 → 跟随新名；目录改名不改 rel_path/签名 → catalog 仍一致
-    assert m.display_name == "t1b" and m.file_count == 1
-    assert data.status("t1b").consistent
-
-    # 冲突校验：目标已注册或已存在目录 → 失败
-    write_single(root, "t2", make_df([("2020-01-01", "a", 1.0)]))
-    data.sniff("t2")
-    h = data.rename("t1b", "t2")
-    assert h.status == "failed" and "registered" in (h.error or "")
-    assert (root / "tables" / "t1b").exists()
-
-
-def test_create_all(root):
-    """--all 只注册未注册且有数据的表；已注册/空目录跳过"""
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    write_single(root, "t2", make_df([("2020-01-01", "a", 1.0)]))
-    write_single(root, "t3", make_df([("2020-01-01", "a", 1.0)]))
-    (root / "tables" / "empty").mkdir(parents=True, exist_ok=True)
-    data.sniff("t1")
-    data.create("t3")
-
-    reports = data.create_all()
-    assert [r.name for r in reports] == ["t2"]
-    assert all(r.implicit_registered and r.changed for r in reports)
-    assert data.describe("t2").file_count == 1
-    # 已注册（t1/t3）与空目录（empty）未被触碰
-    assert [m.name for m in data.list()] == ["t1", "t2", "t3"]
-
-
-def test_list(root):
+def test_scan_all(root):
     write_single(root, "a", make_df([("2020-01-01", "a", 1.0)]))
     write_single(root, "b", make_df([("2020-01-01", "b", 1.0)]))
-    data.sniff("a")
-    data.sniff("b")
-    assert [m.name for m in data.list()] == ["a", "b"]
-
-
-def test_sniff_all(root):
-    write_single(root, "a", make_df([("2020-01-01", "a", 1.0)]))
-    write_single(root, "b", make_df([("2020-01-01", "b", 1.0)]))
-    reports = data.sniff_all()
+    reports = data.table.scan(None, all=True)
     assert {r.name for r in reports} == {"a", "b"}
     assert all(r.implicit_registered for r in reports)
+
+
+def test_set_metadata_no_bump(root):
+    """set 改 display_name/tags 是纯元数据修改，不 bump version"""
+    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
+    data.table.scan("t1")
+    m = data.table.set("t1", display_name="新名字", tags=["x"])
+    assert m.display_name == "新名字" and m.version == 1
+    assert data.table.meta("t1").display_name == "新名字"
+
+
+def test_col_metadata(root):
+    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
+    data.table.scan("t1")
+    m = data.table.col("t1", "r", display_name="收益", unit="pct")
+    c = next(c for c in m.columns if c.name == "r")
+    assert c.display_name == "收益" and c.unit == "pct"
+
+
+def test_rename_moves_dir_and_catalog(root):
+    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
+    data.table.scan("t1")
+    data.table.set("t1", display_name="旧名")
+    m = data.table.rename("t1", "t1b")
+    assert m.name == "t1b"
+    assert (root / "tables" / "t1b").exists()
+    assert not (root / "tables" / "t1").exists()
+    assert data.table.meta("t1b").display_name == "旧名"  # 自定义 display_name 保留
+    with pytest.raises(TableNotFoundError):
+        data.table.meta("t1")
+
+    # 冲突：目标已注册 → TableExistsError
+    write_single(root, "t2", make_df([("2020-01-01", "a", 1.0)]))
+    data.table.scan("t2")
+    with pytest.raises(TableExistsError):
+        data.table.rename("t1b", "t2")
+    # 目录存在但未注册 → FileExistsError
+    (root / "tables" / "t3").mkdir(parents=True)
+    with pytest.raises(FileExistsError):
+        data.table.rename("t1b", "t3")
+
+
+def test_del_removes_registration_keeps_data(root):
+    """del 只删 catalog 登记，绝不删用户数据文件"""
+    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
+    data.table.scan("t1")
+    data.table.del_("t1")
+    with pytest.raises(TableNotFoundError):
+        data.table.meta("t1")
+    assert (root / "tables" / "t1" / "t1.parquet").exists()
+    with pytest.raises(TableNotFoundError):
+        data.table.del_("nope")
+
+
+def test_del_dependency_guard(root):
+    """被 dataset 引用时 del 默认报错，force 级联清理"""
+    write_single(root, "idx", make_df([("2020-01-01", "a", 1.0)]))
+    write_single(root, "mem", make_df([("2020-01-01", "a", 1.0)]))
+    data.table.scan("idx")
+    data.table.scan("mem")
+    data.dataset.add("ds", "idx", "mem", background=False)
+    with pytest.raises(DependencyError):
+        data.table.del_("idx")
+    data.table.del_("idx", force=True)
+    with pytest.raises(data.dataset.DatasetNotFoundError):
+        data.dataset.describe("ds")
+
+
+def test_data_key_changes_with_content(root):
+    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
+    data.table.scan("t1")
+    k1 = data.table.data_key("t1")
+    assert k1
+    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0), ("2020-01-02", "b", 2.0)]))
+    assert data.table.data_key("t1") != k1

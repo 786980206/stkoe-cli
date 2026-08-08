@@ -39,13 +39,12 @@ def test_feature(root):
     assert df.height == 10 * 6  # 2021-01-01~08 去周末 = 6 个交易日
 
 
-def test_write_and_sniff(root):
+def test_write_and_scan(root):
     df = mock_mod.klday(n_syms=10, start="2021-01-01", end="2021-01-31", seed=9)
     report = mock_mod.write("mock_klday", df, partition_by="year")
     assert report.changed
     assert report.layout.value == "hive"
-    m = data.describe("mock_klday")
-    assert m.row_count == df.height
+    m = data.table.meta("mock_klday")
     assert m.partition_count == 1
     names = [c.name for c in m.columns]
     assert "optime" in names and any(c.is_tool for c in m.columns)
@@ -60,7 +59,7 @@ def test_write_demo(root):
     reports = mock_mod.write_demo(root, n_syms=20, start="2022-01-01", end="2022-03-31")
     names = {r.name for r in reports}
     assert names == {"mock_tdcal", "mock_common", "mock_klday", "mock_feature"}
-    assert data.describe("mock_klday").layout.value == "hive"
+    assert data.table.meta("mock_klday").layout.value == "hive"
 
 
 def test_deterministic():
@@ -82,4 +81,4 @@ def test_cli_mock(root):
 
     r = CliRunner().invoke(app, ["mock", "gen", "mock_tdcal", "--kind", "tdcal"])
     assert r.exit_code == 0 and "mock_tdcal" in r.stdout
-    assert "mock_tdcal" in {m.name for m in data.list()}
+    assert "mock_tdcal" in {m.name for m in data.table.list()}

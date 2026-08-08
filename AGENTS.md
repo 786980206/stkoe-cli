@@ -1,11 +1,11 @@
 # AGENTS.md - stkoe 项目开发指南
 
-本文档为在 `stkoe/` 子项目中工作的 AI 代理提供项目信息、架构说明与演进记录。
-根仓库的通用规范见 `../AGENTS.md`。
+本文档为在本仓库（stkoe，自 DataCenter 仓库拆分出的独立项目）中工作的 AI 代理提供
+项目信息、代码风格规范、架构说明与演进记录。
 
 ## 项目概述
 
-stkoe 是 DataCenter 的量化研究子项目，包含四大模块：
+stkoe 是从 DataCenter 仓库拆分出的独立量化研究项目（对应原 `stkoe/` 子目录，当前为 v0.4.0 功能状态），包含四大模块：
 
 - **`data/`**：数据管理框架（本指南重点，最近在迭代）
   - `table`：只读观察者 + sniff 元数据同步（已重构完成，v0.2.0）
@@ -50,7 +50,10 @@ stkoe/
 ```bash
 uv sync                 # 安装依赖（项目用 uv，不用 pip）
 uv add <package>        # 添加依赖
+uv add --optional dev <package>  # 添加开发依赖（pytest 等）
 ```
+注意：`wsdata` 为本地库（DataCenter/wslib），经 pyproject 的 `[tool.uv.sources]` 指向
+`E:/DataCenter/wslib`，不走 PyPI；该路径与本机环境耦合，勿改为公共依赖。
 
 ### 运行代码
 ```bash
@@ -61,15 +64,64 @@ uv run python -m stkoe table list         # 列出已注册表
 
 ### 测试
 ```bash
-# 标准方式（需可用的 Python 3.13 环境）
-uv run pytest stkoe/tests -q
+# 标准方式
+uv run pytest -q                          # 仓库根目录直接运行
 
 # 本机开发环境（Windows 无 3.13，用预建 venv）：
 #   venv = %TEMP%\opencode\stkoe-venv（Python 3.10 + system-site-packages，polars 1.32.0）
 $vpy = "$env:TEMP\opencode\stkoe-venv\Scripts\python.exe"
-$env:PYTHONPATH = 'E:\tmp\data-center\stkoe\src'
-& $vpy -m pytest stkoe/tests -q
+$env:PYTHONPATH = 'D:\proj\stkoe-cli\src'
+& $vpy -m pytest tests -q
 ```
+
+## 代码风格与通用约定
+
+（自 DataCenter 根仓库 AGENTS.md 整合，仅保留适用于本项目的通用规范）
+
+### Python 版本与环境
+- Python >= 3.13（本仓库）；虚拟环境使用 `.venv`。
+
+### 导入顺序
+```python
+# 1. 标准库
+import os
+import datetime
+from pathlib import Path
+from typing import Optional, Iterable
+
+# 2. 第三方库
+import polars as pl
+import pandas as pd
+import typer
+
+# 3. 项目内部模块
+from stkoe.data.util import signature
+```
+
+### 命名约定
+- **文件/模块**：`snake_case`；**类名**：`PascalCase`；**函数**：`snake_case`
+- **常量**：`UPPER_SNAKE_CASE`；**私有方法**：`_prefix`（如 `_ensure_fresh`、`_partition_plan`）
+- **Polars 表达式变量**：简短的 `snake_case`（如 `x`、`y`、`expr`）
+
+### 类型注解
+- 使用 Python 3.10+ 类型语法（`X | None` 而非 `Optional[X]`）
+- dataclass 字段必须写类型注解；抽象方法必须有返回类型注解
+
+### 代码组织
+- **dataclass**：优先 `@dataclass(frozen=True)` 定义不可变数据结构（如 `ColumnMeta`、`DatasetMeta`、`FileInfo`）
+- **错误处理**：显式抛带提示的异常（如 `DatasetExistsError`），用 loguru 记日志：
+```python
+from loguru import logger
+logger.error(f"出错: {e}")
+```
+
+### 文档字符串
+- 使用中文编写文档字符串（与代码风格保持一致）；说明参数、返回值与用法。
+
+### 其他注意事项
+- **包管理器**：只用 uv，不用 pip。
+- **数据处理**：Polars 是主要库，优先 Polars API；可配合 `polynx` 扩展。
+- **日志**：使用 `loguru`。
 
 ## 数据框架（data/）设计不变式
 
@@ -160,7 +212,19 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
 
 ## 演进记录
 
-### v0.2.0（当前，commit `83d962f`，tag `v0.2.0`）
+### v0.4.1（维护：动词统一 + 级联/依赖修复）
+- **CLI 动词统一**：table/dataset/stat 三组命令统一为 `add/list/meta/get/scan/del/set/rename`，
+  废弃旧 `create/sniff/describe/update/drop/select` 形态（`describe` 留为 dataset.meta 兼容别名）；
+  `--all/--json/--force/--refresh/--background` 全量参数化；`table col <name> --json` 列清单。
+- **级联语义修正**：`_ensure_fresh`（读路径自动 sniff）不再级联下游（`cascade=False`），
+  只有显式 `table scan` 才触发 dataset/stat 重算——修复物化期间自触发导致的 dataset 版本多跳。
+- **依赖修复**：dataset 依赖登记补上 **index 表** 边（原来只登记非 index 成员表），
+  `table del/rename` 的依赖保护对 index 表生效。
+- **stat 输出对齐**：分组统计首列以**分组列名**命名（如 `sym`/`date`，非固定 `group`）；
+  field 顺序按源表列序（数值/字符串/时间列各自内部保持原序）。
+- 测试：全量 105 用例 `uv run pytest -q` 全绿；test_cli 补 REPL 顺序隔离（autouse 恢复同步默认）。
+
+### v0.2.0（commit `83d962f`，tag `v0.2.0`）
 - **模块化重构**：table.py（原 613 行）公共逻辑抽离为 `util.py`/`task.py`/`query.py`/`catalog/access.py`，只留 table 业务。
 - **配置系统**：`settings.py`（原 `config.py` 改名，规避遮蔽 `data.config()`）＋ `stkoe config show/set` CLI。
 - **工具字段简化**：`sys_cols`/`tool_cols` 统一为 `ignore_cols`（支持多个）；`ColumnMeta.is_tool`。

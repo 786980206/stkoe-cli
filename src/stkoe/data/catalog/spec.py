@@ -1,5 +1,6 @@
 """数据框架公共数据类型"""
-from dataclasses import dataclass, field
+import datetime
+from dataclasses import dataclass, field, fields as _fields
 from enum import Enum
 
 
@@ -42,30 +43,63 @@ class ColumnMeta:
 
     @classmethod
     def from_dict(cls, d: dict) -> "ColumnMeta":
-        fields = cls.__dataclass_fields__
-        return cls(**{k: v for k, v in d.items() if k in fields})
+        names = {f.name for f in _fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in names})
+
+    def patch(self, **kw) -> "ColumnMeta":
+        """返回浅拷贝修改版（frozen dataclass 更新元数据字段用）"""
+        return ColumnMeta.from_dict({**self.to_dict(), **kw})
+
+
+@dataclass(frozen=True)
+class FileMeta:
+    """文件元数据（signature 校验的一部分：只保留路径/分区/大小/时间戳）"""
+
+    rel_path: str
+    partition_path: str = ""
+    size: int | None = None
+    mtime_ns: int | None = None
 
 
 @dataclass(frozen=True)
 class TableMeta:
+    """表元数据（`table meta` 输出；不含统计信息——统计见 stat 模块）"""
+
     name: str
     version: int
     layout: TableLayout
-    partition_by: tuple[str, ...] = ()
-    partition_count: int = 1
-    columns: tuple[ColumnMeta, ...] = ()
-    row_count: int | None = None
-    file_count: int = 0
-    bytes: int = 0
-    as_index: bool = False
-    has_data: bool = False
     display_name: str = ""
     description: str = ""
     tags: tuple[str, ...] = ()
     source: str = "local"
     extra: dict = field(default_factory=dict)
+    partition_by: tuple[str, ...] = ()
+    partition_count: int = 0
+    files: tuple[FileMeta, ...] = ()
+    columns: tuple[ColumnMeta, ...] = ()
+    consistent: bool = True  # catalog 与磁盘一致（只读对账，不触发扫描）
     created_at: str = ""
     updated_at: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "version": self.version,
+            "layout": self.layout.value,
+            "display_name": self.display_name,
+            "description": self.description,
+            "tags": list(self.tags),
+            "source": self.source,
+            "extra": self.extra,
+            "partition_by": list(self.partition_by),
+            "partition_count": self.partition_count,
+            "files": [{"rel_path": f.rel_path, "partition": f.partition_path,
+                       "size": f.size, "mtime_ns": f.mtime_ns} for f in self.files],
+            "columns": [c.to_dict() for c in self.columns],
+            "consistent": self.consistent,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
 
 
 @dataclass(frozen=True)
@@ -79,17 +113,9 @@ class FileDiff:
 
 
 @dataclass(frozen=True)
-class TableStatus:
-    name: str
-    registered: bool
-    consistent: bool
-    signature_catalog: str | None
-    signature_disk: str | None
-    diffs: tuple[FileDiff, ...] = ()
+class TableScanReport:
+    """``table scan`` 结果：差异/版本/布局 + 下游触发"""
 
-
-@dataclass(frozen=True)
-class SniffReport:
     name: str
     version_before: int
     version_after: int
@@ -99,6 +125,7 @@ class SniffReport:
     diffs: tuple[FileDiff, ...]
     changed: bool
     implicit_registered: bool = False
+    triggered: tuple[str, ...] = ()  # 自动触发的下游对象（dataset/stat）
 
 
 @dataclass(frozen=True)
@@ -125,6 +152,8 @@ class TaskLog:
 
 @dataclass(frozen=True)
 class DatasetMeta:
+    """dataset 逻辑数据集元数据（dataset meta 输出）"""
+
     name: str
     version: int
     index_table: str
@@ -132,11 +161,11 @@ class DatasetMeta:
     keys: tuple[str, ...]
     columns: tuple[ColumnMeta, ...]
     partition_by: tuple[str, ...] = ()
-    partition_gran: str = ""  # 分区粒度：''(flat)/year/month/date/identity(镜像 index)
+    partition_gran: str = ""  # ''（flat）/year/month/date/identity（镜像 index）
     materialized: bool = False
     materialized_at: str | None = None
-    dependency_hash: str | None = None
-    partition_deps: dict = field(default_factory=dict)  # 分区 -> 依赖源文件签名
+    curated: bool = False            # 物化数据与当前源一致（读前自物化用）
+    pending_partitions: tuple[str, ...] = ()
     display_name: str = ""
     description: str = ""
     tags: tuple[str, ...] = ()
@@ -155,8 +184,8 @@ class DatasetMeta:
             "partition_gran": self.partition_gran,
             "materialized": self.materialized,
             "materialized_at": self.materialized_at,
-            "dependency_hash": self.dependency_hash,
-            "partition_deps": self.partition_deps,
+            "curated": self.curated,
+            "pending_partitions": list(self.pending_partitions),
             "display_name": self.display_name,
             "description": self.description,
             "tags": list(self.tags),
@@ -164,43 +193,11 @@ class DatasetMeta:
             "updated_at": self.updated_at,
         }
 
-    @classmethod
-    def from_dict(cls, d: dict, *, name: str, version: int) -> "DatasetMeta":
-        return cls(
-            name=name, version=version,
-            index_table=d.get("index_table", ""),
-            tables=tuple(d.get("tables", [])),
-            keys=tuple(d.get("keys", [])),
-            columns=tuple(ColumnMeta.from_dict(c) for c in d.get("columns", [])),
-            partition_by=tuple(d.get("partition_by", [])),
-            partition_gran=d.get("partition_gran", ""),
-            materialized=bool(d.get("materialized", False)),
-            materialized_at=d.get("materialized_at"),
-            dependency_hash=d.get("dependency_hash"),
-            partition_deps=dict(d.get("partition_deps", {})),
-            display_name=d.get("display_name", ""),
-            description=d.get("description", ""),
-            tags=tuple(d.get("tags", [])),
-            created_at=d.get("created_at", ""),
-            updated_at=d.get("updated_at", ""),
-        )
-
 
 @dataclass(frozen=True)
-class DatasetStatus:
-    name: str
-    registered: bool
-    materialized: bool
-    materializing: bool
-    consistent: bool  # dependency_hash == 当前源表签名
-    partition_by: tuple[str, ...]
-    dependency_hash: str | None
-    current_hash: str | None
-    pending_partitions: tuple[str, ...] = ()
+class DatasetScanReport:
+    """dataset scan（重物化）结果"""
 
-
-@dataclass(frozen=True)
-class DatasetSniffReport:
     name: str
     version_before: int
     version_after: int
@@ -209,15 +206,19 @@ class DatasetSniffReport:
     incremental: bool
     partition_by: tuple[str, ...]
     rebuilt_partitions: tuple[str, ...] = ()
+    triggered: tuple[str, ...] = ()  # 自动触发的下游（stat 等）
 
 
 @dataclass(frozen=True)
 class StatMeta:
-    """统计对象元数据（catalog type='stat'；name=所属 dataset 名）"""
-    name: str
+    """统计资产元数据（stat meta 输出）"""
+
+    name: str                    # 资产名（= 目标对象名）
     version: int
-    dataset: str
-    groups: tuple[str, ...] = ()  # 已物化分组（"all" + 索引列）
+    target_type: str             # table | dataset
+    target_name: str
+    groups: tuple[str, ...] = ()  # 物化分组（"all"/"file"/列名）
+    stale_groups: tuple[str, ...] = ()
     display_name: str = ""
     description: str = ""
     tags: tuple[str, ...] = ()
@@ -228,8 +229,10 @@ class StatMeta:
         return {
             "name": self.name,
             "version": self.version,
-            "dataset": self.dataset,
+            "target_type": self.target_type,
+            "target_name": self.target_name,
             "groups": list(self.groups),
+            "stale_groups": list(self.stale_groups),
             "display_name": self.display_name,
             "description": self.description,
             "tags": list(self.tags),
@@ -237,25 +240,12 @@ class StatMeta:
             "updated_at": self.updated_at,
         }
 
-    @classmethod
-    def from_dict(cls, d: dict, *, name: str, version: int) -> "StatMeta":
-        return cls(
-            name=name, version=version,
-            dataset=d.get("dataset", ""),
-            groups=tuple(d.get("groups", [])),
-            display_name=d.get("display_name", ""),
-            description=d.get("description", ""),
-            tags=tuple(d.get("tags", [])),
-            created_at=d.get("created_at", ""),
-            updated_at=d.get("updated_at", ""),
-        )
-
 
 @dataclass(frozen=True)
-class StatStatus:
-    name: str
-    registered: bool
-    dataset: str = ""
-    groups: tuple[str, ...] = ()
-    consistent: bool = True  # 所有缓存分组 data_key 与当前一致
-    stale_groups: tuple[str, ...] = ()
+class DepMeta:
+    """依赖边（祖->孙）：供 meta/血缘展示"""
+
+    dep_type: str
+    dep_name: str
+    fields: tuple[str, ...] = ()  # 字段级：依赖方用到该上游哪些字段
+    detail: dict = field(default_factory=dict)

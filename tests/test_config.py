@@ -67,8 +67,8 @@ def test_set_config(monkeypatch, tmp_path):
     assert cfg.load_config().ignore_cols == ("_x", "_y")
 
 
-def test_tool_cols_marked(root, monkeypatch, tmp_path):
-    """describe 中工具字段被标记 is_tool；data_cols 剔除之"""
+def test_tool_cols_marked(root):
+    """meta 中工具字段被标记 is_tool；data_cols 剔除之"""
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)])).parent
     # 表带 optime 工具列
     df = pl.DataFrame({
@@ -77,8 +77,8 @@ def test_tool_cols_marked(root, monkeypatch, tmp_path):
         "optime": ["2020-01-01 08:00:00"],
     })
     write_single(root, "t2", df)
-    data.sniff("t2")
-    m = data.describe("t2")
+    data.table.scan("t2")
+    m = data.table.meta("t2")
     tool = [c for c in m.columns if c.is_tool]
     assert [c.name for c in tool] == ["optime"]
     assert "optime" not in data.data_cols(m.columns)
@@ -92,12 +92,12 @@ def test_select_exclude_tool(root):
         "optime": ["2020-01-01", "2020-01-02"],
     })
     write_single(root, "t1", df)
-    data.sniff("t1")
-    assert "optime" in data.select("t1").collect().columns
-    got = data.select("t1", exclude_tool=True).collect()
+    data.table.scan("t1")
+    assert "optime" in data.table.get("t1").columns
+    got = data.table.get("t1", exclude_tool=True)
     assert got.columns == ["date", "sym", "r"]
     # columns 显式指定时不受 exclude_tool 影响
-    got2 = data.select("t1", columns=["sym", "optime"], exclude_tool=True).collect()
+    got2 = data.table.get("t1", columns=["sym", "optime"], exclude_tool=True)
     assert got2.columns == ["sym", "optime"]
 
 

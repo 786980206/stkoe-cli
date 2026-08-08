@@ -1,5 +1,8 @@
-"""CLI 冒烟测试"""
+"""CLI 冒烟测试（新动词形态：table/dataset/stat 统一 add/meta/get/scan/del）"""
 import sys
+import time
+
+import pytest
 
 import orjson
 import polars as pl
@@ -15,66 +18,70 @@ from conftest import make_df, write_single
 runner = CliRunner()
 
 
-def test_cli_sniff_list(root):
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    r = runner.invoke(app, ["table", "sniff", "t1"])
-    assert r.exit_code == 0
-    assert "t1" in r.stdout and "changed=True" in r.stdout
-
-    r = runner.invoke(app, ["table", "list"])
-    assert r.exit_code == 0 and "t1" in r.stdout
+@pytest.fixture(autouse=True)
+def _reset_async_default():
+    """REPL 测试会把默认执行模式切为后台，恢复同步避免顺序耦合"""
+    from stkoe.data.task import set_default_async
+    set_default_async(False)
+    yield
 
 
-def test_cli_describe_json(root):
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.sniff("t1")
-    r = runner.invoke(app, ["table", "describe", "t1", "--json"])
-    assert r.exit_code == 0
-    j = orjson.loads(r.stdout.encode())
-    assert j["name"] == "t1" and j["layout"] == "single" and j["row_count"] == 1
-
-
-def test_cli_status_schema(root):
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.sniff("t1")
-    r = runner.invoke(app, ["table", "status", "t1"])
-    assert r.exit_code == 0 and "consistent: True" in r.stdout
-    r = runner.invoke(app, ["table", "schema", "t1"])
-    assert r.exit_code == 0 and "date: Date" in r.stdout
-
-
-def test_cli_select(root):
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0), ("2020-01-02", "b", 2.0)]))
-    data.sniff("t1")
-    r = runner.invoke(app, ["table", "select", "t1", "--where", "date>=2020-01-02"])
-    assert r.exit_code == 0 and "b" in r.stdout
-
-
-def test_cli_create_update_drop(root):
-    r = runner.invoke(app, ["table", "create", "t2"])
-    assert r.exit_code == 0 and "succeeded" in r.stdout
-    r = runner.invoke(app, ["table", "update", "t2", "--display-name", "hi", "--bump"])
-    assert r.exit_code == 0 and "v2" in r.stdout
-    r = runner.invoke(app, ["table", "drop", "t2"])
-    assert r.exit_code == 0 and "succeeded" in r.stdout
-    r = runner.invoke(app, ["table", "list"])
-    assert r.exit_code == 0 and "t2" not in r.stdout  # drop 后不再列出（数据目录还在，读时会隐式重注册）
-
-
-def test_cli_dataset(root):
-    # index 表：仅 date, sym（join 键由 index 定义）
-    write_single(root, "t1", pl.DataFrame({
+def _setup_pair(root):
+    write_single(root, "idx", pl.DataFrame({
         "date": ["2020-01-01", "2020-01-02"], "sym": ["a", "b"]
     }).with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")))
     write_single(root, "m1", pl.DataFrame({
         "date": ["2020-01-01", "2020-01-02"], "sym": ["a", "b"], "extra": [1, 2]
     }).with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")))
-    data.sniff("t1")
-    data.sniff("m1")
+    data.table.scan("idx")
+    data.table.scan("m1")
 
-    r = runner.invoke(app, ["dataset", "create", "ds", "t1", "m1", "--sync"])
+
+def test_cli_table_add_list_meta(root):
+    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
+    r = runner.invoke(app, ["table", "scan", "t1"])
     assert r.exit_code == 0, r.stdout
-    assert "succeeded" in r.stdout
+    assert "[t1] v0 -> v1" in r.stdout
+
+    r = runner.invoke(app, ["table", "list"])
+    assert r.exit_code == 0 and "t1" in r.stdout
+
+    r = runner.invoke(app, ["table", "meta", "t1", "--json"])
+    assert r.exit_code == 0, r.stdout
+    j = orjson.loads(r.stdout.encode())
+    assert j["name"] == "t1" and j["layout"] == "single"
+    assert [c["name"] for c in j["columns"]] == ["date", "sym", "r"]
+
+    r = runner.invoke(app, ["table", "meta", "nope"])
+    assert r.exit_code != 0  # 未注册 → 报错
+
+
+def test_cli_table_get(root):
+    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0), ("2020-01-02", "b", 2.0)]))
+    data.table.scan("t1")
+    r = runner.invoke(app, ["table", "get", "t1", "--where", "date>=2020-01-02"])
+    assert r.exit_code == 0 and "b" in r.stdout
+
+
+def test_cli_table_set_rename_del(root):
+    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
+    data.table.scan("t1")
+    r = runner.invoke(app, ["table", "set", "t1", "--display-name", "hi"])
+    assert r.exit_code == 0 and "display_name=hi" in r.stdout
+    r = runner.invoke(app, ["table", "rename", "t1", "t1b"])
+    assert r.exit_code == 0 and "t1b" in r.stdout
+    r = runner.invoke(app, ["table", "del", "t1b"])
+    assert r.exit_code == 0
+    r = runner.invoke(app, ["table", "list"])
+    assert r.exit_code == 0 and "t1b" not in r.stdout
+    assert (root / "tables" / "t1b" / "t1.parquet").exists()  # 数据文件保留
+
+
+def test_cli_dataset(root):
+    _setup_pair(root)
+    r = runner.invoke(app, ["dataset", "add", "ds", "idx", "m1"])
+    assert r.exit_code == 0, r.stdout
+    assert "registered: ds" in r.stdout
 
     r = runner.invoke(app, ["dataset", "list"])
     assert r.exit_code == 0 and "ds" in r.stdout
@@ -84,30 +91,47 @@ def test_cli_dataset(root):
     j = orjson.loads(r.stdout)
     assert isinstance(j, list) and any(d["name"] == "ds" for d in j)
 
-    r = runner.invoke(app, ["dataset", "describe", "ds", "--json"])
+    r = runner.invoke(app, ["dataset", "meta", "ds", "--json"])
     assert r.exit_code == 0, r.stdout
     dj = orjson.loads(r.stdout)
-    assert dj["name"] == "ds" and dj["index_table"] == "t1" and dj["keys"] == ["date", "sym"]
+    assert dj["name"] == "ds" and dj["index_table"] == "idx" and dj["keys"] == ["date", "sym"]
 
-    r = runner.invoke(app, ["dataset", "status", "ds"])
-    assert r.exit_code == 0 and "consistent:" in r.stdout and "True" in r.stdout
-
-    r = runner.invoke(app, ["dataset", "select", "ds", "--where", "sym==b"])
+    r = runner.invoke(app, ["dataset", "get", "ds", "--where", "sym==b"])
     assert r.exit_code == 0 and "b" in r.stdout
 
-    r = runner.invoke(app, ["stat", "select", "ds"])
+    r = runner.invoke(app, ["dataset", "scan", "ds"])
+    assert r.exit_code == 0 and "changed=False" in r.stdout
+
+    r = runner.invoke(app, ["stat", "get", "ds"])
     assert r.exit_code == 0 and "field" in r.stdout
 
-    r = runner.invoke(app, ["dataset", "drop", "ds"])
-    assert r.exit_code == 0 and "succeeded" in r.stdout
+    r = runner.invoke(app, ["dataset", "del", "ds", "--force"])
+    assert r.exit_code == 0
+    assert not (root / "datasets" / "ds").exists()
+
+
+def test_cli_stat(root):
+    _setup_pair(root)
+    runner.invoke(app, ["dataset", "add", "ds", "idx", "m1"])
+    r = runner.invoke(app, ["stat", "add", "ds"])
+    assert r.exit_code == 0, r.stdout
+    r = runner.invoke(app, ["stat", "meta", "ds", "--json"])
+    assert r.exit_code == 0
+    j = orjson.loads(r.stdout.encode())
+    assert j["target_type"] == "dataset" and j["groups"] == ["all"]
+    r = runner.invoke(app, ["stat", "list"])
+    assert r.exit_code == 0 and "ds" in r.stdout
+    r = runner.invoke(app, ["stat", "del", "ds"])
+    assert r.exit_code == 0
+    assert not (root / "stats" / "ds").exists()
 
 
 def test_main_direct(root, capsys):
     """python -m stkoe <命令>：单次执行"""
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    rc = mainmod.main(["table", "sniff", "t1"])
+    rc = mainmod.main(["table", "scan", "t1"])
     assert rc == 0
-    rc = mainmod.main(["table", "describe", "t1", "--json"])
+    rc = mainmod.main(["table", "meta", "t1", "--json"])
     assert rc == 0
     assert "t1" in capsys.readouterr().out
 
@@ -126,7 +150,6 @@ def test_cli_task_stop_all(root):
             ctl.check()
             time.sleep(0.02)
 
-    import time
     h = run_task("cli_stopall", "obj", _loop, background=True)
     deadline = time.time() + 10
     while not data.task_list(status="running", type="cli_stopall") and time.time() < deadline:
@@ -136,14 +159,13 @@ def test_cli_task_stop_all(root):
     assert r.exit_code == 0, r.stdout
     assert "stop requested: 1 running, cleaned 1 finished task(s)" in r.stdout
 
-    # 已等待收尾并清理完成，不再残留任务记录
     assert not data.task_list(type="cli_stopall")
 
 
 def test_main_repl(root, capsys, monkeypatch):
     """python -m stkoe：交互 REPL，提示符下执行 table xxx"""
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.sniff("t1")
+    data.table.scan("t1")
     inputs = iter(["table list", "badcmd", "exit"])
     monkeypatch.setattr(mainmod, "_readline", lambda _prompt: next(inputs))
     rc = mainmod.main([])
@@ -162,12 +184,12 @@ def test_main_repl_eof(root, capsys, monkeypatch):
 def test_completer_table_names(root):
     """补全器：table 子命令 + 已注册表名提示"""
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.sniff("t1")
+    data.table.scan("t1")
     c = mainmod._Completer()
     docs = [
         ("", "tab"),
-        ("table de", "de"),
-        ("table describe t", "t"),
+        ("table me", "me"),
+        ("table meta t", "t"),
         ("table list", "list"),
     ]
     for text, word in docs:
@@ -208,5 +230,12 @@ def test_readline_tty(monkeypatch):
 
 def test_dispatch_error(root):
     """错误命令返回退出码 1"""
-    rc = mainmod._dispatch(["table", "describe", "nope"])
+    rc = mainmod._dispatch(["table", "meta", "nope"])
     assert rc == 1
+
+
+def test_cli_mock_gen(root):
+    r = runner.invoke(app, ["mock", "gen", "mock_tdcal", "--kind", "tdcal"])
+    assert r.exit_code == 0, r.stdout
+    assert "mock_tdcal" in r.stdout
+    assert "mock_tdcal" in {m.name for m in data.table.list()}

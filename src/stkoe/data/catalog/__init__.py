@@ -2,12 +2,21 @@
 from .db import Catalog
 from .spec import (  # noqa: F401
     ColumnMeta,
+    DatasetMeta,
+    DatasetScanReport,
+    DepMeta,
     FileDiff,
-    SniffReport,
+    FileMeta,
+    StatMeta,
     TableLayout,
     TableMeta,
-    TableStatus,
+    TableScanReport,
     TaskHandle,
+    TaskLog,
 )
 
-__all__ = ["Catalog", "ColumnMeta", "FileDiff", "SniffReport", "TableLayout", "TableMeta", "TableStatus", "TaskHandle"]
+__all__ = [
+    "Catalog", "ColumnMeta", "DatasetMeta", "DatasetScanReport", "DepMeta",
+    "FileDiff", "FileMeta", "StatMeta", "TableLayout", "TableMeta",
+    "TableScanReport", "TaskHandle", "TaskLog",
+]

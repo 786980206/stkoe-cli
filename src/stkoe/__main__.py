@@ -1,7 +1,10 @@
 """stkoe 命令行入口
 
-- `python -m stkoe <命令>`：单次执行（如 `python -m stkoe table sniff demo`）
+- `python -m stkoe <命令>`：单次执行（如 `python -m stkoe table scan demo`）
 - `python -m stkoe`：进入交互式 CLI（Tab 补全 + 实时提示），`exit`/`quit` 退出
+
+REPL 下默认后台执行（返回 TaskHandle，可用 `task list/log` 观察）；
+单次命令默认同步（直接打印结果）。
 """
 import shlex
 import sys
@@ -12,26 +15,24 @@ from prompt_toolkit.shortcuts import CompleteStyle
 from typer.main import get_command
 
 from .data import dataset as dataset_mod
+from .data import stat as stat_mod
 from .data import table
 from .data.cli import app
+from .data.task import set_default_async
 
 PROMPT = "stkoe> "
 EXIT_WORDS = {"exit", "quit", "q", ":q", "bye"}
 HELP_WORDS = {"help", "?", ":h"}
 
-TOP_COMMANDS = ["table", "task", "dataset", "stat", "help", "exit", "quit"]
-TABLE_SUBCOMMANDS = [
-    "sniff", "list", "describe", "status", "schema",
-    "select", "create", "drop", "rename", "update",
-]
+TOP_COMMANDS = ["table", "task", "dataset", "stat", "config", "mock", "help", "exit", "quit"]
+TABLE_SUBCOMMANDS = ["add", "list", "meta", "get", "del", "rename", "set", "col", "scan"]
 TASK_SUBCOMMANDS = ["list", "stop", "pause", "resume", "log", "clean"]
-DATASET_SUBCOMMANDS = [
-    "sniff", "list", "describe", "status", "schema",
-    "select", "create", "drop", "rename",
-]
-STAT_SUBCOMMANDS = ["create", "select", "sniff", "list", "describe", "status", "drop", "rename"]
-# 第一个位置参数为表名的子命令（补全时提示已注册表）
-TABLE_NAME_SUBS = {"sniff", "describe", "status", "schema", "select", "drop", "rename", "update"}
+DATASET_SUBCOMMANDS = ["add", "list", "meta", "get", "scan", "del", "rename"]
+STAT_SUBCOMMANDS = ["add", "list", "meta", "get", "scan", "del", "rename"]
+# 第一个位置参数为表名/dataset 名的子命令（补全时提示已注册对象）
+TABLE_NAME_SUBS = {"meta", "get", "del", "set", "col", "scan"}
+DATASET_NAME_SUBS = {"meta", "get", "del", "scan"}
+STAT_NAME_SUBS = {"meta", "get", "del", "scan", "add"}
 
 _cli = None
 
@@ -52,11 +53,12 @@ def _dispatch(args: list[str]) -> int:
 
 
 class _Completer(Completer):
-    """上下文感知补全：顶层命令 → table 子命令 → 已注册表名"""
+    """上下文感知补全：顶层命令 → 子命令 → 已注册对象名"""
 
     def __init__(self):
         self._tables: list[str] | None = None
         self._datasets: list[str] | None = None
+        self._stats: list[str] | None = None
 
     def _table_names(self) -> list[str]:
         if self._tables is None:
@@ -74,6 +76,14 @@ class _Completer(Completer):
                 self._datasets = []
         return self._datasets
 
+    def _stat_names(self) -> list[str]:
+        if self._stats is None:
+            try:
+                self._stats = sorted(m.name for m in stat_mod.list())
+            except Exception:
+                self._stats = []
+        return self._stats
+
     def _yield(self, words: list[str], word: str):
         for w in words:
             if w.startswith(word):
@@ -90,9 +100,7 @@ class _Completer(Completer):
         if cmd == "table":
             if len(parts) == 1:
                 yield from self._yield(TABLE_SUBCOMMANDS, word)
-                return
-            sub = parts[1]
-            if len(parts) == 2 and sub in TABLE_NAME_SUBS:
+            elif len(parts) == 2 and parts[1] in TABLE_NAME_SUBS:
                 yield from self._yield(self._table_names(), word)
         elif cmd == "task":
             if len(parts) == 1:
@@ -100,11 +108,13 @@ class _Completer(Completer):
         elif cmd == "dataset":
             if len(parts) == 1:
                 yield from self._yield(DATASET_SUBCOMMANDS, word)
+            elif len(parts) == 2 and parts[1] in DATASET_NAME_SUBS:
+                yield from self._yield(self._dataset_names(), word)
         elif cmd == "stat":
             if len(parts) == 1:
                 yield from self._yield(STAT_SUBCOMMANDS, word)
-            elif len(parts) == 2 and parts[1] in ("select", "sniff", "describe", "status"):
-                yield from self._yield(self._dataset_names(), word)
+            elif len(parts) == 2 and parts[1] in STAT_NAME_SUBS:
+                yield from self._yield(self._stat_names(), word)
 
 
 _session = None
@@ -131,9 +141,11 @@ def _readline(prompt: str) -> str | None:
 
 
 def repl() -> int:
-    """交互式 CLI 提示符"""
-    print(f"stkoe 数据管理 CLI — 输入时 Tab 补全 / 实时提示")
+    """交互式 CLI 提示符（后台执行默认开启，`table scan --sync` 等可覆盖）"""
+    set_default_async(True)
+    print("stkoe 数据管理 CLI — 输入时 Tab 补全 / 实时提示")
     print(f"命令: {', '.join(TOP_COMMANDS)} | `table --help` 查看子命令 | `exit` 退出")
+    print("REPL 下任务默认后台执行（返回 task_id，用 `task log <id>` 观察）")
     while True:
         line = _readline(PROMPT)
         if line is None:

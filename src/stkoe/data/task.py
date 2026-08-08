@@ -2,13 +2,21 @@
 
 状态机：``submitted -> running <-> paused -> succeeded|failed|cancelled``
 
+执行模式：
+- CLI 单次命令默认同步（直接执行并返回结果，不产生后台任务）
+- REPL/交互式终端默认异步（``run_task(background=True)``，立即返回 TaskHandle）
+- 模式经 ``set_default_async()`` 全局切换（REPL 启动时开启），也支持每调用覆盖
+
+各模块统一经 ``defer(kind, ref, fn, background=...)`` 执行：同步返回业务结果，
+异步返回 TaskHandle（业务结果仅在任务登记中可见）。
+
 - 进度：``progress``(0..1) 与 ``stage``(当前活动) 持久化；flush 节流（分区边界批量落盘）
 - 日志：批量写 ``stkoe_task_logs``，``task_log()`` 按 ``seq`` 增量拉取（REPL/grpc 轮询）
 - pause/stop 协作式：任务在分区边界调用 ``ctl.check()``；纯顺序快任务不支持打断
 - 并发安全：后台任务用独立连接（``catalog().new_conn()``），WAL 多连接读写分离
 """
+import os
 import threading
-import time
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +32,7 @@ PAUSE_POLL = 0.2  # 暂停时轮询间隔（秒）
 _executor: ThreadPoolExecutor | None = None
 _controls: dict[str, "TaskControl"] = {}
 _reg_lock = threading.Lock()
+_default_async = os.getenv("STKOE_ASYNC", "").strip().lower() in ("1", "true", "yes")
 
 
 class TaskCancelled(Exception):
@@ -135,6 +144,33 @@ class TaskControl:
             )
 
 
+# ---------- 执行模式 ----------
+
+def set_default_async(v: bool) -> None:
+    """切换默认执行模式：True=后台任务（REPL/grpc），False=同步直执行行（CLI）"""
+    global _default_async
+    _default_async = bool(v)
+
+
+def is_default_async() -> bool:
+    return _default_async
+
+
+def defer(kind: str, ref: str, fn, *, background: bool | None = None,
+          result_fn=None, **run_kw):
+    """统一任务入口：同步执行返回 ``result_fn``（缺省为 fn 返回值），异步返回 TaskHandle。
+
+    - ``fn(conn, ctl)``：conn 为主连接时可为 None（同步）；后台时 worker 注入独立连接
+    - ``result_fn(result)``：同步模式下把 fn 的原始结果转成对外返回值（默认原样）
+    """
+    if background is None:
+        background = _default_async
+    if background:
+        return run_task(kind, ref, fn, background=True)
+    result = fn(None, None)
+    return result_fn(result) if result_fn else result
+
+
 def _pool() -> ThreadPoolExecutor:
     global _executor
     if _executor is None:
@@ -237,6 +273,30 @@ def task_list(*, status: str | None = None, type: str | None = None,
     args.append(limit)
     rows = catalog().conn.execute(sql, args).fetchall()
     return [_to_handle(r) for r in rows]
+
+
+def task_meta(task_id: str) -> dict:
+    """任务详情：状态/进度/阶段/错误/时间 + 最近日志摘要（REPL 轮询用）"""
+    from . import catalog
+    row = catalog().conn.execute(
+        "SELECT * FROM stkoe_tasks WHERE task_id=?", (task_id,)
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"task not found: {task_id}")
+    logs = task_log(task_id, limit=5)
+    return {
+        "task_id": row["task_id"],
+        "type": row["type"],
+        "object_ref": row["object_ref"],
+        "status": row["status"],
+        "progress": row["progress"],
+        "stage": row["stage"],
+        "error": row["error"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "finished_at": row["finished_at"],
+        "recent_logs": [l.message for l in logs],
+    }
 
 
 def _running_control(task_id: str) -> TaskControl:

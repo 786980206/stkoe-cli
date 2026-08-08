@@ -1,4 +1,4 @@
-"""mock 数据生成工具：参数化生成演示数据并写入 tables/ 后 sniff 注册
+"""mock 数据生成工具：参数化生成演示数据并写入 tables/ 后 scan 注册
 
 用法（CLI）：``stkoe mock <name> [--kind klday|tdcal|feature|common]``
 用法（SDK）：``data.mock.write("demo", data.mock.klday(n_syms=50), partition_by="year")``
@@ -9,8 +9,9 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from . import get_root, sniff
-from .table import SniffReport
+from . import get_root
+from .catalog.spec import TableScanReport
+from .table import scan
 
 # 申万一级行业（与旧 plugins/mock 一致）
 INDUSTRIES = [
@@ -133,8 +134,8 @@ def _panel(syms: list[str], start: str, end: str, per_sym: dict[str, dict]) -> p
     return df
 
 
-def write(name: str, df: pl.DataFrame, *, partition_by: str | None = None) -> SniffReport:
-    """写 tables/<name>/ 并 sniff 注册（返回 SniffReport）"""
+def write(name: str, df: pl.DataFrame, *, partition_by: str | None = None) -> TableScanReport:
+    """写 tables/<name>/ 并 scan 注册（返回 TableScanReport）"""
     d = get_root() / "tables" / name
     d.mkdir(parents=True, exist_ok=True)
     if partition_by:
@@ -143,12 +144,12 @@ def write(name: str, df: pl.DataFrame, *, partition_by: str | None = None) -> Sn
         df.write_parquet(d / "data", partition_by=[partition_by])
     else:
         df.write_parquet(d / f"{name}.parquet")
-    return sniff(name)
+    return scan(name)
 
 
 def write_demo(root: Path | None = None, *, n_syms: int = 100,
                start: str = "2020-01-01", end: str = "2023-12-31",
-               seed: int = 12345) -> list[SniffReport]:
+               seed: int = 12345) -> list[TableScanReport]:
     """生成一套演示表：mock_tdcal / mock_common / mock_klday / mock_feature"""
     from . import configure
     if root is not None:

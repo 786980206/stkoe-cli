@@ -1,0 +1,93 @@
+display_name: test_success_new
+description: can be modified by user
+category: unknown
+tags: []
+index_table: mock_index
+keys:
+- date
+- sym
+tables:
+- mock_partition_1
+- mock_partition_2
+columns:
+  date:
+    display_name: date
+    description: ''
+    data_type: Date
+    unit: null
+    formula: null
+    tags: []
+    as_index: true
+  sym:
+    display_name: sym
+    description: ''
+    data_type: String
+    unit: null
+    formula: null
+    tags: []
+    as_index: true
+  r:
+    display_name: r
+    description: ''
+    data_type: Float64
+    unit: null
+    formula: null
+    tags: []
+    as_index: false
+    source_table: mock_partition_1
+    source_field: r
+  fv:
+    display_name: fv
+    description: ''
+    data_type: Float64
+    unit: null
+    formula: null
+    tags: []
+    as_index: false
+    source_table: mock_partition_1
+    source_field: fv
+  year:
+    display_name: year
+    description: ''
+    data_type: Int32
+    unit: null
+    formula: null
+    tags: []
+    as_index: false
+    source_table: mock_partition_1
+    source_field: year
+  r_mock_partition_2:
+    display_name: r
+    description: ''
+    data_type: Float64
+    unit: null
+    formula: null
+    tags: []
+    as_index: false
+    source_table: mock_partition_2
+    source_field: r
+  ic:
+    display_name: ic
+    description: ''
+    data_type: String
+    unit: null
+    formula: null
+    tags: []
+    as_index: false
+    source_table: mock_partition_2
+    source_field: ic
+  year_mock_partition_2:
+    display_name: year
+    description: ''
+    data_type: Int32
+    unit: null
+    formula: null
+    tags: []
+    as_index: false
+    source_table: mock_partition_2
+    source_field: year
+materialized: true
+partition_by:
+- year
+create_time: '2026-08-04 14:37:36'
+update_time: '2026-08-04 14:37:38'

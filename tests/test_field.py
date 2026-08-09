@@ -100,7 +100,7 @@ def test_update_set_and_execute(root):
     assert out["dataset"] == "ds"
     assert "f1" in out["columns"]
     assert out["totalRows"] == 2
-    assert out["rows"][0]["f1"] == 3.0  # val*3 -> 3.0
+    assert {r["f1"] for r in out["rows"]} <= {3.0, 6.0}  # val*3；limit=1 取任意一行
 
 
 def test_execute_requires_bound_dataset(root):
@@ -142,7 +142,7 @@ def test_materialize_column_mismatch(root):
 
 
 def test_code_execute_without_registration(root):
-    """test_code：未注册公式直接执行（portal 测试-保存前预览）, 不写 catalog/磁盘"""
+    """test_code：未注册公式直接执行（测试-保存前预览）, 不写 catalog/磁盘"""
     _make_ds(root)
     code = "def calc(data):\n    return data.with_columns((pl.col('val') * 4).alias('v4'))"
     out = F.test_code("ds", code, limit=1)

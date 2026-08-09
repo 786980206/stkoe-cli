@@ -249,7 +249,7 @@ def list() -> list[TableMeta]:
 
 
 def candidates() -> list[str]:
-    """未登记但含 parquet 的表目录（portal「新建本地表」候选）"""
+    """未登记但含 parquet 的表目录（「新建本地表」候选）"""
     root = get_root() / "tables"
     if not root.exists():
         return []

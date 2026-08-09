@@ -5,7 +5,7 @@
 
 ## 项目概述
 
-stkoe 是从 DataCenter 仓库拆分出的独立量化研究项目（对应原 `stkoe/` 子目录，当前为 v0.4.0 功能状态），包含四大模块：
+stkoe 是从 DataCenter 仓库拆分出的独立量化研究项目（对应原 `stkoe/` 子目录，当前为 v0.4.8 功能状态），包含四大模块：
 
 - **`data/`**：数据管理框架（本指南重点，最近在迭代）
   - `table`：只读观察者 + sniff 元数据同步（已重构完成，v0.2.0）
@@ -14,14 +14,17 @@ stkoe 是从 DataCenter 仓库拆分出的独立量化研究项目（对应原 `
   - `mock`：参数化演示数据生成
   - `plugins/`：数据插件（`wsdata` 实时接入、`mock`）
 - **`factor/`**：因子研究框架（`core` 构建器、`zoo` 因子库、`operators`、`testers` 测试器）
-- **`portal/`**：Panel 可视化门户（因子测试报告查看器等）
+- **`grpc/`**：gRPC 数据服务（Execute JSON / Select Arrow IPC / RunTask 流式 / Health，端口 9569）
 - **`barra/`**：Barra 风格因子
+
+> **portal 已移除（v0.4.8）**：项目专注后端任务，无任何前端（Panel 门户目录与
+> panel 系依赖已删除；`factor/testers` 的 hvplot/holoviews 绘图保留，属因子测试报告产出）。
 
 ## 目录结构
 
 ```
 stkoe/
-├── pyproject.toml         # version 0.2.0；requires-python >=3.13
+├── pyproject.toml         # version 0.4.8；requires-python >=3.13
 ├── src/stkoe/
 │   ├── __main__.py        # CLI 入口 + REPL（prompt_toolkit，Tab 补全）
 │   ├── data/              # 数据管理框架
@@ -30,18 +33,18 @@ stkoe/
 │   │   ├── util.py        # 通用能力：FileInfo/footer/layout/signature/diff
 │   │   ├── query.py       # 谓词解析 + 文件级裁剪（to_expr/prune_files）
 │   │   ├── task.py        # 任务管理：同步/后台执行 + 日志/进度/暂停/取消
-│   │   ├── settings.py    # 配置：data_path + ignore_cols
+│   │   ├── settings.py    # 配置：data_path + ignore_cols + grpc_port
 │   │   ├── cli.py         # typer：table/config/mock/task/dataset/stat 子命令
 │   │   ├── mock.py        # 参数化数据生成 + write + write_demo
-│   │   ├── grpc/         # gRPC 服务：stkoe.proto + 生成 stub + server.py（端口 9569，config 可改）
+│   │   ├── dbt.py         # DBT manifest 元数据导入（table add/set --dbt-manifest）
 │   │   ├── catalog/       # db.py(SQLite schema)/spec.py(dataclass)/access.py(行访问)/json.py
 │   │   ├── dataset.py     # dataset：scan/create/sniff/materialize/select + 增量/自动分区（产物直接写 datasets/<name>/）
 │   │   ├── stat.py        # stat：dataset 统计物化（产物在 stats/<name>/，catalog type='stat'，依赖登记 stkoe_depends）
 │   │   ├── field.py       # field 业务：add/list/meta/rename/del + test_code/materialize（catalog 注册）
 │   │   └── plugins/       # wsdata.py / mock.py
 │   ├── factor/            # 因子框架（core/zoo/operators/testers）
-│   ├── portal/            # Panel 门户
-│   └── barra/
+│   ├── barra/             # Barra 风格因子
+│   └── grpc/              # gRPC 服务：stkoe.proto + 生成 stub + server.py（端口 9569，config 可改）
 └── tests/                 # pytest（conftest 提供 make_df/write_single/write_hive）
 ```
 
@@ -211,7 +214,73 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
   只依赖 dataset 的公共 API（`data_key`/`describe`/`select`），不触碰 dataset 私有实现。
 - 原则：field 迁移时优先复用 util/task/query/access，不把公共逻辑写回业务模块。
 
+## gRPC 接口（v0.4.3 起）
+
+协议见 `src/stkoe/grpc/stkoe.proto`，实现见 `src/stkoe/grpc/server.py`（仅绑定 127.0.0.1；
+端口缺省 9569，`config set --grpc-port` 可改；REPL 启动时自动后台起，`stkoe server run` 独立前台）。
+
+### RPC 一览
+
+| RPC | 用途 | 数据形态 |
+|---|---|---|
+| `Execute` | 元数据/列表/状态等小结果 | JSON 字符串（`json_out`），业务错误放 `code`/`error` 响应体 |
+| `Select` | 表格查询 | Arrow IPC 完整帧（`ipc`）+ schema JSON；支持分页/过滤/排序/total |
+| `RunTask` | 长任务（物化/公式/统计） | 服务端流式 `TaskEvent`（log/progress/result/done/error） |
+| `Health` | 存活探活 + 版本 | `status="ok"` + `version` |
+
+### Execute 动词（cmd + args，等价 CLI 位置参数）
+
+- `config show`、`version`、`task list`
+- `table`：`list` / `candidates`（未登记候选表）/ `meta <name>` / `add <name> [--dbt_manifest=]` /
+  `set <name> ...` / `del <name>` / `scan <name>`
+- `dataset`：`list` / `meta <name>`（describe 别名）/ `add <name> <index> <members...>` /
+  `set <name> ...` / `del <name>` / `scan <name>` / `validate <name> --mode full`
+- `stat`：`list` / `meta <name>` / `get <name>`
+- `field`：`list` / `meta <name>` / `create <name> <dataset> [formula=]` / `set <name> ...` /
+  `rename <old> <new>` / `del <name>`
+
+> **同步契约（v0.4.6）**：table/dataset 的 add/del/set/scan 在 Execute 中一律强制
+> `background=False`，成功/失败当场返回（含 `DependencyError`），绝不落入后台任务。
+
+### Select 参数
+
+- `name` + `type`（`""` 自动识别：先 dataset 后 table；可显式 `table`/`dataset`/`stat`/`field`）
+- `columns`（缺省=全部非工具列）、`where`（CLI 同款谓词）、`partition`（dataset 分区前缀）、`include_tool`
+- 分页：`page`（1 基）+ `page_size`（缺省 50）；`page=0` 不分页返回全量
+- 过滤：`filter`（AND 语义，与 where 叠加）；排序：`sort`（null 排最后）
+
+### RunTask 分支（cmd + args → 事件流）
+
+- `dataset`：`scan <name>`（返回物化契约 payload：datasetId/columns/rows/dataFile/elapsedMs）、
+  `materialize <name>`、`add <name> ...`
+- `field`：`test <name>`、`materialize <name>`（返回 `{rows, column}`）、`create/test-code <name> <dataset> <code>`
+- `stat`：`add <name> [--all|--group-col c]`、`get <name> [--refresh]`
+- `task`：`stop <id>` 等
+
+### 序列化注意
+
+- `_dumps` 处理 `pl.Date/Decimal/datetime/time` → JSON（isoformat/float），勿绕过它直接 `json.dumps`
+- 对象响应经 `_jsonable`（dataclass `to_dict`）；新增返回 dataclass 时须提供 `to_dict`
+- 生成 stub 后需手动把 `stkoe_pb2_grpc.py` 顶部 `import stkoe_pb2` 改为 `from . import stkoe_pb2`
+
 ## 演进记录
+
+### v0.4.8（portal 移除 + 后端收尾）
+- **portal 移除**：删除 `src/stkoe/portal/` 全部内容（Panel 门户：apps/components/pages/
+  viewers/models/theme/template）；pyproject 移除 panel/panel-material-ui/panel-splitjs/
+  panel-graphic-walker/python-frontmatter/jinja2；.gitignore 移除 portal/results 条目；
+  `factor/testers` 的 hvplot/holoviews 绘图保留（因子测试报告产出，非门户）；
+  `factor/zoo.ipynb` 去掉 panel 渲染与 portal 路径引用；源码/tests 中 "portal" 措辞注释清理。
+- **端口冲突检测修复**：`grpc/server.py::StkoeServer.start()` 此前依赖
+  `add_insecure_port` 返回值判冲突，但 grpcio 在端口被占用时可能**静默返回同端口**
+  （不报错、start 也不抛）——改为启动前用原始 socket bind 预检，占用立即抛
+  `StkoeServerError`；回归 `test_port_conflict`。
+- **测试修复**：
+  - `test_task_cancelled_exception` 时序敏感：改为轮询目标终态 `cancelled`
+    （原来等 `submitted` 消失，可能在 `running` 阶段就退出）。
+  - `test_field::test_update_set_and_execute` 行序依赖：`rows[0]` 断言改为集合断言
+    （join 行序不保证）。
+- 测试：全量 144 用例绿（新增 README.md + AGENTS.md gRPC 接口文档）。
 
 ### v0.4.1（维护：动词统一 + 级联/依赖修复）
 - **CLI 动词统一**：table/dataset/stat 三组命令统一为 `add/list/meta/get/scan/del/set/rename`，
@@ -320,5 +389,5 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
 
 ### 待办 / 已知缺口
 - field 已随 v0.4.2 迁移完成（catalog 注册 + test_code/materialize）；无重大遗留模块。
-- `test_task.py` 中 pause/resume/cancel 相关用例对时序敏感，全量并行跑偶发 flaky（单文件跑稳定）。
-- portal 对接面按需扩展（Execute 动词 / RunTask 分支），见 v0.4.4。
+- `test_task.py` 中 pause/resume/cancel 相关用例对时序敏感，全量并行跑偶发 flaky
+  （单文件跑稳定）；v0.4.8 已修复 `test_task_cancelled_exception` 的轮询竞态。

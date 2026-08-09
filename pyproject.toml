@@ -4,16 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stkoe"
-version = "0.2.0"
+version = "0.4.8"
 requires-python = ">=3.13"
 dependencies = [
-    # --- Portal / UI ---
-    "panel>=1.9.3",
-    "panel-material-ui>=0.9.1",
-    "panel-splitjs>=0.4.0",
-    "panel-graphic-walker>=0.6.5",
-    "python-frontmatter>=1.1.0",
-    "jinja2",
     # --- Data processing ---
     "polars>=1.36.1",
     "polars-ds>=0.10.4",
@@ -22,7 +15,7 @@ dependencies = [
     "factorium>=0.4.0",
     "polynx>=0.1.15",
     "numpy>=2",
-    # --- Visualization ---
+    # --- Visualization (factor 测试报告绘图) ---
     "holoviews>=1.22.1",
     "hvplot>=0.12.2",
     # --- Utilities ---

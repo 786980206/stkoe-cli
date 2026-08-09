@@ -257,7 +257,7 @@ def test(name: str, *, limit: int = 200, ctl=None) -> dict:
 
 
 def test_code(dataset: str, code: str, *, limit: int = 200, ctl=None) -> dict:
-    """调试执行未注册公式（portal 测试-保存前预览）：不写 catalog/磁盘。
+    """调试执行未注册公式（测试-保存前预览）：不写 catalog/磁盘。
 
     与 ``test`` 同执行路径（dataset 加载 + calc(data)），但代码/数据集
     由调用方显式传入，结果不落盘。
@@ -297,7 +297,7 @@ def materialize(name: str, *, ctl=None) -> dict:
         raise ValueError("指标未绑定数据集")
     if not code:
         raise ValueError(f"指标公式为空（{name}）")
-    col = name  # 物化列 = 指标名（portal 契约：结果须有同名列）
+    col = name  # 物化列 = 指标名（契约：结果须有同名列）
     t0 = time.time()
     if ctl:
         ctl.info(f"物化指标 {name}：数据集 {ds} …")

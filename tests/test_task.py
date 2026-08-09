@@ -128,9 +128,11 @@ def test_task_cancelled_exception(root):
 
     h = run_task("test_cancel_x", "obj", _mk, background=True)
     deadline = time.time() + 10
-    while data.task_list(status="submitted", type="test_cancel_x") and time.time() < deadline:
+    cancelled = data.task_list(status="cancelled", type="test_cancel_x")
+    while not cancelled and time.time() < deadline:
         time.sleep(0.05)
-    assert data.task_list(status="cancelled", type="test_cancel_x")
+        cancelled = data.task_list(status="cancelled", type="test_cancel_x")
+    assert cancelled
 
 
 def test_task_clean(root):

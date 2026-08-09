@@ -196,7 +196,7 @@ def test_run_task_dataset_materialize_payload(client, root):
     events = list(resp)
     assert [e.type for e in events][-1] == "done"
     res = json.loads([e for e in events if e.type == "result"][0].data)
-    # portal 契约：datasetId / rows / dataFile / elapsedMs
+    # 物化结果契约：datasetId / rows / dataFile / elapsedMs
     assert res["datasetId"] == "ds"
     assert res["rows"] == 8
     assert res["dataFile"] and Path(res["dataFile"]).exists()
@@ -207,7 +207,7 @@ def test_run_task_dataset_materialize_payload(client, root):
 # ---------- Execute 同步契约：REPL/异步模式下 table/* 也同步完成 ----------
 
 def test_execute_table_ops_sync_in_async_mode(client, root):
-    """回归：portal 删除表失败无感知 —— REPL 服务（set_default_async(True)）把
+    """回归：删除表失败无感知 —— REPL 服务（set_default_async(True)）把
     table add/del 转成后台任务，Execute 立即返回成功，真实失败只进任务登记。
 
     修复后 Execute RPC 的 table add/del/set 全部强制同步（background=False）：
@@ -241,7 +241,7 @@ def test_execute_table_ops_sync_in_async_mode(client, root):
 
 def test_execute_table_add_report_jsonable(client, root):
     """回归：table add 的 Execute 结果含 TableScanReport，此前缺 to_dict 导致
-    “Object of type TableScanReport is not JSON serializable”，portal 前端报
+    “Object of type TableScanReport is not JSON serializable”，前端报
     status: Unknown。修复后返回完整 JSON 报告。"""
     # 只写物理文件不登记 —— table add 就是“发现资产”语义
     write_single(root, "t2", pl.DataFrame({

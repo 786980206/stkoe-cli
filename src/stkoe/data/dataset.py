@@ -771,7 +771,7 @@ def data_key(name: str) -> str:
 
 
 def materialized_payload(name: str, *, elapsed_ms: int = 0) -> dict:
-    """物化任务 portal 契约：{datasetId, columns, rows, dataFile, elapsedMs}
+    """物化任务结果契约：{datasetId, columns, rows, dataFile, elapsedMs}
 
     供 gRPC RunTask 的 dataset scan/materialize 分支返回；rows 直接数产物。
     """
@@ -797,7 +797,7 @@ def materialized_payload(name: str, *, elapsed_ms: int = 0) -> dict:
 
 
 
-# ---------- 校验（portal 集合一致性） ----------
+# ---------- 校验（集合一致性） ----------
 
 def _table_schema_cols(name: str) -> set[str]:
     """物理表列名（只读 schema，不读数据页）"""

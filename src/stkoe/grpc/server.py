@@ -13,6 +13,7 @@
 import io
 import json
 import queue
+import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -383,7 +384,7 @@ def _run_task_body(cmd: str, args: list[str], ctl) -> dict:
             ds = dataset.describe(name)
             t0 = time.time()
             report = dataset.scan_impl(ds, ctl=ctl)
-            # portal 物化结果契约（DatasetMaterializeResult）：报告字段对前端
+            # 物化结果契约（DatasetMaterializeResult）：报告字段对前端
             # 无意义，直接返回产物形态；scan 与 materialize 同路径同结果。
             return dataset.materialized_payload(
                 name, elapsed_ms=int((time.time() - t0) * 1000))
@@ -398,7 +399,7 @@ def _run_task_body(cmd: str, args: list[str], ctl) -> dict:
         if sub == "test" and name:
             return field.test(name, ctl=ctl)
         if sub == "test-code" and len(args) >= 3:
-            # 未注册公式调试（portal 测试-保存前预览）：dataset, code
+            # 未注册公式调试（测试-保存前预览）：dataset, code
             return field.test_code(args[1], args[2], ctl=ctl)
         if sub == "materialize" and name:
             return field.materialize(name, ctl=ctl)
@@ -514,6 +515,17 @@ class StkoeServer:
         """启动（非阻塞）；端口占用抛 StkoeServerError"""
         if self._server is not None:
             return self
+        # 端口预检：grpcio 的 add_insecure_port 在端口冲突时可能静默返回同端口
+        # （不报错、start 也不抛），故先用原始 socket 探测，占用立即抛错。
+        if self.port != 0:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.bind((self.host, self.port))
+            except OSError as e:
+                raise StkoeServerError(
+                    f"gRPC 端口 {self.port} 绑定失败（可能被占用/权限不足）") from e
+            finally:
+                probe.close()
         server = grpc.server(ThreadPoolExecutor(max_workers=self.max_workers))
         stkoe_pb2_grpc.add_StkoeServiceServicer_to_server(_StkoeServicer(), server)
         bound = server.add_insecure_port(f"{self.host}:{self.port}")

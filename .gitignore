@@ -33,6 +33,9 @@ env/
 # Logs
 *.log
 
+# 工具会话状态（opencode 等）
+.omo/
+
 # stkoe 本地配置（数据根目录/ignore_cols 等）
 /stkoe.json
 
@@ -40,6 +43,3 @@ env/
 *.parquet
 *.pkl
 *.bak
-
-# portal 因子测试结果（本地生成，不入库）
-/src/stkoe/portal/results

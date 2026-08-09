@@ -70,7 +70,7 @@ def to_filters_expr(filters) -> pl.Expr | None:
     """结构化过滤条件列表 -> AND 组合的 polars Expr（与 where 语义叠加）。
 
     每项为 ``{field, op, value}``，op ∈ eq/neq/gt/gte/lt/lte；值按列类型自动转换
-    缺失则忽略；未知列忽略（与 portal 语义一致，不因界面残留字段失败）。
+    缺失则忽略；未知列忽略（不因界面残留字段失败）。
     """
     if not filters:
         return None

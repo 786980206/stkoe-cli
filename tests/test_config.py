@@ -31,6 +31,7 @@ def test_default_config(monkeypatch, tmp_path):
     c = cfg.load_config()
     assert c.data_path is None
     assert c.ignore_cols == ("optime",)
+    assert c.log_level == "WARNING"
 
 
 def test_config_load_roundtrip(monkeypatch, tmp_path):
@@ -38,6 +39,15 @@ def test_config_load_roundtrip(monkeypatch, tmp_path):
     got = cfg.load_config()
     assert got.data_path == "/tmp/x"
     assert got.ignore_cols == ("_etl", "_tag")
+    assert got.log_level == "WARNING"
+
+
+def test_config_log_level_roundtrip(monkeypatch, tmp_path):
+    _write_cfg(monkeypatch, tmp_path, log_level="debug")
+    got = cfg.load_config()
+    assert got.log_level == "DEBUG"
+    _write_cfg(monkeypatch, tmp_path, log_level="TRACE")
+    assert cfg.load_config().log_level == "WARNING"
 
 
 def test_config_ignore_cols_override(monkeypatch, tmp_path):
@@ -112,3 +122,17 @@ def test_cli_config_set(monkeypatch, tmp_path):
     raw = json.loads(p.read_text("utf-8"))
     assert raw["data_path"] == "/cli/root"
     assert raw["ignore_cols"] == ["_a", "_b"]
+
+
+def test_cli_config_set_log_level(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+    from stkoe.data.cli import app
+
+    p = tmp_path / "stkoe.json"
+    monkeypatch.setenv("STKOE_CONFIG", str(p))
+    r = CliRunner().invoke(app, ["config", "set", "--log-level", "debug"])
+    assert r.exit_code == 0
+    assert cfg.load_config().log_level == "DEBUG"
+    r2 = CliRunner().invoke(app, ["config", "set", "--log-level", "bogus"])
+    assert r2.exit_code == 0
+    assert cfg.load_config().log_level == "WARNING"

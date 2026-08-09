@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 
 import polars as pl
 import pyarrow.parquet as pq
+from loguru import logger
 
 from .catalog.spec import ColumnMeta, FileDiff, TableLayout
 
@@ -102,6 +103,7 @@ def footer(path: Path) -> dict:
         name: (schema[name], norm_stat(lo.get(name)), norm_stat(hi.get(name)), nulls.get(name, 0))
         for name in schema
     }
+    logger.debug(f"footer read: {path.name} ({md.num_rows} rows, {len(schema)} cols)")
     return {
         "row_count": md.num_rows,
         "file_bytes": sum(md.row_group(i).total_byte_size for i in range(md.num_row_groups)),

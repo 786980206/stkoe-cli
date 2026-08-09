@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Iterable
 
 import polars as pl
+from loguru import logger
 
 from . import catalog, get_root, ignore_cols
 from .catalog import access
@@ -152,6 +153,7 @@ def add(name: str, *, all: bool = False, background: bool | None = None,
             for d in sorted(x for x in root.iterdir() if x.is_dir()):
                 if _object(_with_conn(conn), d.name) is None and any(d.rglob("*.parquet")):
                     out.append(_scan_impl(d.name, conn=conn))
+            logger.info(f"table add --all: registered {len(out)} table(s) from {root}")
             return out
         root = _root(name)
         if not root.exists():
@@ -159,6 +161,7 @@ def add(name: str, *, all: bool = False, background: bool | None = None,
         with catalog().txn() if conn is None else conn_txn(conn):
             if _object(_with_conn(conn), name) is not None:
                 raise TableExistsError(f"table already registered: {name} (use scan to refresh)")
+        logger.info(f"table add: registering {name} from {root}")
         report = _scan_impl(name, conn=conn)
         if dbt_manifest:
             _apply_dbt(name, dbt_manifest)
@@ -226,9 +229,14 @@ def get_lazy(name: str, *, columns: list[str] | None = None,
     if obj is None:
         raise TableNotFoundError(f"table not registered: {name}")
     files = prune_files(conn, obj["id"], partition, where)
+    logger.debug(f"table get[{name}]: {len(files)} file(s) after prune"
+                 f"{f' (partition={partition})' if partition is not None else ''}"
+                 f"{f' (where={where})' if where is not None else ''}")
     if not files:
         return pl.LazyFrame()
-    lf = pl.scan_parquet([_root(name) / f["rel_path"] for f in files], hive_partitioning=True)
+    paths = [_root(name) / f["rel_path"] for f in files]
+    logger.debug(f"table get[{name}]: reading {len(paths)} file(s) from disk")
+    lf = pl.scan_parquet(paths, hive_partitioning=True)
     if where is not None:
         lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
     if columns is not None:
@@ -323,12 +331,14 @@ def rename(old: str, new: str, *, background: bool | None = None) -> TableMeta |
                 if dst.exists():
                     raise FileExistsError(f"target dir already exists: {dst}")
                 src.rename(dst)
+                logger.debug(f"table rename[{old}->{new}]: moved dir {src} -> {dst}")
             meta = loads(obj["meta"])
             if meta.get("display_name") in ("", old):
                 meta["display_name"] = new
             access.update_object_meta(cx, obj["id"], meta, now_str=now())
             cx.execute("UPDATE stkoe_objects SET name=? WHERE id=?", (new, obj["id"]))
         _rename_cascade(old, new)
+        logger.info(f"table rename[{old}->{new}]: done (signature unchanged, no rescan)")
         return _to_meta(cx, _object(cx, new))
     return defer("table_rename", f"{old}->{new}", _run, background=background)
 
@@ -404,6 +414,8 @@ def del_(name: str, *, force: bool = False, background: bool | None = None) -> T
             dependents = access.dependents(cx, "table", name)
             if dependents and not force:
                 raise DependencyError(dependents)
+            logger.info(f"table del[{name}]: removing registration"
+                        f"{f' with {len(dependents)} dependent(s) cascaded' if force and dependents else ''}")
             cx.execute("DELETE FROM stkoe_objects WHERE id=?", (obj["id"],))
         if force:
             _drop_dependents_cascade(name)
@@ -464,11 +476,15 @@ def _scan_impl(name: str, *, resync: bool = False, cascade: bool = True,
         version_before = 0 if implicit else obj["version"]
         if implicit:
             obj = _register(cx, name)
+            logger.info(f"table scan[{name}]: implicit register (dir discovered, version=1)")
         cat = access.get_data_files(cx, obj["id"])
         stats = access.get_stats(cx, obj["id"]) if cat else {}
         diffs = diff_files(disk, cat)
         layout, pkeys = detect_layout([f.rel_path for f in disk])
         changed = resync or bool(diffs)
+        logger.debug(f"table scan[{name}]: {len(disk)} disk file(s), {len(cat)} catalog "
+                     f"file(s), {len(diffs)} diff(s), layout={layout.value}, changed={changed}"
+                     f"{' (resync)' if resync else ''}")
 
         if not changed:
             part_set = {r["partition_path"] for r in cat.values()}
@@ -483,6 +499,7 @@ def _scan_impl(name: str, *, resync: bool = False, cascade: bool = True,
                     ftr = {"row_count": old["row_count"], "file_bytes": old["file_bytes"],
                            "schema": loads(old["schema"] or "{}"), "stats": stats.get(old["id"], {})}
                 else:
+                    logger.debug(f"table scan[{name}]: reading footer of {f.rel_path}")
                     ftr = footer(root / f.rel_path)
                 payload.append((f, ftr, partition_of(f.rel_path)))
 
@@ -509,6 +526,8 @@ def _scan_impl(name: str, *, resync: bool = False, cascade: bool = True,
             access.update_object_meta(cx, obj["id"], meta, signature=signature(disk),
                                       now_str=now(), bump=not implicit)
             partition_count = len({p for _, _, p in payload}) if disk else 0
+            logger.info(f"table scan[{name}]: {version_before} -> {version_after} "
+                        f"({len(payload)} file(s), {partition_count} partition(s))")
 
     triggered: tuple[str, ...] = ()
     if cascade and changed:
@@ -533,8 +552,11 @@ def _notify_downstream(name: str) -> list[str]:
             elif d["obj_type"] == "stat":
                 _stat.scan(d["obj_name"])
             out.append(f"{d['obj_type']}:{d['obj_name']}")
+            logger.info(f"table scan[{name}]: triggered downstream {d['obj_type']}:{d['obj_name']}")
         except Exception as e:
             out.append(f"{d['obj_type']}:{d['obj_name']}(err:{type(e).__name__})")
+            logger.warning(f"table scan[{name}]: downstream {d['obj_type']}:{d['obj_name']} "
+                           f"failed: {type(e).__name__}: {e}")
     return out
 
 
@@ -549,7 +571,10 @@ def _ensure_fresh(name: str):
     disk_sig = signature(disk_files(root))
     if obj is None or disk_sig != (obj["signature"] or ""):
         # 快检路径的自动 sniff 不级联下游（避免读路径触发 dataset/stat 重算循环）
+        logger.debug(f"table get[{name}]: signature mismatch (disk differs), auto-scanning")
         _scan_impl(name, cascade=False)
+    else:
+        logger.debug(f"table get[{name}]: signature match, fresh (no scan)")
 
 
 def data_key(name: str) -> str:

@@ -195,6 +195,7 @@ def show():
         "ignore_cols": list(c.ignore_cols),
         "grpc_host": c.grpc_host,
         "grpc_port": c.grpc_port,
+        "log_level": c.log_level,
         "resolved_data_path": str(resolve_data_path()),
     })
 
@@ -205,6 +206,7 @@ def set(
     ignore_cols: str = typer.Option(None, "--ignore-cols", help="忽略的工具字段，逗号分隔（可多个）"),
     grpc_host: str = typer.Option(None, "--grpc-host", help="gRPC 服务绑定地址（缺省 127.0.0.1）"),
     grpc_port: int = typer.Option(None, "--grpc-port", help="gRPC 服务端口（缺省 9569）"),
+    log_level: str = typer.Option(None, "--log-level", help="日志级别：DEBUG|INFO|WARNING|ERROR（缺省 WARNING）"),
 ):
     """修改配置并写入 stkoe.json"""
     c = load_config()
@@ -213,6 +215,7 @@ def set(
         ignore_cols=tuple(ignore_cols.split(",")) if ignore_cols else c.ignore_cols,
         grpc_host=grpc_host or c.grpc_host,
         grpc_port=grpc_port if grpc_port is not None else c.grpc_port,
+        log_level=log_level or c.log_level,
     )
     p = save_config(new)
     _print_json({"written": str(p)})

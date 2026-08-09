@@ -17,6 +17,7 @@ import shutil
 from pathlib import Path
 
 import polars as pl
+from loguru import logger
 
 from . import catalog, dataset, get_root, table
 from .catalog import access
@@ -138,13 +139,18 @@ def _compute_for(target_type, target_name, group: str):
 def _need_recompute(conn, name: str, group: str, target: tuple[str, str]) -> bool:
     file = _group_file(name, group)
     if not file.exists():
+        logger.debug(f"stat {name} group={group}: cache file missing, recompute")
         return True
     entry = _groups(conn, name).get(group)
     try:
         cur = _target_key(*target)
     except Exception:
+        logger.debug(f"stat {name} group={group}: data_key unavailable, recompute")
         return True
-    return entry is None or entry.get("data_key") != cur
+    stale = entry is None or entry.get("data_key") != cur
+    logger.debug(f"stat {name} group={group}: cache {'stale' if stale else 'fresh'} "
+                 f"(entry_data_key={entry.get('data_key') if entry else None}, cur={cur})")
+    return stale
 
 
 def _cache_write(conn, name: str, group: str, df: pl.DataFrame, key: str) -> None:
@@ -281,11 +287,15 @@ def add(name: str, *, group_col: list[str] | None = None, all_: bool = False,
         target = _prepare(cx, name)
         groups = _resolve_groups(cx, name, *target, group_cols=group_col, all_=all_)
         _validate_groups(*target, groups)
+        logger.info(f"stat add[{name}]: target={target[0]}:{target[1]}, groups={groups}"
+                    f"{' (refresh)' if refresh else ''}")
         for i, g in enumerate(groups):
             ctl.check()
             ctl.stage(f"stat group={g} ({i + 1}/{len(groups)})")
             if not refresh and not _need_recompute(cx, name, g, target):
+                logger.debug(f"stat add[{name}] group={g}: cache fresh, skip")
                 continue
+            logger.debug(f"stat add[{name}] group={g}: computing stats")
             df = _compute_for(*target, g)
             with conn_txn(cx):
                 _cache_write(cx, name, g, df, _target_key(*target))
@@ -352,9 +362,11 @@ def get(name: str, *, group_col: str | None = None, all_: bool = False,
             if not refresh and not _need_recompute(cx, name, g, target):
                 try:
                     out[g] = pl.read_parquet(_group_file(name, g))
+                    logger.debug(f"stat get[{name}] group={g}: cache hit, read from disk")
                     continue
                 except Exception:
                     pass
+            logger.debug(f"stat get[{name}] group={g}: recompute (cache miss/stale)")
             df = _compute_for(*target, g)
             with conn_txn(cx):
                 _cache_write(cx, name, g, df, _target_key(*target))
@@ -416,12 +428,14 @@ def _scan_single(name: str, refresh: bool = False) -> dict:
     recomputed, fresh = [], []
     for g in builtins.list(_groups(conn, name)):
         if refresh or _need_recompute(conn, name, g, target):
+            logger.debug(f"stat scan[{name}] group={g}: recompute")
             df = _compute_for(*target, g)
             with conn_txn(conn):
                 _cache_write(conn, name, g, df, _target_key(*target))
             recomputed.append(g)
         else:
             fresh.append(g)
+    logger.info(f"stat scan[{name}]: recomputed={recomputed}, fresh={fresh}")
     return {"name": name, "target": f"{target[0]}:{target[1]}",
             "recomputed": recomputed, "fresh": fresh}
 

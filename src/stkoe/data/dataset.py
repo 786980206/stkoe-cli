@@ -22,6 +22,7 @@ import threading
 from pathlib import Path
 
 import polars as pl
+from loguru import logger
 
 from . import catalog, get_root, table
 from .catalog import access
@@ -133,6 +134,7 @@ def scan_spec(index_table: str, *tables: str, keys: list[str] | None = None) -> 
     index_by_name = {c.name: c for c in metas[0].columns}
     if keys is None:
         keys = [c.name for c in metas[0].columns if not c.is_tool]
+        logger.debug(f"dataset scan_spec[{index_table}]: join keys auto-derived = {keys}")
     else:
         missing = [k for k in keys if k not in index_by_name]
         if missing:
@@ -145,6 +147,7 @@ def scan_spec(index_table: str, *tables: str, keys: list[str] | None = None) -> 
     for t, cs in zip(members[1:], colsets[1:]):
         missing = [k for k in keys if k not in cs]
         if missing:
+            logger.warning(f"dataset scan_spec[{index_table}]: member {t} missing join keys {missing}")
             return {"ok": False, "message": f"member table '{t}' missing join keys: {missing}"}
 
     columns: list[ColumnMeta] = []
@@ -246,15 +249,21 @@ def _partition_plan(dm: DatasetMeta, lf: pl.LazyFrame) -> dict | None:
     if im is not None and im.layout.value == "hive":
         for k in im.partition_by:
             if k in schema and schema[k].is_temporal():
+                logger.debug(f"dataset {dm.name}: partition plan mirrors index HIVE key '{k}'")
                 return {"gran": "identity", "dm_key": k, "lo": None, "hi": None}
     if not tkeys:
+        logger.debug(f"dataset {dm.name}: partition plan = flat (no temporal join key)")
         return None
     key = tkeys[0]
     lo, hi = _minmax(lf, key)
     rows = _est_rows(dm.index_table)
     if rows < _PARTITION_MIN_ROWS:
+        logger.debug(f"dataset {dm.name}: partition plan = flat "
+                     f"(index rows {rows} < {_PARTITION_MIN_ROWS})")
         return None
     gran = _pick_granularity((hi - lo).days, rows)
+    logger.debug(f"dataset {dm.name}: partition plan = {gran} on '{key}' "
+                 f"(rows={rows}, span={(hi - lo).days}d)")
     return {"gran": gran, "dm_key": key, "lo": lo, "hi": hi}
 
 
@@ -377,6 +386,9 @@ def materialize_job(dm: DatasetMeta, conn, ctl: TaskControl,
     rebuilt: list[str] = []
     changed = False
     incremental = bool(prev_deps)
+    logger.debug(f"dataset {dm.name}: materialize mode = "
+                 f"{'incremental' if incremental else 'full'}, "
+                 f"prev materialized={prev_materialized}")
 
     if plan is None:
         # flat：单文件全量
@@ -384,9 +396,12 @@ def materialize_job(dm: DatasetMeta, conn, ctl: TaskControl,
         dep = _dep_signature(cx, tabs, {t: builtins.set(_table_ids(cx, t)) for t in tabs})
         if resync or prev_deps.get("") != dep or not target.exists():
             ctl.stage("materializing (flat)")
+            logger.debug(f"dataset {dm.name}: flat rebuild (dep changed / missing)")
             lf.sink_parquet(target)
             rebuilt.append("")
             changed = True
+        else:
+            logger.debug(f"dataset {dm.name}: flat up-to-date (dep match), skip")
         new_deps = {"": dep}
         partition_by, partition_gran = (), ""
     else:
@@ -424,8 +439,10 @@ def materialize_job(dm: DatasetMeta, conn, ctl: TaskControl,
             part_file = out_dir / f"part={value}" / "data.parquet"
             if not resync and prev_deps.get(value) == dep and part_file.exists():
                 new_deps[value] = dep
+                logger.debug(f"dataset {dm.name}: part={value} up-to-date (dep match), skip")
                 continue
             part_file.parent.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"dataset {dm.name}: rebuilding part={value} (dep changed / missing)")
             lf.filter(part_filter).sink_parquet(part_file)
             new_deps[value] = dep
             rebuilt.append(value)
@@ -435,6 +452,8 @@ def materialize_job(dm: DatasetMeta, conn, ctl: TaskControl,
 
     dm2 = _update_meta(cx, dm, new_deps, partition_by=partition_by,
                        partition_gran=partition_gran, bump=prev_materialized and changed)
+    logger.info(f"dataset {dm.name}: materialize done, changed={changed} "
+                f"rebuilt={len(rebuilt)} partition(s), version {version_before} -> {dm2.version}")
     return DatasetScanReport(
         name=dm.name, version_before=version_before, version_after=dm2.version,
         materialized=True, changed=changed, incremental=incremental,
@@ -523,8 +542,11 @@ def add(name: str, index_table: str, *tables: str, keys: list[str] | None = None
                       meta=meta_extra)
         if force:
             shutil.rmtree(_root(name), ignore_errors=True)
+            logger.info(f"dataset add[{name}]: force redefine, cleared old materialization")
         if materialize:
             dm = _dataset_meta(cx, _object(cx, name))
+            logger.info(f"dataset add[{name}]: registered, auto-materializing"
+                        f" (index={index_table}, members={len(tables)})")
             return materialize_job(dm, cx, ctl)
         return None
 
@@ -566,10 +588,16 @@ def get_lazy(name: str, *, columns: list[str] | None = None,
     with _lock(name):
         dm = describe(name)
         if not dm.materialized or not dm.curated:
+            logger.info(f"dataset get[{name}]: materialized={dm.materialized} "
+                        f"curated={dm.curated}, auto-materializing before read")
             scan_impl(dm, conn=catalog().conn)
             dm = describe(name)
+        else:
+            logger.debug(f"dataset get[{name}]: materialized & curated, read directly")
     if dm.materialized:
         lf = pl.scan_parquet(_mat_dir(name), hive_partitioning=True)
+        logger.debug(f"dataset get[{name}]: reading materialized parquet"
+                     f"{f' partition={partition}' if partition else ''}")
         if partition is not None:
             names = builtins.set(lf.collect_schema().names())
             if "part" not in names:
@@ -577,6 +605,7 @@ def get_lazy(name: str, *, columns: list[str] | None = None,
             # hive 分区值可能是 Date/Int，统一 cast String 前缀匹配
             lf = lf.filter(pl.col("part").cast(pl.String).str.starts_with(partition))
     else:
+        logger.debug(f"dataset get[{name}]: no materialization, live join view")
         lf = _view_lf(dm)
     if where is not None:
         from .query import to_expr
@@ -752,8 +781,10 @@ def _notify_stat_downstream(name: str) -> None:
         if d["obj_type"] == "stat":
             try:
                 stat._execute_scan(d["obj_name"])
-            except Exception:
-                pass
+                logger.info(f"dataset scan[{name}]: triggered downstream stat:{d['obj_name']}")
+            except Exception as e:
+                logger.warning(f"dataset scan[{name}]: downstream stat:{d['obj_name']} "
+                               f"failed: {type(e).__name__}: {e}")
 
 
 # ---------- 数据标识（供 stat 缓存有效性） ----------
@@ -841,6 +872,8 @@ def validate(name: str, *, mode: str = "full") -> dict:
                 row["index_unique"] = None
         report.append(row)
     out = {"name": name, "valid": valid, "tables": report}
+    logger.info(f"dataset validate[{name}]: mode={mode}, valid={valid}"
+                f"{' (missing keys: ' + str([m for r in report for m in r['missing']]) + ')' if not valid else ''}")
     with catalog().txn() as conn:
         obj = _object(conn, name)
         if obj is not None:

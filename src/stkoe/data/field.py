@@ -227,6 +227,7 @@ def _run_formula(ds: str, code: str, ctl) -> pl.DataFrame:
     df = result.collect()
     if df.height == 0:
         raise ValueError("计算结果为空（0 行）")
+    logger.debug(f"field formula on {ds}: calc(data) executed, {df.height} rows x {len(df.columns)} cols")
     return df
 
 

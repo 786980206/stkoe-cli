@@ -6,6 +6,7 @@
 import re
 
 import polars as pl
+from loguru import logger
 
 NUMERIC_DTYPES = {
     "Int8", "Int16", "Int32", "Int64",
@@ -173,4 +174,10 @@ def prune_files(conn, object_id: int, partition=None, where=None) -> list:
                     f" AND fs.col=? AND {cmp}))"
                 )
                 args += [col, col]
-    return conn.execute(sql, args).fetchall()
+    total = conn.execute(
+        "SELECT COUNT(*) FROM stkoe_data_files WHERE object_id=?", (object_id,)
+    ).fetchone()[0]
+    rows = conn.execute(sql, args).fetchall()
+    logger.debug(f"prune_files: object_id={object_id} partition={partition!r} where={where!r} "
+                 f"-> {len(rows)}/{total} files kept")
+    return rows

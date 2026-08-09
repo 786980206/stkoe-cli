@@ -96,7 +96,7 @@ def _execute(cmd: str, args: list[str]) -> dict:
     if cmd == "config" and (not args or args[0] == "show"):
         return {"config_file": str(cfg_path()), "data_path": c.data_path,
                 "grpc_host": c.grpc_host, "grpc_port": c.grpc_port,
-                "ignore_cols": list(c.ignore_cols)}
+                "log_level": c.log_level, "ignore_cols": list(c.ignore_cols)}
     if cmd == "version":
         return {"version": _pkg_version("stkoe")}
     if cmd == "task" and args:

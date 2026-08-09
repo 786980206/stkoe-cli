@@ -6,6 +6,7 @@ from loguru import logger
 from .catalog.db import Catalog
 from .settings import (
     StkoeConfig,
+    apply_log_level,
     config_path,
     load_config,
     resolve_data_path,
@@ -13,6 +14,7 @@ from .settings import (
 )
 
 STKOE_LOCAL_DATA: Path = resolve_data_path()
+apply_log_level()  # 启动即按配置（缺省 WARNING）设置 loguru 级别
 
 _catalog: Catalog | None = None
 
@@ -36,8 +38,8 @@ def config() -> StkoeConfig:
 
 
 def set_config(data_path: str | None = None, ignore_cols=None,
-               grpc_host: str | None = None,
-               grpc_port: int | None = None) -> StkoeConfig:
+               grpc_host: str | None = None, grpc_port: int | None = None,
+               log_level: str | None = None) -> StkoeConfig:
     """写入配置并落盘 stkoe.json；返回新配置"""
     cur = load_config()
     cfg = StkoeConfig(
@@ -45,8 +47,10 @@ def set_config(data_path: str | None = None, ignore_cols=None,
         ignore_cols=tuple(ignore_cols) if ignore_cols is not None else cur.ignore_cols,
         grpc_host=grpc_host if grpc_host is not None else cur.grpc_host,
         grpc_port=grpc_port if grpc_port is not None else cur.grpc_port,
+        log_level=log_level.upper() if log_level is not None else cur.log_level,
     )
     save_config(cfg)
+    apply_log_level(cfg.log_level)
     return cfg
 
 

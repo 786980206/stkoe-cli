@@ -188,7 +188,9 @@ def defer(kind: str, ref: str, fn, *, background: bool = False,
       异步时应用于持久化前的序列化结果）
     """
     if background:
+        logger.debug(f"task defer[{kind}:{ref}]: background submit")
         return run_task(kind, ref, fn, background=True, result_fn=result_fn)
+    logger.debug(f"task defer[{kind}:{ref}]: sync run")
     result = fn(None, console_ctl(kind, ref))
     return result_fn(result) if result_fn else result
 
@@ -283,8 +285,11 @@ def run_task(task_type: str, object_ref: str, fn, *, background: bool = False,
     with _reg_lock:
         _controls[task_id] = ctl
     if background:
+        logger.debug(f"task run[{task_type}:{object_ref}] {task_id}: queued to pool "
+                     f"(workers={_executor._max_workers if _executor else MAX_WORKERS})")
         _pool().submit(_worker, ctl, fn, result_fn)
         return _handle(ctl, "submitted")
+    logger.debug(f"task run[{task_type}:{object_ref}] {task_id}: sync execute")
     return _worker(ctl, fn, result_fn)
 
 

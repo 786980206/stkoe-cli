@@ -24,7 +24,7 @@ stkoe 是从 DataCenter 仓库拆分出的独立量化研究项目（对应原 `
 
 ```
 stkoe/
-├── pyproject.toml         # version 0.4.8；requires-python >=3.13
+├── pyproject.toml         # version 0.5.1；requires-python >=3.13
 ├── src/stkoe/
 │   ├── __main__.py        # CLI 入口 + REPL（prompt_toolkit，Tab 补全）
 │   ├── data/              # 数据管理框架
@@ -266,6 +266,32 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
 - 生成 stub 后需手动把 `stkoe_pb2_grpc.py` 顶部 `import stkoe_pb2` 改为 `from . import stkoe_pb2`
 
 ## 演进记录
+
+### v0.5.1（详细决策日志 + log_level 配置）
+- **日志覆盖决策点**：table/dataset/stat/field/task/query/util 各接口补 loguru 日志，
+  重点记录「是否校验 / 是否读盘 / 是否重算」类决策：
+  - table：`_ensure_fresh` 签名比对（匹配免 scan / 不匹配自动 scan）、`get_lazy` 裁剪后
+    文件数与实际读盘文件数、`_scan_impl` footer 读取（仅未命中指纹的文件）与版本 bump、
+    隐式注册、`_notify_downstream` 触发/失败。
+  - dataset：`_partition_plan` 分区决策（镜像 index HIVE / 行数+跨度选 gran / flat）、
+    `materialize_job` 增量 vs 全量模式、每分区「dep 匹配跳过 / 重建」、flat 全量重建、
+    `get_lazy` 读物化 vs 实时 join（物化缺失自动补物化）、`validate` 校验结果、
+    scan 级联下游 stat 触发/失败。
+  - stat：`_need_recompute` 缓存 fresh/stale 判定（cache 文件缺失 / data_key 变化）、
+    `stat get` 缓存命中读盘 vs 重算、`stat scan` 重算/跳过分组清单。
+  - field：`_run_formula` 执行结果（行×列）、物化完成。
+  - task：`defer`/`run_task` 同步 vs 后台分支（提交线程池 vs 同步执行）。
+  - query：`prune_files` 裁剪前后文件数（object/partition/where → kept/total）。
+  - util：`footer` 读盘记录（文件/行数/列数）。
+- **日志级别**：决策细节用 `debug`，业务结果（注册/物化/级联）用 `info`，失败用
+  `warning`/`error`；日志用 loguru 绑定 `{}` 占位符风格，不打断 CLI JSON/DataFrame 输出。
+- **log_level 配置**：`StkoeConfig` 新增 `log_level`（缺省 `WARNING`，合法值
+  DEBUG/INFO/WARNING/ERROR，非法值回退 WARNING）；`settings.apply_log_level()` 幂等重建
+  loguru stderr handler（同级别跳过，避免反复 remove/add）；`data/__init__` 导入即应用，
+  `data.set_config(log_level=...)` 落盘并即时生效；`config set --log-level` CLI 选项 +
+  `config show`/gRPC `config show` 返回 `log_level`。
+- 测试：全量 154 用例绿（新增 test_config 3 用例：log_level 默认值/roundtrip/非法回退 +
+  CLI set；修复 get_lazy 日志对 polars Expr 的真值判断崩溃）。
 
 ### v0.5.0（async 统一抽象 + CLI 输出标准化）
 - **async 抽象进 task 模块**：`TaskControl` 新增 `console` 模式——`console=True` 时

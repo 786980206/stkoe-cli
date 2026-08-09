@@ -29,6 +29,13 @@ from .catalog.spec import (
     TableScanReport,
     TaskHandle,
 )
+from .dbt import (
+    DbtManifestError,
+    DbtNodeNotFoundError,
+    apply_table_meta,
+    find_node,
+    load_manifest,
+)
 from .query import prune_files, to_expr
 from .task import TaskControl, conn_txn, defer
 from .util import (
@@ -115,13 +122,18 @@ def _with_conn(conn):
 
 # ---------- add ----------
 
-def add(name: str, *, all: bool = False, background: bool | None = None
+def add(name: str, *, all: bool = False, background: bool | None = None,
+        dbt_manifest: str | None = None
         ) -> TableScanReport | list[TableScanReport] | TaskHandle:
     """注册表：按目录内容生成登记 + 立即扫描同步。``all=True`` 批量发现注册。
 
-    - 目录不存在 → 报错（add 是"发现资产"语义，不 pummel 空注册）
+    - 目录不存在 → 报错（add 是"发现资产"语义，不空注册）
     - 已注册 → TableExistsError（更新数据内容请用 scan）
+    - ``dbt_manifest`` 非空 → 注册后合并 DBT manifest 同名模型元数据（表/列描述），
+      不 bump version；与 ``all=True`` 互斥。
     """
+    if all and dbt_manifest:
+        raise ValueError("--dbt-manifest 与 --all 互斥（批量发现无同名语义）")
     def _run(conn, ctl):
         if all:
             root = get_root() / "tables"
@@ -138,9 +150,40 @@ def add(name: str, *, all: bool = False, background: bool | None = None
         with catalog().txn() if conn is None else conn_txn(conn):
             if _object(_with_conn(conn), name) is not None:
                 raise TableExistsError(f"table already registered: {name} (use scan to refresh)")
-        return _scan_impl(name, conn=conn)
+        report = _scan_impl(name, conn=conn)
+        if dbt_manifest:
+            _apply_dbt(name, dbt_manifest)
+        return report
 
     return defer("table_add", name, _run, background=background)
+
+
+def _apply_dbt(name: str, manifest: str | None) -> tuple[str, int]:
+    """合并 DBT manifest 同名模型元数据到表 meta（独立事务，不 bump version）。
+
+    返回 (节点名, 命中列数)；找不到同名模型 / manifest 损坏抛对应错误。
+    """
+    with catalog().txn() as conn:
+        obj = _object(conn, name)
+        if obj is None:
+            raise TableNotFoundError(f"table not registered: {name}")
+        meta = loads(obj["meta"])
+        return _apply_dbt_locked(conn, obj["id"], meta, name, manifest)
+
+
+def _apply_dbt_locked(conn, obj_id: int, meta: dict, table_name: str,
+                      manifest: str | None) -> tuple[dict, int]:
+    """事务已持有时合并 dbt 元数据，返回 (新 meta, 应用列数) 并落库。"""
+    try:
+        node = find_node(load_manifest(manifest), table_name)
+    except DbtManifestError as e:
+        raise DbtManifestError(f"table {table_name}: {e}") from e
+    if node is None:
+        raise DbtNodeNotFoundError(f"table {table_name}: no matching model in dbt manifest "
+                                   "(matched by alias/name)")
+    meta, applied = apply_table_meta(meta, node, table_name)
+    access.update_object_meta(conn, obj_id, meta, now_str=now())
+    return meta, applied
 
 
 # ---------- get / meta / list ----------
@@ -222,10 +265,12 @@ def candidates() -> list[str]:
 
 def set(name: str, *, display_name: str | None = None, description: str | None = None,
         tags: list[str] | None = None, new_name: str | None = None,
-        background: bool | None = None, **extra) -> TableMeta | TaskHandle:
-    """修改表级元数据（description/display_name/tags/extra）；``new_name`` 改变名。
+        background: bool | None = None, dbt_manifest: str | None = None,
+        **extra) -> TableMeta | TaskHandle:
+    """修改表级元数据（description/display_name/tags/extra/dbt）；``new_name`` 改变名。
 
-    纯元数据修改不 bump version（版本只反映数据内容）；改名需移动目录（见 rename）。
+    ``dbt_manifest`` 非空时先合并 DBT manifest 同名模型元数据（表/列描述），
+    之后显式传参（--desc 等）优先于 dbt 结果。纯元数据修改不 bump version。
     """
     if new_name:
         return rename(name, new_name, background=background)
@@ -236,6 +281,8 @@ def set(name: str, *, display_name: str | None = None, description: str | None =
             if obj is None:
                 raise TableNotFoundError(f"table not registered: {name}")
             meta = loads(obj["meta"])
+            if dbt_manifest:
+                meta, _ = _apply_dbt_locked(cx, obj["id"], meta, name, dbt_manifest)
             if display_name is not None:
                 meta["display_name"] = display_name
             if description is not None:

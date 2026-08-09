@@ -225,6 +225,19 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
   field 顺序按源表列序（数值/字符串/时间列各自内部保持原序）。
 - 测试：全量 105 用例 `uv run pytest -q` 全绿；test_cli 补 REPL 顺序隔离（autouse 恢复同步默认）。
 
+### v0.4.5（--dbt-manifest：创建/修改物理表时导入 dbt 元数据）
+- **`table add` / `table set` 新增 `--dbt-manifest PATH`**：解析 DBT manifest 并合并同名
+  模型（alias 优先，其次 name）的表描述 / 标签 / 列描述 / 列标签 / data_type 到当前表元数据；
+  纯元数据合并**不 bump version**，显式传参（如 `--desc`）优先于 dbt 结果；与 `--all` 互斥。
+- **manifest 定位**：文件直接用；目录自动找 `<dir>/target/manifest.json`（再退 `<dir>/manifest.json`）；
+  不传时读环境变量 `STKOE_DBT_MANIFEST`，再退当前目录向上逐层找 `target/manifest.json`。
+  实现见 `src/stkoe/data/dbt.py`（resolve/load/find/apply 纯函数）。
+- **gRPC Execute**：`table add/set` 支持 `dbt_manifest` 参数；修复 `_parse_kv` 对
+  `--key=value` 内联等号形式（portal 桥此前会误解析为布尔标志）。
+- **portal 桥**：设置面板/创建编辑本地表 UI 新增 DBT Manifest 输入，走 `save_local_table_meta`
+  （create → `table add --dbt_manifest=`，修改 → `table set --dbt_manifest=`）。
+- 测试：全量 142 用例绿（新增 `tests/test_dbt_meta.py` 7 用例，覆盖解析/合并/别名/报错）。
+
 ### v0.4.4（portal 对接：gRPC 面扩展 + 数据层加固）
 - **Execute 新动词**（供 portal 桥调用）：`table candidates`（候选表）、`dataset validate`（配置校验）、
   `dataset get --extra`（字段快照 extra，如 category）、`stat get/add`（统计物化/写入，`--group`/`--refresh`）、

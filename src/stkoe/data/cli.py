@@ -87,9 +87,10 @@ def add(
     name: str = typer.Argument(None, help="表名；配合 --all 可省略"),
     all: bool = typer.Option(False, "--all", help="发现并注册 tables/ 下所有未注册且有数据的表"),
     background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局：CLI 同步 / REPL 后台）"),
+    dbt_manifest: str | None = typer.Option(None, "--dbt-manifest", help="DBT manifest 路径（文件/项目目录/自动发现），合并同名模型元数据"),
 ):
     """注册表（发现资产语义：目录不存在报错；已注册报错用 scan 刷新）"""
-    r = _finish(table.add(name, all=all, background=background))
+    r = _finish(table.add(name, all=all, background=background, dbt_manifest=dbt_manifest))
     if r is None:
         return
     if all:
@@ -102,6 +103,8 @@ def add(
     else:
         print(f"[{r.name}] v{r.version_before} -> v{r.version_after}"
               f" layout={r.layout.value} partitions={r.partition_count}")
+        if dbt_manifest:
+            print(f"dbt: applied manifest for {r.name}")
 
 
 @table_app.command("list")
@@ -174,11 +177,15 @@ def set(
     desc: str = typer.Option(None, "--desc"),
     tags: str = typer.Option(None, help="标签，逗号分隔"),
     new_name: str = typer.Option(None, "--new-name", help="改名（等价 table rename）"),
+    dbt_manifest: str | None = typer.Option(None, "--dbt-manifest",
+                                            help="DBT manifest 路径，合并同名模型元数据（表/列描述）"),
 ):
-    """修改表级元数据（display_name/description/tags）"""
+    """修改表级元数据（display_name/description/tags，可配合 --dbt-manifest）"""
     m = table.set(name, display_name=display_name, description=desc,
-                  tags=tags.split(",") if tags else None, new_name=new_name)
-    print(f"updated: {m.name} v{m.version} display_name={m.display_name}")
+                  tags=tags.split(",") if tags else None, new_name=new_name,
+                  dbt_manifest=dbt_manifest)
+    print(f"updated: {m.name} v{m.version} display_name={m.display_name}"
+          + (" dbt=applied" if dbt_manifest else ""))
 
 
 @table_app.command()

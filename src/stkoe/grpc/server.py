@@ -89,7 +89,8 @@ def _execute(cmd: str, args: list[str]) -> dict:
         if sub in ("meta", "get") and len(args) >= 2:
             return _jsonable(table.meta(args[1]))
         if sub == "add" and len(args) >= 2:
-            return _jsonable(table.add(args[1]))
+            _, kv = _parse_kv(args[1:])
+            return _jsonable(table.add(args[1], dbt_manifest=kv.get("dbt_manifest")))
         if sub == "set" and len(args) >= 2:
             return _jsonable(_table_set(table, args[1], args[2:]))
         if sub == "del" and len(args) >= 2:
@@ -150,13 +151,20 @@ def _execute(cmd: str, args: list[str]) -> dict:
 
 
 def _parse_kv(args: list[str]) -> tuple[str, dict]:
-    """位置参数 + ``key=value``/``--key value`` 混用解析；返回剩余位置参数与 KV 字典"""
+    """位置参数 + ``key=value``/``--key value``/``--key=value`` 混用解析；
+    返回剩余位置参数与 KV 字典（键统一下划线）。"""
     pos, kv = [], {}
+    name = None
     i = 0
     while i < len(args):
         a = args[i]
         if a.startswith("--"):
             key = a[2:].replace("-", "_")
+            if "=" in key:
+                k, v = key.split("=", 1)
+                kv[k] = v
+                i += 1
+                continue
             if i + 1 < len(args) and not args[i + 1].startswith("--"):
                 kv[key] = args[i + 1]
                 i += 2
@@ -177,7 +185,8 @@ def _table_set(table, name: str, args: list[str]):
                      display_name=kv.get("display_name"),
                      description=kv.get("description"),
                      tags=kv["tags"].split(",") if kv.get("tags") else None,
-                     source=kv.get("source"))
+                     source=kv.get("source"),
+                     dbt_manifest=kv.get("dbt_manifest"))
 
 
 def _dataset_add(dataset, args: list[str]) -> dict:

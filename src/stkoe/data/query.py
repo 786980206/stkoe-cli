@@ -56,6 +56,62 @@ def to_expr(where) -> pl.Expr:
     return exprs[0] if len(exprs) == 1 else exprs[0] & exprs[1]
 
 
+_OPS = {
+    "eq": lambda c, v: c == lit(v),
+    "neq": lambda c, v: c != lit(v),
+    "gt": lambda c, v: c > lit(v),
+    "gte": lambda c, v: c >= lit(v),
+    "lt": lambda c, v: c < lit(v),
+    "lte": lambda c, v: c <= lit(v),
+}
+
+
+def to_filters_expr(filters) -> pl.Expr | None:
+    """结构化过滤条件列表 -> AND 组合的 polars Expr（与 where 语义叠加）。
+
+    每项为 ``{field, op, value}``，op ∈ eq/neq/gt/gte/lt/lte；值按列类型自动转换
+    缺失则忽略；未知列忽略（与 portal 语义一致，不因界面残留字段失败）。
+    """
+    if not filters:
+        return None
+    exprs = []
+    for f in filters:
+        if not isinstance(f, dict) or not f.get("field"):
+            continue
+        op = (f.get("op") or "eq").strip().lower()
+        fn = _OPS.get(op)
+        if fn is None:
+            raise ValueError(f"unsupported filter op: {op}")
+        value = f.get("value")
+        if value is None:
+            continue
+        try:
+            exprs.append(fn(pl.col(f["field"]), str(value)))
+        except Exception:
+            continue
+    if not exprs:
+        return None
+    out = exprs[0]
+    for e in exprs[1:]:
+        out = out & e
+    return out
+
+
+def apply_sort(lf: pl.LazyFrame, sort) -> pl.LazyFrame:
+    """应用排序（null 排最后）：[{field, dir}] 逐项追加"""
+    if not sort:
+        return lf
+    by, desc = [], []
+    for item in sort:
+        if not isinstance(item, dict) or not item.get("field"):
+            continue
+        by.append(item["field"])
+        desc.append(bool(item.get("desc")))
+    if not by:
+        return lf
+    return lf.sort(by, descending=desc, nulls_last=True)
+
+
 def lit(v: str) -> pl.Expr:
     if re.fullmatch(r"-?\d+", v):
         return pl.lit(int(v))

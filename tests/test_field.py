@@ -82,3 +82,78 @@ def test_dep_registered(root):
         "SELECT dep_type, dep_name FROM stkoe_depends "
         "WHERE obj_type='field' AND obj_name='f1'").fetchall()
     assert ("dataset", "ds") in [(r["dep_type"], r["dep_name"]) for r in rows]
+
+def test_update_set_and_execute(root):
+    """field.update：formula/dataset 变更清空物化状态；test 执行返回前 N 行"""
+    _make_ds(root)
+    code1 = "def calc(data):\n    return data.with_columns((pl.col('val') * 2).alias('f1'))"
+    F.create("f1", "ds", formula=code1)
+    assert F.meta("f1").formula == code1
+
+    code2 = "def calc(data):\n    return data.with_columns((pl.col('val') * 3).alias('f1'))"
+    m = F.set("f1", formula=code2)
+    assert m.formula == code2
+    assert m.materialized is False
+
+    out = F.test("f1", limit=1)
+    assert out["name"] == "f1"
+    assert out["dataset"] == "ds"
+    assert "f1" in out["columns"]
+    assert out["totalRows"] == 2
+    assert out["rows"][0]["f1"] == 3.0  # val*3 -> 3.0
+
+
+def test_execute_requires_bound_dataset(root):
+    _make_ds(root)
+    F.create("f2", "ds", formula="def calc(data):\n    return data.with_columns((pl.col('val') * 2).alias('f2'))")
+    with pytest.raises(ValueError):
+        F.test("f_missing")
+    F.del_("f2")
+
+
+def test_materialize_writes_parquet_and_flag(root):
+    """物化：结果须含与指标名同名的列；落盘 fields/<name>/data.parquet；meta 置已物化"""
+    _make_ds(root)
+    code = (
+        "def calc(data):\n"
+        "    return data.with_columns((pl.col('val') * 2).alias('f_cls'))\n"
+    )
+    F.create("f_cls", "ds", formula=code)
+    m = F.meta("f_cls")
+    assert m.materialized is False
+
+    out = F.materialize("f_cls", ctl=None)
+    assert out["rows"] == 2
+    assert out["column"] == "f_cls"
+    fpath = (data.get_root() / "fields" / "f_cls" / "data.parquet")
+    assert fpath.exists()
+    df = pl.read_parquet(fpath)
+    assert df.columns == ["f_cls"]
+    m = F.meta("f_cls")
+    assert m.materialized is True
+
+
+def test_materialize_column_mismatch(root):
+    """物化要求结果含与指标名同列的列，否则报错"""
+    _make_ds(root)
+    F.create("f_bad", "ds", formula="def calc(data):\n    return data.with_columns((pl.col('val') * 2).alias('val'))")
+    with pytest.raises(ValueError, match="同名"):
+        F.materialize("f_bad")
+
+
+def test_code_execute_without_registration(root):
+    """test_code：未注册公式直接执行（portal 测试-保存前预览）, 不写 catalog/磁盘"""
+    _make_ds(root)
+    code = "def calc(data):\n    return data.with_columns((pl.col('val') * 4).alias('v4'))"
+    out = F.test_code("ds", code, limit=1)
+    assert out["dataset"] == "ds"
+    assert "v4" in out["columns"]
+    assert out["totalRows"] == 2
+    assert set(r["v4"] for r in out["rows"]) <= {4.0, 8.0}
+    assert len(out["rows"]) == 1
+    # 未注册任何 catalog 对象
+    assert F.list() == []
+    with pytest.raises(ValueError, match="未指定数据集"):
+        F.test_code("", code)
+    with pytest.raises(ValueError, match="代码为空"):
+        F.test_code("ds", "")

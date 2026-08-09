@@ -45,6 +45,16 @@ class StkoeServiceStub:
                 request_serializer=stkoe__pb2.SelectRequest.SerializeToString,
                 response_deserializer=stkoe__pb2.SelectResponse.FromString,
                 _registered_method=True)
+        self.RunTask = channel.unary_stream(
+                '/stkoe.StkoeService/RunTask',
+                request_serializer=stkoe__pb2.TaskRequest.SerializeToString,
+                response_deserializer=stkoe__pb2.TaskEvent.FromString,
+                _registered_method=True)
+        self.Health = channel.unary_unary(
+                '/stkoe.StkoeService/Health',
+                request_serializer=stkoe__pb2.HealthRequest.SerializeToString,
+                response_deserializer=stkoe__pb2.HealthResponse.FromString,
+                _registered_method=True)
 
 
 class StkoeServiceServicer:
@@ -65,6 +75,20 @@ class StkoeServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RunTask(self, request, context):
+        """长任务：物化/公式执行/统计计算等，服务端流式推送 log/progress/result
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Health(self, request, context):
+        """服务存活探活 + 版本
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_StkoeServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -77,6 +101,16 @@ def add_StkoeServiceServicer_to_server(servicer, server):
                     servicer.Select,
                     request_deserializer=stkoe__pb2.SelectRequest.FromString,
                     response_serializer=stkoe__pb2.SelectResponse.SerializeToString,
+            ),
+            'RunTask': grpc.unary_stream_rpc_method_handler(
+                    servicer.RunTask,
+                    request_deserializer=stkoe__pb2.TaskRequest.FromString,
+                    response_serializer=stkoe__pb2.TaskEvent.SerializeToString,
+            ),
+            'Health': grpc.unary_unary_rpc_method_handler(
+                    servicer.Health,
+                    request_deserializer=stkoe__pb2.HealthRequest.FromString,
+                    response_serializer=stkoe__pb2.HealthResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -134,6 +168,60 @@ class StkoeService:
             '/stkoe.StkoeService/Select',
             stkoe__pb2.SelectRequest.SerializeToString,
             stkoe__pb2.SelectResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RunTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/stkoe.StkoeService/RunTask',
+            stkoe__pb2.TaskRequest.SerializeToString,
+            stkoe__pb2.TaskEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Health(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/stkoe.StkoeService/Health',
+            stkoe__pb2.HealthRequest.SerializeToString,
+            stkoe__pb2.HealthResponse.FromString,
             options,
             channel_credentials,
             insecure,

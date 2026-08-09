@@ -205,6 +205,19 @@ def list() -> list[TableMeta]:
     return [_to_meta(conn, r) for r in rows]
 
 
+def candidates() -> list[str]:
+    """未登记但含 parquet 的表目录（portal「新建本地表」候选）"""
+    root = get_root() / "tables"
+    if not root.exists():
+        return []
+    conn = catalog().conn
+    out = []
+    for d in sorted(x for x in root.iterdir() if x.is_dir()):
+        if _object(conn, d.name) is None and any(d.rglob("*.parquet")):
+            out.append(d.name)
+    return out
+
+
 # ---------- set / col ----------
 
 def set(name: str, *, display_name: str | None = None, description: str | None = None,

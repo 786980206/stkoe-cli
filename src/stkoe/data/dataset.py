@@ -91,6 +91,8 @@ def _dataset_meta(conn, obj) -> DatasetMeta:
         curated=curated,
         pending_partitions=tuple(k for k in (meta.get("partition_deps") or {})
                                  if k != ""),
+        validation=meta.get("validation"),
+        extra=meta.get("extra") or {},
         display_name=meta.get("display_name", obj["name"]),
         description=meta.get("description", ""),
         tags=tuple(meta.get("tags", [])),
@@ -164,6 +166,23 @@ def scan_spec(index_table: str, *tables: str, keys: list[str] | None = None) -> 
             "index_table": index_table, "tables_meta": metas}
 
 
+def _align_keys(lf: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
+    """join 键 dtype 归一：datetime 时区元数据不一致时不 cast 会 join 失败
+
+    （如 mock/csv 混入：一侧 ``datetime[μs]`` 另一侧 ``datetime[μs, UTC]``），
+    统一 cast 为无时区指明时间的同一精度。
+    """
+    casts = []
+    schema = lf.collect_schema()
+    for k in keys:
+        dt = schema.get(k)
+        if isinstance(dt, pl.Datetime):
+            casts.append(pl.col(k).cast(pl.Datetime(dt.time_unit, time_zone=None)))
+    if casts:
+        lf = lf.with_columns(*casts)
+    return lf
+
+
 def _view_lf(dm: DatasetMeta) -> pl.LazyFrame:
     """实时 join 视图（lazy）：按列映射重命名后 inner join on keys"""
     by_src: dict[str, list[ColumnMeta]] = {}
@@ -175,7 +194,7 @@ def _view_lf(dm: DatasetMeta) -> pl.LazyFrame:
         used_src = {c.source_field for c in by_src.get(t, [])}
         exprs = [pl.col(c.source_field).alias(c.name) for c in by_src.get(t, [])]
         exprs += [pl.col(k).alias(k) for k in dm.keys if k not in used_src]
-        return lf.select(*exprs)
+        return _align_keys(lf.select(*exprs), dm.keys)
 
     frames = [frame(dm.index_table)]
     for t in dm.tables:
@@ -629,6 +648,7 @@ def rename(old: str, new: str, *, background: bool | None = None) -> DatasetMeta
                 src.rename(dst)
             cx.execute("UPDATE stkoe_objects SET name=? WHERE id=?", (new, obj["id"]))
             access.rename_obj(cx, "dataset", old, new)
+            _repoint_field_dataset(cx, old, new)
             access.rename_dep(cx, "dataset", old, new)
             from .stat import _rename_cascade
             _rename_cascade(cx, old, new)
@@ -657,6 +677,8 @@ def del_(name: str, *, force: bool = False, with_data: bool = True,
                     + " (use --force to cascade)")
             cx.execute("DELETE FROM stkoe_objects WHERE id=?", (obj["id"],))
             access.clear_deps(cx, "dataset", name)
+            if force:
+                _drop_field_dependents(cx, dependents)
         if force:
             from .stat import _drop_cascade
             with catalog().txn() as conn2:
@@ -664,6 +686,30 @@ def del_(name: str, *, force: bool = False, with_data: bool = True,
         if with_data:
             shutil.rmtree(_root(name), ignore_errors=True)
     return defer("dataset_del", name, _run, background=background)
+
+
+def _drop_field_dependents(cx, dependents: list[dict]) -> None:
+    """force 级联：删除绑定本 dataset 的 field（注册 + 出边 + 物化产物）"""
+    for d in dependents:
+        if d["obj_type"] != "field":
+            continue
+        fobj = access.get_object(cx, d["obj_name"], "field")
+        if fobj is not None:
+            cx.execute("DELETE FROM stkoe_objects WHERE id=?", (fobj["id"],))
+            access.clear_deps(cx, "field", d["obj_name"])
+            shutil.rmtree(get_root() / "fields" / d["obj_name"], ignore_errors=True)
+
+
+def _repoint_field_dataset(cx, old: str, new: str) -> None:
+    """dataset 改名：字段 meta["dataset"] 同步指向新名（依赖边已由 rename_dep 迁移）"""
+    for d in access.dependents(cx, "dataset", old):
+        if d["obj_type"] != "field":
+            continue
+        fobj = access.get_object(cx, d["obj_name"], "field")
+        if fobj is not None:
+            fmeta = loads(fobj["meta"])
+            fmeta["dataset"] = new
+            access.update_object_meta(cx, fobj["id"], fmeta, now_str=now())
 
 
 # ---------- scan（增量重物化 + 触发下游） ----------
@@ -722,3 +768,87 @@ def data_key(name: str) -> str:
     if dm.materialized:
         return _meta_dict(catalog().conn, name).get("dependency_hash") or ""
     return _read_source_hash(dm)
+
+
+def materialized_payload(name: str, *, elapsed_ms: int = 0) -> dict:
+    """物化任务 portal 契约：{datasetId, columns, rows, dataFile, elapsedMs}
+
+    供 gRPC RunTask 的 dataset scan/materialize 分支返回；rows 直接数产物。
+    """
+    import time
+
+    dm = describe(name)
+    fp = _mat_dir(dm.name)
+    if not dm.partition_by:
+        fp = fp / "data.parquet"
+    t0 = time.time()
+    rows = 0
+    if fp.exists():
+        lf = pl.scan_parquet(fp, hive_partitioning=True) if fp.is_dir() else pl.scan_parquet(fp)
+        rows = int(lf.select(pl.len()).collect()[0, 0])
+    columns = [c.name for c in (dm.columns or [])]
+    return {
+        "datasetId": dm.name,
+        "columns": columns,
+        "rows": rows,
+        "dataFile": str(fp) if fp.exists() else "",
+        "elapsedMs": int(elapsed_ms or (time.time() - t0) * 1000),
+    }
+
+
+
+# ---------- 校验（portal 集合一致性） ----------
+
+def _table_schema_cols(name: str) -> set[str]:
+    """物理表列名（只读 schema，不读数据页）"""
+    t = table.get_lazy(name)
+    return builtins.set(t.collect_schema().names())
+
+
+def validate(name: str, *, mode: str = "full") -> dict:
+    """校验 dataset 与依赖表的索引契约；结果写入 catalog meta（不写数据文件）。
+
+    - ``mode='fast'``：仅检查索引字段在每张表存在性 + 行数
+    - ``mode='full'``：额外检查索引组合唯一性（索引即主键）
+
+    返回 ``{name, valid, tables: [{name, missing_index, index_unique,
+    row_count}], checked_at}``；结果存 meta[\"validation\"]，后续读 meta 直接取。
+    """
+    dm = describe(name)
+    keys = [*dm.keys]
+    report = []
+    valid = True
+    for t in [dm.index_table, *dm.tables]:
+        cols = _table_schema_cols(t)
+        missing = [k for k in keys if k not in cols]
+        row = {"name": t, "missing": missing, "index_unique": True, "row_count": 0}
+        if missing or not keys:
+            if missing:
+                valid = False
+            if not keys:
+                row["index_unique"] = None
+            report.append(row)
+            continue
+        lf = table.get_lazy(t, columns=keys)
+        try:
+            row["row_count"] = int(lf.select(pl.len()).collect()[0, 0])
+        except Exception:
+            row["row_count"] = -1
+        if mode == "full":
+            try:
+                n = int(lf.select(pl.len()).collect()[0, 0])
+                u = int(lf.unique().select(pl.len()).collect()[0, 0])
+                row["index_unique"] = n == u
+                if not row["index_unique"]:
+                    valid = False
+            except Exception:
+                row["index_unique"] = None
+        report.append(row)
+    out = {"name": name, "valid": valid, "tables": report}
+    with catalog().txn() as conn:
+        obj = _object(conn, name)
+        if obj is not None:
+            meta_for = loads(obj["meta"])
+            meta_for["validation"] = out
+            access.update_object_meta(conn, obj["id"], meta_for, now_str=now())
+    return out

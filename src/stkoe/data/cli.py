@@ -38,8 +38,13 @@ app.add_typer(server_app, name="server")
 
 
 @server_app.command()
-def run(port: int = typer.Option(None, help="端口（缺省取配置 grpc_port）")):
+def run(port: int | None = typer.Option(None, help="端口（缺省取配置 grpc_port）"),
+     reload: bool = typer.Option(False, "--reload", help="监听 stkoe 源码变更自动重启（开发用）")):
     """前台运行 gRPC 服务（阻塞；REPL 已同步后台启动）"""
+    if reload:
+        from ..grpc.server import serve_reload
+        serve_reload(port)
+        return
     from ..grpc.server import serve as grpc_serve
     srv = grpc_serve(port)
     print(f"stkoe gRPC listening on {srv.host}:{srv.port}")

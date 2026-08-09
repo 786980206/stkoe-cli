@@ -8,7 +8,7 @@ import pytest
 import stkoe.data as data
 from stkoe.data.table import DependencyError
 
-from conftest import write_single
+from conftest import make_df, write_single
 
 
 def _index_df(n=2, start="2020-01-01"):
@@ -100,6 +100,37 @@ def test_scan_spec_no_common(root):
     data.table.scan("mem3")
     r = data.dataset.scan_spec("idx", "mem3")
     assert not r["ok"] and "missing join keys" in r["message"]
+
+
+def test_join_keys_tz_mismatch(root):
+    """join 键 datetime 时区元数据不一致（naive vs UTC）必须归一后 join"""
+    idx = pl.DataFrame({
+        "date": ["2020-01-01"] * 2,
+        "sym": ["s0", "s1"],
+        "ts": ["2020-01-01 00:00:00", "2020-01-01 00:00:01"],
+    }).with_columns(
+        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"),
+        pl.col("ts").str.strptime(pl.Datetime("us"), "%Y-%m-%d %H:%M:%S"),
+    )
+    mem_naive = pl.DataFrame({
+        "date": ["2020-01-01"] * 2,
+        "sym": ["s0", "s1"],
+        "ts": ["2020-01-01 00:00:00", "2020-01-01 00:00:01"],
+        "r": [1.0, 2.0],
+    }).with_columns(
+        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"),
+        pl.col("ts").str.strptime(pl.Datetime("us"), "%Y-%m-%d %H:%M:%S"),
+    )
+    mem_utc = mem_naive.with_columns(pl.col("ts").dt.convert_time_zone("UTC"))
+    write_single(root, "idx", idx)
+    write_single(root, "memA", mem_naive)
+    write_single(root, "memB", mem_utc)
+    data.table.scan("idx")
+    data.table.scan("memA")
+    data.table.scan("memB")
+    data.dataset.add("ds", "idx", "memA", "memB", keys=["date", "sym", "ts"])
+    lf = data.dataset.get_lazy("ds")
+    assert lf.collect().height == 2  # join 成功（此前 raise PolarsError）
 
 
 # ---------- add / 物化 ----------
@@ -317,3 +348,71 @@ def test_data_key_changes_when_sources_change(root):
     write_single(root, "mem", _mem_df(n=3))
     data.table.scan("mem")
     assert data.dataset.data_key("ds") != k1
+
+
+def test_validate_fast_and_full(root):
+    """validate：fast 只查索引字段存在；full 额外检查唯一性；结果写入 meta"""
+    rows = [("2020-01-01", "a", 0.1), ("2020-01-02", "b", 0.5)]
+    write_single(root, "idx", make_df(rows))
+    write_single(root, "mem", make_df(rows))
+    data.table.scan("idx")
+    data.table.scan("mem")
+    data.dataset.add("ds_v", "idx", "mem", background=False)
+
+    out = data.dataset.validate("ds_v", mode="fast")
+    assert out["valid"] is True
+    assert {t["name"] for t in out["tables"]} == {"idx", "mem"}
+
+    out_full = data.dataset.validate("ds_v", mode="full")
+    assert out_full["valid"] is True
+    # 元数据持久化
+    m = data.dataset.meta("ds_v")
+    assert m.validation["valid"] is True
+
+    # 破坏唯一性：给 idx 插重复键，full 应报 invalid
+    dup = pl.DataFrame({"date": ["2020-01-01", "2020-01-01"],
+                        "sym": ["a", "a"], "r": [0.1, 0.1]}).with_columns(
+        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
+    write_single(root, "idx", dup)
+    data.table.scan("idx")
+    out2 = data.dataset.validate("ds_v", mode="full")
+    assert out2["valid"] is False
+    idx_row = next(t for t in out2["tables"] if t["name"] == "idx")
+    assert idx_row["index_unique"] is False
+
+
+def test_candidates_finds_unregistered(root):
+    """table.candidates：未登记但含 parquet 的目录"""
+    d = root / "tables" / "orphan_tbl"
+    d.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"a": [1, 2]}).write_parquet(d / "p0.parquet")
+    cands = data.table.candidates()
+    assert "orphan_tbl" in cands
+    assert "idx" not in cands  # 未登记表不算候选
+
+
+def test_del_force_cascades_fields(root):
+    """dataset del --force 级联删除绑定 field（注册 + 产物目录）"""
+    _setup_pair(root)
+    data.dataset.add("ds", "idx", "mem", background=False)
+    data.field.create("fx", "ds", formula="def calc(data):\n    return data.with_columns((pl.col('r') * 2).alias('fx'))")
+    with pytest.raises(DependencyError):
+        data.dataset.del_("ds")
+    data.dataset.del_("ds", force=True)
+    with pytest.raises(data.field.FieldNotFoundError):
+        data.field.meta("fx")
+    assert not (root / "fields" / "fx").exists()
+
+
+def test_rename_repoints_fields(root):
+    """dataset rename：field meta 的 dataset 指向新名"""
+    _setup_pair(root)
+    data.dataset.add("ds", "idx", "mem", background=False)
+    data.field.create("fy", "ds", formula="def calc(data):\n    return data.with_columns((pl.col('r') * 2).alias('fy'))")
+    data.dataset.rename("ds", "ds2", background=False)
+    assert data.field.meta("fy").dataset == "ds2"
+    # 依赖边同步
+    conn = data.catalog().conn
+    rows = conn.execute(
+        "SELECT dep_name FROM stkoe_depends WHERE obj_type='field' AND obj_name='fy'").fetchall()
+    assert [r["dep_name"] for r in rows] == ["ds2"]

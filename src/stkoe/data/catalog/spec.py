@@ -166,6 +166,8 @@ class DatasetMeta:
     materialized_at: str | None = None
     curated: bool = False            # 物化数据与当前源一致（读前自物化用）
     pending_partitions: tuple[str, ...] = ()
+    validation: dict | None = None   # 最近一次 validate 结果（读路径，不参与版本）
+    extra: dict = field(default_factory=dict)  # 调用方透传的自定义字段（如 category）
     display_name: str = ""
     description: str = ""
     tags: tuple[str, ...] = ()
@@ -186,6 +188,8 @@ class DatasetMeta:
             "materialized_at": self.materialized_at,
             "curated": self.curated,
             "pending_partitions": list(self.pending_partitions),
+            "validation": self.validation,
+            "extra": self.extra,
             "display_name": self.display_name,
             "description": self.description,
             "tags": list(self.tags),

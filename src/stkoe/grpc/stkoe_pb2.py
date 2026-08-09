@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bstkoe.proto\x12\x05stkoe\"+\n\x0e\x45xecuteRequest\x12\x0b\n\x03\x63md\x18\x01 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x02 \x03(\t\"e\n\x0f\x45xecuteResponse\x12\x0c\n\x04\x63ode\x18\x01 \x01(\x05\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x10\n\x08json_out\x18\x03 \x01(\t\x12\r\n\x05table\x18\x04 \x01(\x0c\x12\x14\n\x0ctable_schema\x18\x05 \x01(\t\"t\n\rSelectRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0f\n\x07\x63olumns\x18\x03 \x03(\t\x12\r\n\x05where\x18\x04 \x01(\t\x12\x11\n\tpartition\x18\x05 \x01(\t\x12\x14\n\x0cinclude_tool\x18\x06 \x01(\x08\"S\n\x0eSelectResponse\x12\x0b\n\x03ipc\x18\x01 \x01(\x0c\x12\x13\n\x0bschema_json\x18\x02 \x01(\t\x12\x10\n\x08num_rows\x18\x03 \x01(\x03\x12\r\n\x05\x65rror\x18\x04 \x01(\t2\x7f\n\x0cStkoeService\x12\x38\n\x07\x45xecute\x12\x15.stkoe.ExecuteRequest\x1a\x16.stkoe.ExecuteResponse\x12\x35\n\x06Select\x12\x14.stkoe.SelectRequest\x1a\x15.stkoe.SelectResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bstkoe.proto\x12\x05stkoe\"+\n\x0e\x45xecuteRequest\x12\x0b\n\x03\x63md\x18\x01 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x02 \x03(\t\"e\n\x0f\x45xecuteResponse\x12\x0c\n\x04\x63ode\x18\x01 \x01(\x05\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x10\n\x08json_out\x18\x03 \x01(\t\x12\r\n\x05table\x18\x04 \x01(\x0c\x12\x14\n\x0ctable_schema\x18\x05 \x01(\t\"2\n\x06\x46ilter\x12\r\n\x05\x66ield\x18\x01 \x01(\t\x12\n\n\x02op\x18\x02 \x01(\t\x12\r\n\x05value\x18\x03 \x01(\t\"(\n\tSortField\x12\r\n\x05\x66ield\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x65sc\x18\x02 \x01(\x08\"\xd4\x01\n\rSelectRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0f\n\x07\x63olumns\x18\x03 \x03(\t\x12\r\n\x05where\x18\x04 \x01(\t\x12\x11\n\tpartition\x18\x05 \x01(\t\x12\x14\n\x0cinclude_tool\x18\x06 \x01(\x08\x12\x0c\n\x04page\x18\x07 \x01(\x05\x12\x11\n\tpage_size\x18\x08 \x01(\x05\x12\x1d\n\x06\x66ilter\x18\t \x03(\x0b\x32\r.stkoe.Filter\x12\x1e\n\x04sort\x18\n \x03(\x0b\x32\x10.stkoe.SortField\"b\n\x0eSelectResponse\x12\x0b\n\x03ipc\x18\x01 \x01(\x0c\x12\x13\n\x0bschema_json\x18\x02 \x01(\t\x12\x10\n\x08num_rows\x18\x03 \x01(\x03\x12\r\n\x05\x65rror\x18\x04 \x01(\t\x12\r\n\x05total\x18\x05 \x01(\x03\"9\n\x0bTaskRequest\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x0b\n\x03\x63md\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x03(\t\"s\n\tTaskEvent\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05level\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x0c\n\x04\x64one\x18\x04 \x01(\x03\x12\r\n\x05total\x18\x05 \x01(\x03\x12\x0c\n\x04\x64\x61ta\x18\x06 \x01(\t\x12\r\n\x05\x65rror\x18\x07 \x01(\t\"\x0f\n\rHealthRequest\"1\n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t2\xe9\x01\n\x0cStkoeService\x12\x38\n\x07\x45xecute\x12\x15.stkoe.ExecuteRequest\x1a\x16.stkoe.ExecuteResponse\x12\x35\n\x06Select\x12\x14.stkoe.SelectRequest\x1a\x15.stkoe.SelectResponse\x12\x31\n\x07RunTask\x12\x12.stkoe.TaskRequest\x1a\x10.stkoe.TaskEvent0\x01\x12\x35\n\x06Health\x12\x14.stkoe.HealthRequest\x1a\x15.stkoe.HealthResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -35,10 +35,22 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_EXECUTEREQUEST']._serialized_end=65
   _globals['_EXECUTERESPONSE']._serialized_start=67
   _globals['_EXECUTERESPONSE']._serialized_end=168
-  _globals['_SELECTREQUEST']._serialized_start=170
-  _globals['_SELECTREQUEST']._serialized_end=286
-  _globals['_SELECTRESPONSE']._serialized_start=288
-  _globals['_SELECTRESPONSE']._serialized_end=371
-  _globals['_STKOESERVICE']._serialized_start=373
-  _globals['_STKOESERVICE']._serialized_end=500
+  _globals['_FILTER']._serialized_start=170
+  _globals['_FILTER']._serialized_end=220
+  _globals['_SORTFIELD']._serialized_start=222
+  _globals['_SORTFIELD']._serialized_end=262
+  _globals['_SELECTREQUEST']._serialized_start=265
+  _globals['_SELECTREQUEST']._serialized_end=477
+  _globals['_SELECTRESPONSE']._serialized_start=479
+  _globals['_SELECTRESPONSE']._serialized_end=577
+  _globals['_TASKREQUEST']._serialized_start=579
+  _globals['_TASKREQUEST']._serialized_end=636
+  _globals['_TASKEVENT']._serialized_start=638
+  _globals['_TASKEVENT']._serialized_end=753
+  _globals['_HEALTHREQUEST']._serialized_start=755
+  _globals['_HEALTHREQUEST']._serialized_end=770
+  _globals['_HEALTHRESPONSE']._serialized_start=772
+  _globals['_HEALTHRESPONSE']._serialized_end=821
+  _globals['_STKOESERVICE']._serialized_start=824
+  _globals['_STKOESERVICE']._serialized_end=1057
 # @@protoc_insertion_point(module_scope)

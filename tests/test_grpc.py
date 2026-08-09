@@ -2,10 +2,13 @@
 """gRPC 服务测试：Execute 小结果 JSON + Select 表格 Arrow IPC"""
 import json
 import socket
+from pathlib import Path
 
 import grpc
 import polars as pl
 import pytest
+
+import io
 
 import stkoe.data as data
 from stkoe.grpc import stkoe_pb2, stkoe_pb2_grpc
@@ -104,3 +107,98 @@ def test_server_port_config(root, tmp_path, monkeypatch):
 def test_port_conflict(srv):
     with pytest.raises(Exception):
         StkoeServer(port=srv.port).start()
+
+# ---------- Health / 新 Execute 动词 / Select 分页 / RunTask 流 ----------
+
+def test_health(client):
+    resp = client.Health(stkoe_pb2.HealthRequest())
+    assert resp.status == "ok"
+    assert resp.version
+
+
+def test_execute_table_candidates(client, root):
+    _setup(root)
+    d = root / "tables" / "orphan_row"
+    d.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"a": [1]}).write_parquet(d / "p0.parquet")
+    resp = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["candidates"]))
+    assert resp.code == 0
+    assert "orphan_row" in json.loads(resp.json_out)["tables"]
+
+
+def test_execute_dataset_validate(client, root):
+    df = pl.DataFrame({
+        "date": ["2024-01-01", "2024-01-02"],
+        "sym": ["s0", "s1"],
+        "cv": [1.0, 2.0],
+    })
+    write_single(root, "i2", df)
+    write_single(root, "m2", df)
+    data.table.scan("i2")
+    data.table.scan("m2")
+    data.dataset.add("ds2", "i2", "m2", background=False)
+    resp = client.Execute(stkoe_pb2.ExecuteRequest(
+        cmd="dataset", args=["validate", "ds2", "--mode", "full"]))
+    assert resp.code == 0
+    out = json.loads(resp.json_out)
+    assert out["valid"] is True
+    assert {t["name"] for t in out["tables"]} == {"i2", "m2"}
+
+
+def test_select_paging_filter_sort(client, root):
+    _setup(root)  # 8 行：close=10..17
+    # page=2 page_size=3, sym 降序 → 期望第 2 页 = s4..s2
+    resp = client.Select(stkoe_pb2.SelectRequest(
+        name="t1", type="table", page=2, page_size=3,
+        sort=[stkoe_pb2.SortField(field="close", desc=True)]))
+    assert not resp.error
+    df = pl.read_ipc(source=io.BytesIO(resp.ipc))
+    assert resp.num_rows == 3
+    assert resp.total == 8
+    assert df["close"].to_list() == [14.0, 13.0, 12.0]
+
+    # filter: close>=15
+    resp = client.Select(stkoe_pb2.SelectRequest(
+        name="t1", type="table",
+        filter=[stkoe_pb2.Filter(field="close", op="gte", value="15")],
+        sort=[stkoe_pb2.SortField(field="close", desc=True)]))
+    df = pl.read_ipc(source=io.BytesIO(resp.ipc))
+    assert resp.total == 3
+    assert df["close"].to_list() == [17.0, 16.0, 15.0]
+
+
+def test_run_task_field_materialize_stream(client, root):
+    _setup(root)
+    data.dataset.add("ds", "t1", "t1", background=False)  # t1 同时作索引与成员
+    code = "def calc(data):\n    return data.with_columns((pl.col('close') * 2).alias('f'))"
+    data.field.create("f", "ds", formula=code)
+    resp = client.RunTask(stkoe_pb2.TaskRequest(
+        cmd="field", args=["materialize", "f"], task_id="task-1"))
+    events = list(resp)
+    types = [e.type for e in events]
+    assert "result" in types and "done" in types
+    res = json.loads([e for e in events if e.type == "result"][0].data)
+    assert res["rows"] == 8 and res["column"] == "f"
+    assert (data.get_root() / "fields" / "f" / "data.parquet").exists()
+
+
+def test_run_task_error_stream(client, root):
+    resp = client.RunTask(stkoe_pb2.TaskRequest(cmd="dataset", args=["scan", "missing"], task_id="x"))
+    events = list(resp)
+    assert events[-1].type == "error" and "missing" in events[-1].error
+
+
+def test_run_task_dataset_materialize_payload(client, root):
+    _setup(root)
+    data.dataset.add("ds", "t1", "t1", background=False)
+    resp = client.RunTask(stkoe_pb2.TaskRequest(
+        cmd="dataset", args=["materialize", "ds"], task_id="task-ds"))
+    events = list(resp)
+    assert [e.type for e in events][-1] == "done"
+    res = json.loads([e for e in events if e.type == "result"][0].data)
+    # portal 契约：datasetId / rows / dataFile / elapsedMs
+    assert res["datasetId"] == "ds"
+    assert res["rows"] == 8
+    assert res["dataFile"] and Path(res["dataFile"]).exists()
+    assert res["elapsedMs"] >= 0
+    assert "close" in res["columns"]

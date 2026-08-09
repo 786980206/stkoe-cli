@@ -113,3 +113,29 @@ def test_get_exclude_tool(root):
     # columns 显式指定时不受 exclude_tool 影响
     got2 = data.table.get_lazy("t1", columns=["sym", "optime"], exclude_tool=True).collect()
     assert got2.columns == ["sym", "optime"]
+
+def test_select_filters_and_sort(root):
+    """结构化过滤 + 排序 helper（nulls last）"""
+    from stkoe.data.query import apply_sort, to_filters_expr
+
+    _build(root)  # t1 5 行，r = 0.01/0.05/-0.02/0.10/-0.05, year HIVE
+    filters = [
+        {"field": "r", "op": "gte", "value": "0.0"},
+        {"field": "sym", "op": "neq", "value": "e"},
+    ]
+    fexpr = to_filters_expr(filters)
+    lf = data.table.get_lazy("t1")
+    lf = lf.filter(fexpr)
+    assert lf.collect().height == 3
+
+    lf2 = apply_sort(data.table.get_lazy("t1"), [{"field": "r", "desc": True}, {"field": "sym"}])
+    got = lf2.collect()
+    assert got["r"].to_list() == [0.10, 0.05, 0.01, -0.02, -0.05]
+
+
+def test_select_paging(root):
+    """分页切片：slice 实现，DF 行序与全量一致"""
+    _build(root)  # 5 行
+    df = data.table.get_lazy("t1").slice(2, 2).collect()
+    assert df.height == 2
+    assert df["sym"].to_list() == ["c", "d"]

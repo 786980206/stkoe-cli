@@ -10,7 +10,7 @@ stkoe 是从 DataCenter 仓库拆分出的独立量化研究项目（对应原 `
 - **`data/`**：数据管理框架（本指南重点，最近在迭代）
   - `table`：只读观察者 + sniff 元数据同步（已重构完成，v0.2.0）
   - `dataset`：索引表+多表 join 逻辑数据集，自动物化/增量/分区（v0.3.0 完成）
-  - `field`：指标管理（**遗留实现**，仍用旧 `ResponseData`/`SYS_COLS` API，待迁移）
+  - `field`：指标管理（catalog 注册：dataset/formula/display_name，依赖 field→dataset）
   - `mock`：参数化演示数据生成
   - `plugins/`：数据插件（`wsdata` 实时接入、`mock`）
 - **`factor/`**：因子研究框架（`core` 构建器、`zoo` 因子库、`operators`、`testers` 测试器）
@@ -37,7 +37,7 @@ stkoe/
 │   │   ├── catalog/       # db.py(SQLite schema)/spec.py(dataclass)/access.py(行访问)/json.py
 │   │   ├── dataset.py     # dataset：scan/create/sniff/materialize/select + 增量/自动分区（产物直接写 datasets/<name>/）
 │   │   ├── stat.py        # stat：dataset 统计物化（产物在 stats/<name>/，catalog type='stat'，依赖登记 stkoe_depends）
-│   │   ├── field.py       # ⚠️ 遗留：YAML meta 驱动，未迁移
+│   │   ├── field.py       # field 业务：add/list/meta/rename/del + test_code/materialize（catalog 注册）
 │   │   └── plugins/       # wsdata.py / mock.py
 │   ├── factor/            # 因子框架（core/zoo/operators/testers）
 │   ├── portal/            # Panel 门户
@@ -225,6 +225,25 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
   field 顺序按源表列序（数值/字符串/时间列各自内部保持原序）。
 - 测试：全量 105 用例 `uv run pytest -q` 全绿；test_cli 补 REPL 顺序隔离（autouse 恢复同步默认）。
 
+### v0.4.4（portal 对接：gRPC 面扩展 + 数据层加固）
+- **Execute 新动词**（供 portal 桥调用）：`table candidates`（候选表）、`dataset validate`（配置校验）、
+  `dataset get --extra`（字段快照 extra，如 category）、`stat get/add`（统计物化/写入，`--group`/`--refresh`）、
+  `field create/test/test-code/rename/set`（test-code 为不落盘公式测试，返回 test report；set 走 JSON 参数）、
+  `version`（版本号）。
+- **Select 扩展**：分页（limit/offset）、过滤（filters 谓词）、排序（sort）、total（行数，分页用）。
+- **RunTask 流式**：`(cmd, args)` 形态长任务经 TaskEvent 流返回（log/progress/result/done/error），
+  portal tasks.rs 直接消费；`dataset scan/materialize` 分支返回前端契约 payload
+  （`materialized_payload(name, elapsed_ms)`：datasetId/columns/rows/dataFile/elapsedMs）。
+- **Health / --reload**：Health RPC 供 portal 状态灯；`server run --reload` 开发热重载。
+- **真实 bug 修复（live E2E 抓出）**：
+  1. join 键时区不一致崩溃 — `dataset._align_keys()`：`_view_lf` 各成员表 join 键统一 cast
+     为无时区同精度（`optime` 曾出现 `[μs]` vs `[μs,UTC]` 混合）；回归 `test_join_keys_tz_mismatch`。
+  2. RunTask/Execute 结果 JSON 序列化不支持 `pl.Date/Decimal` — `server._dumps`（datetime/date/time
+     → isoformat、Decimal→float），替换两处 `json.dumps`。
+  3. dataset 物化任务缺 portal 契约 — 见上 `materialized_payload`。
+- **数据层**：dataset del 支持 `--force`、rename；query 过滤/排序；spec extra 字段。
+- 测试：全量 135 用例 `uv run pytest -q` 全绿（新增 test_grpc 2 + test_dataset 1，行序无关断言）。
+
 ### v0.4.3（gRPC 交互服务）
 - **gRPC 服务**：`src/stkoe/grpc/`（stkoe.proto + 生成 stub + server.py）；默认端口 9569，
   `config set --grpc-port` 可改（StkoeConfig.grpc_port）；REPL 启动时同步后台启动
@@ -275,7 +294,6 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
   access.py 提供 add_dep/set_deps/clear_deps/deps_of/dependents/rename_dep/rename_obj，供后续触发/级联。
 
 ### 待办 / 已知缺口
-- `field.py` 仍是遗留 YAML 实现，依赖已删除的 `ResponseData`/`SYS_COLS`/`table.hash`，**尚未迁移**到新框架
-  （util/task/query/access/dataset/stat 模式已就绪供复用）。
-- 无测试框架历史包袱：目前 pytest 全绿（test_table/test_select/test_cli/test_config/test_mock/test_task/test_dataset/test_stat）。
+- field 已随 v0.4.2 迁移完成（catalog 注册 + test_code/materialize）；无重大遗留模块。
 - `test_task.py` 中 pause/resume/cancel 相关用例对时序敏感，全量并行跑偶发 flaky（单文件跑稳定）。
+- portal 对接面按需扩展（Execute 动词 / RunTask 分支），见 v0.4.4。

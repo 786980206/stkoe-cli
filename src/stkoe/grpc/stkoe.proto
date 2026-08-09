@@ -3,6 +3,8 @@
 // 约定：
 // - 小数据量结果（元数据/列表/状态）走 JSON 字符串（json_out）
 // - 表格数据（select 查询）走 Arrow IPC 字节（ipc），schema 随附 JSON
+// - 长任务（物化/公式执行/统计计算）走 RunTask 服务端流式事件
+// - 存活探活走 Health
 syntax = "proto3";
 
 package stkoe;
@@ -13,6 +15,10 @@ service StkoeService {
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
   // 表格查询：table/dataset 数据读取，返回 Arrow IPC 序列化帧
   rpc Select(SelectRequest) returns (SelectResponse);
+  // 长任务：物化/公式执行/统计计算等，服务端流式推送 log/progress/result
+  rpc RunTask(TaskRequest) returns (stream TaskEvent);
+  // 服务存活探活 + 版本
+  rpc Health(HealthRequest) returns (HealthResponse);
 }
 
 message ExecuteRequest {
@@ -34,10 +40,26 @@ message ExecuteResponse {
   string table_schema = 5;
 }
 
+message Filter {
+  // 过滤字段
+  string field = 1;
+  // 运算符：eq/neq/gt/gte/lt/lte
+  string op = 2;
+  // 值（字符串形式，服务端按列类型转换）
+  string value = 3;
+}
+
+message SortField {
+  // 排序列
+  string field = 1;
+  // true = 降序；false/缺省 = 升序
+  bool desc = 2;
+}
+
 message SelectRequest {
   // 查询对象名（table 或 dataset）
   string name = 1;
-  // 对象类型："" 自动识别（先 dataset 后 table）、"table"/"dataset" 显式
+  // 对象类型："" 自动识别（先 dataset 后 table）、"table"/"dataset"/"stat"/"field" 显式
   string type = 2;
   // 需要的业务列（缺省 = 全部非工具列）
   repeated string columns = 3;
@@ -47,6 +69,14 @@ message SelectRequest {
   string partition = 5;
   // 是否包含工具字段（默认排除）
   bool include_tool = 6;
+  // 分页：页码（1 基）；0/缺省 = 不分页返回全量
+  int32 page = 7;
+  // 分页：每页行数（page>0 时生效；缺省 50）
+  int32 page_size = 8;
+  // 结构化过滤条件（AND 语义，与 where 叠加）
+  repeated Filter filter = 9;
+  // 排序（按出现顺序应用，null 排最后）
+  repeated SortField sort = 10;
 }
 
 message SelectResponse {
@@ -54,7 +84,46 @@ message SelectResponse {
   bytes ipc = 1;
   // 元信息 JSON：{"name", "num_rows", "columns": [{"name","dtype"}], "partition"}
   string schema_json = 2;
+  // 本页行数（不分页 = 全量行数）
   int64 num_rows = 3;
   // 业务错误信息（非空表示查询失败，ipc 为空）
   string error = 4;
+  // 过滤后的总行数（分页时有效；不分页 = num_rows）
+  int64 total = 5;
+}
+
+message TaskRequest {
+  // 调用方自定义任务 id（用于关联日志/快照）
+  string task_id = 1;
+  // 命令名：dataset / field / stat / task（同 Execute 顶层语义）
+  string cmd = 2;
+  // 子命令 + 参数：dataset: ["scan", "name"], ["materialize", "name"]；
+  // field: ["test", "name"], ["materialize", "name"]；stat: ["add"|"get", "name", "--all"|"--group-col", c]
+  repeated string args = 3;
+}
+
+message TaskEvent {
+  // 事件类型：log / progress / result / done / error
+  string type = 1;
+  // log 事件：级别 info/warn/error
+  string level = 2;
+  // log 事件消息 / progress 阶段消息
+  string message = 3;
+  // progress：已完成步数
+  int64 done = 4;
+  // progress：总步数（0 = 未知）
+  int64 total = 5;
+  // result 事件：任意 JSON 序列化字符串
+  string data = 6;
+  // error 事件：错误信息
+  string error = 7;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  // "ok" = 服务可用
+  string status = 1;
+  // stkoe 包版本
+  string version = 2;
 }

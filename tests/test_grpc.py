@@ -237,3 +237,23 @@ def test_execute_table_ops_sync_in_async_mode(client, root):
         assert m2.code == 0
     finally:
         set_default_async(was)
+
+
+def test_execute_table_add_report_jsonable(client, root):
+    """回归：table add 的 Execute 结果含 TableScanReport，此前缺 to_dict 导致
+    “Object of type TableScanReport is not JSON serializable”，portal 前端报
+    status: Unknown。修复后返回完整 JSON 报告。"""
+    # 只写物理文件不登记 —— table add 就是“发现资产”语义
+    write_single(root, "t2", pl.DataFrame({
+        "date": ["2024-01-01"] * 2,
+        "sym": ["a", "b"],
+        "close": [1.0, 2.0],
+    }))
+
+    resp = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["add", "t2"]))
+    assert resp.code == 0, resp.error
+    rep = json.loads(resp.json_out)
+    assert rep["name"] == "t2"
+    assert rep["layout"]
+    assert rep["version_before"] >= 0 and rep["version_after"] >= rep["version_before"]
+    assert "changed" in rep and "partition_by" in rep and "diffs" in rep and "triggered" in rep

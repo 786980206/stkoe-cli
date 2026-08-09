@@ -127,6 +127,30 @@ class TableScanReport:
     implicit_registered: bool = False
     triggered: tuple[str, ...] = ()  # 自动触发的下游对象（dataset/stat）
 
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "version_before": self.version_before,
+            "version_after": self.version_after,
+            "layout": self.layout.value,
+            "partition_by": list(self.partition_by),
+            "partition_count": self.partition_count,
+            "diffs": [
+                {
+                    "rel_path": d.rel_path,
+                    "kind": d.kind,
+                    "catalog_size": d.catalog_size,
+                    "disk_size": d.disk_size,
+                    "catalog_mtime_ns": d.catalog_mtime_ns,
+                    "disk_mtime_ns": d.disk_mtime_ns,
+                }
+                for d in self.diffs
+            ],
+            "changed": self.changed,
+            "implicit_registered": self.implicit_registered,
+            "triggered": list(self.triggered),
+        }
+
 
 @dataclass(frozen=True)
 class TaskHandle:
@@ -211,6 +235,19 @@ class DatasetScanReport:
     partition_by: tuple[str, ...]
     rebuilt_partitions: tuple[str, ...] = ()
     triggered: tuple[str, ...] = ()  # 自动触发的下游（stat 等）
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "version_before": self.version_before,
+            "version_after": self.version_after,
+            "materialized": self.materialized,
+            "changed": self.changed,
+            "incremental": self.incremental,
+            "partition_by": list(self.partition_by),
+            "rebuilt_partitions": list(self.rebuilt_partitions),
+            "triggered": list(self.triggered),
+        }
 
 
 @dataclass(frozen=True)

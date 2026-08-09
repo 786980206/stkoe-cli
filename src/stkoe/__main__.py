@@ -3,8 +3,8 @@
 - `python -m stkoe <命令>`：单次执行（如 `python -m stkoe table scan demo`）
 - `python -m stkoe`：进入交互式 CLI（Tab 补全 + 实时提示），`exit`/`quit` 退出
 
-REPL 下默认后台执行（返回 TaskHandle，可用 `task list/log` 观察）；
-单次命令默认同步（直接打印结果）。
+所有命令（CLI/REPL/gRPC）默认同步执行，需要后台时显式加 ``--async``
+（提交线程池，返回 task_id，用 ``task get <id>`` 查询状态/结果）。
 """
 import shlex
 import sys
@@ -19,7 +19,6 @@ from .data import stat as stat_mod
 from .data import field as field_mod
 from .data import table
 from .data.cli import app
-from .data.task import set_default_async
 
 PROMPT = "stkoe> "
 EXIT_WORDS = {"exit", "quit", "q", ":q", "bye"}
@@ -27,7 +26,7 @@ HELP_WORDS = {"help", "?", ":h"}
 
 TOP_COMMANDS = ["table", "task", "dataset", "stat", "field", "config", "mock", "help", "exit", "quit"]
 TABLE_SUBCOMMANDS = ["add", "list", "meta", "get", "del", "rename", "set", "col", "scan"]
-TASK_SUBCOMMANDS = ["list", "stop", "pause", "resume", "log", "clean"]
+TASK_SUBCOMMANDS = ["list", "get", "stop", "pause", "resume", "log", "clean"]
 DATASET_SUBCOMMANDS = ["add", "list", "meta", "get", "scan", "del", "rename"]
 STAT_SUBCOMMANDS = ["add", "list", "meta", "get", "scan", "del", "rename"]
 FIELD_SUBCOMMANDS = ["add", "list", "meta", "rename", "del"]
@@ -187,12 +186,11 @@ def _readline(prompt: str) -> str | None:
 
 
 def repl() -> int:
-    """交互式 CLI 提示符（后台执行默认开启，`table scan --background` 等可覆盖）"""
-    set_default_async(True)
+    """交互式 CLI 提示符（所有命令默认同步执行，`--async` 放后台）"""
     _start_grpc_background()
     print("stkoe 数据管理 CLI — 输入时 Tab 补全 / 实时提示")
     print(f"命令: {', '.join(TOP_COMMANDS)} | `table --help` 查看子命令 | `exit` 退出")
-    print("REPL 下任务默认后台执行（返回 task_id，用 `task log <id>` 观察）")
+    print("命令默认同步执行；加 `--async` 放后台（返回 task_id，用 `task get <id>` 查询）")
     try:
         while True:
             line = _readline(PROMPT)

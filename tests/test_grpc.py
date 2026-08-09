@@ -2,6 +2,7 @@
 """gRPC 服务测试：Execute 小结果 JSON + Select 表格 Arrow IPC"""
 import json
 import socket
+import time
 from pathlib import Path
 
 import grpc
@@ -226,39 +227,55 @@ def test_run_task_dataset_materialize_payload(client, root):
     assert "close" in res["columns"]
 
 
-# ---------- Execute 同步契约：REPL/异步模式下 table/* 也同步完成 ----------
+# ---------- Execute 同步契约（v0.5.0 统一：默认同步，--async 显式转后台） ----------
 
-def test_execute_table_ops_sync_in_async_mode(client, root):
-    """回归：删除表失败无感知 —— REPL 服务（set_default_async(True)）把
-    table add/del 转成后台任务，Execute 立即返回成功，真实失败只进任务登记。
+def test_execute_table_ops_sync_default(client, root):
+    """回归：删除表失败无感知 —— v0.5.0 前 REPL 服务存在全局异步模式，
+    table add/del 会被转成后台任务，Execute 立即返回成功，真实失败只进任务登记。
 
-    修复后 Execute RPC 的 table add/del/set 全部强制同步（background=False）：
-    成功/失败都当场返回，绝不落后台任务。"""
-    from stkoe.data.task import set_default_async, is_default_async
+    v0.5.0 起所有操作默认同步（无全局异步模式），table add/del/set 成功/失败
+    都当场返回，绝不落后台任务；仅显式 ``--async`` 才返回 task_id。"""
     _setup(root)
-    was = is_default_async()
-    set_default_async(True)  # 模拟 REPL / STKOE_ASYNC 服务模式
-    try:
-        # 1) 目录不存在 → 同步失败（不落后台任务，不返回 task 句柄）
-        resp = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["add", "ghost"]))
-        assert resp.code != 0 and "not found" in resp.error
-        assert "task" not in resp.error
+    # 1) 目录不存在 → 同步失败（不落后台任务，不返回 task 句柄）
+    resp = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["add", "ghost"]))
+    assert resp.code != 0 and "not found" in resp.error
+    assert "task" not in resp.error
 
-        # 2) 正常删除 → 同步返回结果，catalog 立即可见已删
-        r = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["del", "t1"]))
-        assert r.code == 0 and json.loads(r.json_out) == {"deleted": "t1"}
-        m = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["meta", "t1"]))
-        assert m.code != 0 and "not registered" in m.error
+    # 2) 正常删除 → 同步返回结果，catalog 立即可见已删
+    r = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["del", "t1"]))
+    assert r.code == 0 and json.loads(r.json_out) == {"deleted": "t1"}
+    m = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["meta", "t1"]))
+    assert m.code != 0 and "not registered" in m.error
 
-        # 3) 被 dataset 引用 → 同步 DependencyError，t1 仍在
-        data.table.scan("t1", background=False)  # 重新发现注册（数据文件未删）
-        data.dataset.add("ds", "t1", "t1", background=False)
-        d = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["del", "t1"]))
-        assert d.code != 0 and "dependencies exist" in d.error
-        m2 = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["meta", "t1"]))
-        assert m2.code == 0
-    finally:
-        set_default_async(was)
+    # 3) 被 dataset 引用 → 同步 DependencyError，t1 仍在
+    data.table.scan("t1", background=False)  # 重新发现注册（数据文件未删）
+    data.dataset.add("ds", "t1", "t1", background=False)
+    d = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["del", "t1"]))
+    assert d.code != 0 and "dependencies exist" in d.error
+    m2 = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["meta", "t1"]))
+    assert m2.code == 0
+
+
+def test_execute_async_flag_returns_task_id(client, root):
+    """Execute 显式 --async → 返回 task_id（非同步结果）；task get 拉取状态+结果"""
+    _setup(root)
+    resp = client.Execute(stkoe_pb2.ExecuteRequest(
+        cmd="table", args=["scan", "t1", "--async"]))
+    assert resp.code == 0, resp.error
+    h = json.loads(resp.json_out)
+    assert "task_id" in h and h["status"] == "submitted"
+
+    meta = None
+    for _ in range(100):
+        r = client.Execute(stkoe_pb2.ExecuteRequest(cmd="task", args=["get", h["task_id"]]))
+        assert r.code == 0, r.error
+        meta = json.loads(r.json_out)
+        if meta["status"] in ("succeeded", "failed", "cancelled"):
+            break
+        time.sleep(0.05)
+    assert meta["status"] == "succeeded", meta
+    assert meta["result"] is not None
+    assert meta["result"]["name"] == "t1"
 
 
 def test_execute_table_add_report_jsonable(client, root):

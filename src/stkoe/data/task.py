@@ -2,26 +2,29 @@
 
 状态机：``submitted -> running <-> paused -> succeeded|failed|cancelled``
 
-执行模式：
-- CLI 单次命令默认同步（直接执行并返回结果，不产生后台任务）
-- REPL/交互式终端默认异步（``run_task(background=True)``，立即返回 TaskHandle）
-- 模式经 ``set_default_async()`` 全局切换（REPL 启动时开启），也支持每调用覆盖
+执行模式（v0.5.0 起统一）：**所有请求默认同步执行**（CLI/REPL/gRPC 一致），
+需要后台时显式传 ``background=True``（CLI ``--async``）→ 提交线程池立即返回
+TaskHandle（task_id），随后用 ``task get <task_id>`` 查询状态/进度/结果。
 
-各模块统一经 ``defer(kind, ref, fn, background=...)`` 执行：同步返回业务结果，
-异步返回 TaskHandle（业务结果仅在任务登记中可见）。
+各模块统一经 ``defer(kind, ref, fn, background=...)`` 执行，业务函数签名
+恒为 ``fn(conn, ctl)``，``ctl`` 是注入的 logger/控制对象（进度/日志/暂停）：
+- 同步：注入 ``console`` 模式的 ``TaskControl``（日志直接打印，不落表）
+- 异步：worker 注入真 ``TaskControl``（进度/日志写 stkoe_* 表，结果序列化存
+  ``result_ref``，``task_get()`` 反序列化返回；dataclass 经 ``to_dict``）
 
-- 进度：``progress``(0..1) 与 ``stage``(当前活动) 持久化；flush 节流（分区边界批量落盘）
-- 日志：批量写 ``stkoe_task_logs``，``task_log()`` 按 ``seq`` 增量拉取（REPL/grpc 轮询）
-- pause/stop 协作式：任务在分区边界调用 ``ctl.check()``；纯顺序快任务不支持打断
+- 日志：同步打印（loguru），异步批量写 ``stkoe_task_logs``，``task_log()`` 增量拉取
+- pause/stop 协作式：任务在分区边界调用 ``ctl.check()``；console 模式直接放行
 - 并发安全：后台任务用独立连接（``catalog().new_conn()``），WAL 多连接读写分离
 """
-import os
+import json
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+
+from loguru import logger
 
 from .catalog.spec import TaskHandle, TaskLog
 from .util import now
@@ -32,7 +35,6 @@ PAUSE_POLL = 0.2  # 暂停时轮询间隔（秒）
 _executor: ThreadPoolExecutor | None = None
 _controls: dict[str, "TaskControl"] = {}
 _reg_lock = threading.Lock()
-_default_async = os.getenv("STKOE_ASYNC", "").strip().lower() in ("1", "true", "yes")
 
 
 class TaskCancelled(Exception):
@@ -52,11 +54,16 @@ def conn_txn(conn):
 
 @dataclass
 class TaskControl:
-    """任务执行上下文：日志/进度/阶段 + 协作式暂停取消（跨线程安全）"""
+    """任务执行上下文：日志/进度/阶段 + 协作式暂停取消（跨线程安全）
+
+    ``console=True`` 时（同步执行）不写 task 表：日志/进度直接打印（loguru），
+    check/flush/pause/resume/cancel 为空操作——业务函数无需区分同步/异步。
+    """
 
     task_id: str
     type: str
     object_ref: str
+    console: bool = False
     _lock: threading.RLock = field(default_factory=threading.RLock)
     _progress: float = 0.0
     _stage: str = ""
@@ -68,6 +75,9 @@ class TaskControl:
 
     # --- 日志 ---
     def log(self, level: str, msg: str) -> None:
+        if self.console:
+            logger.log(level, msg)
+            return
         with self._lock:
             self._log.append((now(), level, msg))
             self._dirty = True
@@ -86,6 +96,10 @@ class TaskControl:
 
     # --- 进度 / 阶段 ---
     def progress(self, value: float, msg: str | None = None) -> None:
+        if self.console:
+            if msg:
+                logger.info(msg)
+            return
         with self._lock:
             self._progress = max(0.0, min(1.0, float(value)))
             if msg:
@@ -93,13 +107,18 @@ class TaskControl:
             self._dirty = True
 
     def stage(self, msg: str) -> None:
+        if self.console:
+            logger.info(msg)
+            return
         with self._lock:
             self._stage = msg
             self._dirty = True
 
     # --- 协作控制（分区边界调用）---
     def check(self) -> None:
-        """暂停时阻塞等待；取消时抛 TaskCancelled"""
+        """暂停时阻塞等待；取消时抛 TaskCancelled（console 模式直接放行）"""
+        if self.console:
+            return
         while True:
             with self._lock:
                 cancelled, paused = self._cancelled, self._paused
@@ -110,19 +129,24 @@ class TaskControl:
             time.sleep(PAUSE_POLL)
 
     def pause(self) -> None:
-        with self._lock:
-            self._paused = True
+        if not self.console:
+            with self._lock:
+                self._paused = True
 
     def resume(self) -> None:
-        with self._lock:
-            self._paused = False
+        if not self.console:
+            with self._lock:
+                self._paused = False
 
     def cancel(self) -> None:
-        with self._lock:
-            self._cancelled = True
+        if not self.console:
+            with self._lock:
+                self._cancelled = True
 
     # --- 持久化（flush 由任务方在边界调用；worker 结束兜底）---
     def flush(self, conn) -> None:
+        if self.console:
+            return
         with self._lock:
             if not self._dirty and not self._log:
                 return
@@ -146,28 +170,26 @@ class TaskControl:
 
 # ---------- 执行模式 ----------
 
-def set_default_async(v: bool) -> None:
-    """切换默认执行模式：True=后台任务（REPL/grpc），False=同步直执行行（CLI）"""
-    global _default_async
-    _default_async = bool(v)
+def console_ctl(kind: str = "", ref: str = "") -> TaskControl:
+    """同步执行的 console 模式 TaskControl：日志/进度直接打印（loguru），不落表"""
+    return TaskControl(task_id="", type=kind, object_ref=ref, console=True)
 
 
-def is_default_async() -> bool:
-    return _default_async
-
-
-def defer(kind: str, ref: str, fn, *, background: bool | None = None,
+def defer(kind: str, ref: str, fn, *, background: bool = False,
           result_fn=None, **run_kw):
     """统一任务入口：同步执行返回 ``result_fn``（缺省为 fn 返回值），异步返回 TaskHandle。
 
+    - ``background=False``（默认）：当前线程直接执行，注入 console 模式 TaskControl
+      （日志/进度直接打印）；返回业务结果（异常直接抛给调用方）
+    - ``background=True``：提交线程池立即返回 TaskHandle；完成后结果序列化存
+      ``stkoe_tasks.result_ref``，``task_get()`` 可拉取
     - ``fn(conn, ctl)``：conn 为主连接时可为 None（同步）；后台时 worker 注入独立连接
-    - ``result_fn(result)``：同步模式下把 fn 的原始结果转成对外返回值（默认原样）
+    - ``result_fn(result)``：把 fn 的原始结果转成对外返回值（同步原样返回；
+      异步时应用于持久化前的序列化结果）
     """
-    if background is None:
-        background = _default_async
     if background:
-        return run_task(kind, ref, fn, background=True)
-    result = fn(None, None)
+        return run_task(kind, ref, fn, background=True, result_fn=result_fn)
+    result = fn(None, console_ctl(kind, ref))
     return result_fn(result) if result_fn else result
 
 
@@ -179,11 +201,14 @@ def _pool() -> ThreadPoolExecutor:
 
 
 def _set_status(conn, task_id: str, status: str, *, error: str | None = None,
-                finished: bool = False) -> None:
+                result_ref: str | None = None, finished: bool = False) -> None:
     sets, args = ["status=?", "updated_at=?"], [status, now()]
     if error is not None:
         sets.append("error=?")
         args.append(error)
+    if result_ref is not None:
+        sets.append("result_ref=?")
+        args.append(result_ref)
     if finished:
         sets.append("finished_at=?")
         args.append(now())
@@ -197,7 +222,18 @@ def _handle(ctl: TaskControl, status: str, error: str | None = None) -> TaskHand
                       status=status, progress=ctl._progress, stage=ctl._stage, error=error)
 
 
-def _worker(ctl: TaskControl, fn) -> TaskHandle:
+def _result_json(result) -> str | None:
+    """任务结果 → JSON 字符串（result_ref 存 JSON；dataclass 经 to_dict；失败返回 None）"""
+    if result is None:
+        return None
+    try:
+        obj = result.to_dict() if hasattr(result, "to_dict") else result
+        return json.dumps(obj, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return None
+
+
+def _worker(ctl: TaskControl, fn, result_fn=None) -> TaskHandle:
     """后台执行体：fn(conn, ctl)，fn 自行管理事务；失败/取消记录进 tasks"""
     from . import catalog
     conn = catalog().new_conn()
@@ -205,8 +241,10 @@ def _worker(ctl: TaskControl, fn) -> TaskHandle:
     error = None
     try:
         _set_status(conn, ctl.task_id, "running")
-        fn(conn, ctl)
-        _set_status(conn, ctl.task_id, "succeeded", finished=True)
+        out = fn(conn, ctl)
+        result = result_fn(out) if result_fn else out
+        result_ref = _result_json(result)
+        _set_status(conn, ctl.task_id, "succeeded", result_ref=result_ref, finished=True)
     except TaskCancelled:
         status = "cancelled"
         _set_status(conn, ctl.task_id, "cancelled", finished=True)
@@ -226,11 +264,12 @@ def _worker(ctl: TaskControl, fn) -> TaskHandle:
     return _handle(ctl, status, error)
 
 
-def run_task(task_type: str, object_ref: str, fn, *, background: bool = False) -> TaskHandle:
+def run_task(task_type: str, object_ref: str, fn, *, background: bool = False,
+             result_fn=None) -> TaskHandle:
     """登记任务并执行：``fn(conn, ctl)``；``background=True`` 提交线程池立即返回
 
     - ``fn`` 需自行管理事务（用 ``conn_txn`` / ``ctl.flush(conn)``）
-    - 同步调用（默认）复用当前线程，返回最终状态
+    - 同步调用（默认）复用当前线程，返回最终状态；``result_fn`` 应用于结果持久化
     """
     from . import catalog
     task_id = uuid.uuid4().hex
@@ -244,9 +283,9 @@ def run_task(task_type: str, object_ref: str, fn, *, background: bool = False) -
     with _reg_lock:
         _controls[task_id] = ctl
     if background:
-        _pool().submit(_worker, ctl, fn)
+        _pool().submit(_worker, ctl, fn, result_fn)
         return _handle(ctl, "submitted")
-    return _worker(ctl, fn)
+    return _worker(ctl, fn, result_fn)
 
 
 # ---------- 任务管理 API ----------
@@ -254,7 +293,8 @@ def run_task(task_type: str, object_ref: str, fn, *, background: bool = False) -
 def _to_handle(row) -> TaskHandle:
     return TaskHandle(task_id=row["task_id"], type=row["type"], object_ref=row["object_ref"],
                       status=row["status"], progress=row["progress"] or 0.0,
-                      stage=row["stage"] or "", error=row["error"])
+                      stage=row["stage"] or "", error=row["error"],
+                      result_ref=row["result_ref"])
 
 
 def task_list(*, status: str | None = None, type: str | None = None,
@@ -292,11 +332,27 @@ def task_meta(task_id: str) -> dict:
         "progress": row["progress"],
         "stage": row["stage"],
         "error": row["error"],
+        "result": _load_result(row["result_ref"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "finished_at": row["finished_at"],
         "recent_logs": [l.message for l in logs],
     }
+
+
+def _load_result(result_ref: str | None):
+    """result_ref JSON → Python 对象（None/解析失败 → None）"""
+    if not result_ref:
+        return None
+    try:
+        return json.loads(result_ref)
+    except (TypeError, ValueError):
+        return None
+
+
+def task_get(task_id: str) -> dict:
+    """获取任务状态 + 结果（``result_ref`` 反序列化）"""
+    return task_meta(task_id)
 
 
 def _running_control(task_id: str) -> TaskControl:

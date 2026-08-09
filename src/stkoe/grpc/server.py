@@ -25,6 +25,7 @@ from typing import Iterator
 import grpc
 import polars as pl
 
+from ..data.catalog.spec import TaskHandle
 from ..data.table import DependencyError
 from . import stkoe_pb2, stkoe_pb2_grpc
 
@@ -34,10 +35,27 @@ class StkoeServerError(RuntimeError):
 
 
 def _jsonable(obj):
-    """元数据对象 → JSON 可序列化（dataclass 自带 to_dict）"""
+    """元数据对象 → JSON 可序列化（dataclass 自带 to_dict；容器递归）"""
     if hasattr(obj, "to_dict"):
         return obj.to_dict()
+    if isinstance(obj, dict):
+        return {k: _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(x) for x in obj]
     return obj
+
+
+def _async_flag(kv: dict) -> bool:
+    """kv 中的 --async 标志（v0.5.0 统一：默认同步，显式 --async 转后台）"""
+    v = kv.get("async")
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
+
+
+def _run_cmd(kv: dict, fn, *args, **kw):
+    """执行并适配结果：--async → TaskHandle 序列化（to_dict）；否则原样返回"""
+    return _jsonable(fn(*args, background=_async_flag(kv), **kw))
 
 
 # ============================================================================
@@ -69,7 +87,7 @@ def _df_to_records(df: pl.DataFrame) -> list[dict]:
 
 def _execute(cmd: str, args: list[str]) -> dict:
     """元数据/列表/状态等小结果 → JSON；表格数据走 Select/RunTask"""
-    from ..data import dataset, field, stat, table, task_list
+    from ..data import dataset, field, stat, table, task_get, task_list
     from ..data.settings import config_path as cfg_path
     from ..data.settings import load_config
     from importlib.metadata import version as _pkg_version
@@ -81,8 +99,11 @@ def _execute(cmd: str, args: list[str]) -> dict:
                 "ignore_cols": list(c.ignore_cols)}
     if cmd == "version":
         return {"version": _pkg_version("stkoe")}
-    if cmd == "task" and args and args[0] == "list":
-        return [_jsonable(t) for t in task_list()]
+    if cmd == "task" and args:
+        if args[0] == "list":
+            return [_jsonable(t) for t in task_list()]
+        if args[0] == "get" and len(args) >= 2:
+            return task_get(args[1])
 
     if cmd == "table":
         sub = args[0] if args else ""
@@ -96,17 +117,18 @@ def _execute(cmd: str, args: list[str]) -> dict:
             name, kv = _parse_kv(args[1:])
             if kv.get("all"):
                 # table add --all：批量发现并注册 tables/ 下所有未注册且有数据的目录
-                return [_jsonable(r) for r in table.add("*", all=True, background=False)]
-            return _jsonable(table.add(name or args[1], dbt_manifest=kv.get("dbt_manifest"),
-                                       background=False))
+                return _run_cmd(kv, table.add, "*", all=True)
+            return _run_cmd(kv, table.add, name or args[1],
+                             dbt_manifest=kv.get("dbt_manifest"))
         if sub == "set" and len(args) >= 2:
-            return _jsonable(_table_set(table, args[1], args[2:]))
+            _, kv = _parse_kv(args[1:])
+            return _run_cmd(kv, _table_set, table, args[1], args[2:])
         if sub == "del" and len(args) >= 2:
-            table.del_(args[1], background=False)
-            return {"deleted": args[1]}
+            _, kv = _parse_kv(args[1:])
+            return _run_cmd(kv, table.del_, args[1]) or {"deleted": args[1]}
         if sub == "scan" and len(args) >= 2:
-            report = table.scan(args[1], background=False)
-            return _jsonable(report)
+            _, kv = _parse_kv(args[1:])
+            return _run_cmd(kv, table.scan, args[1])
 
     if cmd == "dataset":
         sub = args[0] if args else ""
@@ -115,14 +137,17 @@ def _execute(cmd: str, args: list[str]) -> dict:
         if sub in ("meta", "describe") and len(args) >= 2:
             return _jsonable(dataset.meta(args[1]))
         if sub == "add" and len(args) >= 3:
-            return _jsonable(_dataset_add(dataset, args))
+            _, kv = _parse_kv(args[1:])
+            return _run_cmd(kv, _dataset_add, dataset, args)
         if sub == "set" and len(args) >= 2:
-            return _jsonable(_dataset_set(dataset, args[1], args[2:]))
+            _, kv = _parse_kv(args[1:])
+            return _run_cmd(kv, _dataset_set, dataset, args[1], args[2:])
         if sub == "del" and len(args) >= 2:
-            dataset.del_(args[1], background=False)
-            return {"deleted": args[1]}
+            _, kv = _parse_kv(args[1:])
+            return _run_cmd(kv, dataset.del_, args[1]) or {"deleted": args[1]}
         if sub == "scan" and len(args) >= 2:
-            return _jsonable(dataset.scan(args[1], background=False))
+            _, kv = _parse_kv(args[1:])
+            return _run_cmd(kv, dataset.scan, args[1])
         if sub == "validate" and len(args) >= 2:
             mode = "full"
             if "--mode" in args:
@@ -138,7 +163,8 @@ def _execute(cmd: str, args: list[str]) -> dict:
         if sub == "meta" and len(args) >= 2:
             return _jsonable(stat.meta(args[1]))
         if sub == "get" and len(args) >= 2:
-            return _stat_get(stat, args[1], args[2:])
+            _, kv = _parse_kv(args[1:])
+            return _run_cmd(kv, _stat_get, stat, args[1], args[2:])
 
     if cmd == "field":
         sub = args[0] if args else ""
@@ -187,7 +213,7 @@ def _parse_kv(args: list[str]) -> tuple[str, dict]:
     return name, kv
 
 
-def _table_set(table, name: str, args: list[str]):
+def _table_set(table, name: str, args: list[str], *, background: bool = False):
     _, kv = _parse_kv(args)
     return table.set(name,
                      display_name=kv.get("display_name"),
@@ -195,10 +221,10 @@ def _table_set(table, name: str, args: list[str]):
                      tags=kv["tags"].split(",") if kv.get("tags") else None,
                      source=kv.get("source"),
                      dbt_manifest=kv.get("dbt_manifest"),
-                     background=False)
+                     background=background)
 
 
-def _dataset_add(dataset, args: list[str]) -> dict:
+def _dataset_add(dataset, args: list[str], *, background: bool = False) -> dict:
     name, index_table = args[1], args[2]
     tables = args[3:]
     keys = None
@@ -217,18 +243,18 @@ def _dataset_add(dataset, args: list[str]) -> dict:
         meta_extra["tags"] = meta_extra["tags"].split(",")
     if not tables:
         raise ValueError("dataset add 需要至少一张成员表: " + " ".join(args))
-    return dataset.add(name, index_table, *tables, keys=keys, background=False,
+    return dataset.add(name, index_table, *tables, keys=keys, background=background,
                        **meta_extra)
 
 
-def _dataset_set(dataset, name: str, args: list[str]):
+def _dataset_set(dataset, name: str, args: list[str], *, background: bool = False):
     _, kv = _parse_kv(args)
     return dataset.set(name,
                        display_name=kv.get("display_name"),
                        description=kv.get("description"),
                        tags=kv["tags"].split(",") if kv.get("tags") else None,
                        category=kv.get("category"),
-                       background=False)
+                       background=background)
 
 
 def _field_create(field, args: list[str]) -> dict:
@@ -255,8 +281,8 @@ def _field_set(field, name: str, args: list[str]):
                      tags=kv["tags"].split(",") if kv.get("tags") else None)
 
 
-def _stat_get(stat, name: str, args: list[str]):
-    """stat get → JSON 行集（支持 --group/--all/--refresh）"""
+def _stat_get(stat, name: str, args: list[str], *, background: bool = False):
+    """stat get → JSON 行集（支持 --group/--all/--refresh；--async → TaskHandle）"""
     group = None
     all_ = False
     refresh = False
@@ -266,7 +292,9 @@ def _stat_get(stat, name: str, args: list[str]):
         refresh = True
     if "--group" in args:
         group = args[args.index("--group") + 1]
-    df = stat.get(name, group_col=group, all_=all_, refresh=refresh)
+    df = stat.get(name, group_col=group, all_=all_, refresh=refresh, background=background)
+    if isinstance(df, TaskHandle):
+        return df
     if isinstance(df, dict):
         return {"groups": {g: _df_to_records(v) for g, v in df.items()}}
     return {"groups": {"all": _df_to_records(df)}}

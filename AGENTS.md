@@ -239,8 +239,10 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
 - `field`：`list` / `meta <name>` / `create <name> <dataset> [formula=]` / `set <name> ...` /
   `rename <old> <new>` / `del <name>`
 
-> **同步契约（v0.4.6）**：table/dataset 的 add/del/set/scan 在 Execute 中一律强制
-> `background=False`，成功/失败当场返回（含 `DependencyError`），绝不落入后台任务。
+> **同步契约（v0.5.0）**：table/dataset/stat 的 add/del/set/scan 在 Execute 中
+> **默认同步**（无全局异步模式），成功/失败当场返回（含 `DependencyError`），
+> 绝不落入后台任务；仅显式 `--async` 才转后台（返回 TaskHandle 序列化，
+> 经 `_run_cmd` 统一适配，结果用 `task get` 拉取）。
 
 ### Select 参数
 
@@ -264,6 +266,23 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
 - 生成 stub 后需手动把 `stkoe_pb2_grpc.py` 顶部 `import stkoe_pb2` 改为 `from . import stkoe_pb2`
 
 ## 演进记录
+
+### v0.5.0（async 统一抽象 + CLI 输出标准化）
+- **async 抽象进 task 模块**：`TaskControl` 新增 `console` 模式——`console=True` 时
+  log/progress/stage 走 loguru 直接打印（同步执行可见进度），check/flush/pause/resume/cancel
+  为空操作；`defer` 同步路径自动注入 `console_ctl()`，业务函数**恒有 ctl、不再判空**。
+- **同步/异步统一**：删除全局异步模式（`set_default_async`/`is_default_async` 移除）；
+  所有命令默认同步，显式 `--async` 才转后台（返回 task_id，`task get <id>` 拉取状态/结果）；
+  gRPC Execute 侧 `_run_cmd` 统一适配（TaskHandle 经 `to_dict()` 序列化）。
+- **CLI 输出标准化**：结构化结果一律 JSON 一行（orjson），表格查询（get）原样打印
+  polars DataFrame；删除全部 `--json` 开关与格式化 print；del 命令统一返回
+  `{"deleted": name}`；`task stop --all`/`task clean` 返回 `{"stopped"/"cleaned": n}`；
+  config show/set 改 JSON；REPL 复用同一输出路径（不再单独格式化）。
+- **TaskHandle.to_dict()**：`catalog/spec.py` 新增（task_id/type/object_ref/status/progress/
+  stage/error/result），CLI 与 gRPC 共用同一序列化。
+- 测试：全量 152 用例绿（test_cli 断言改 JSON 语义：version_after/del 结果/task 轮询）。
+  `set_default_async(True)` 时代测试 `test_execute_table_ops_sync_in_async_mode` 移除，
+  改 `test_execute_table_ops_sync_default`（无全局异步模式）。
 
 ### v0.4.8（portal 移除 + 后端收尾）
 - **portal 移除**：删除 `src/stkoe/portal/` 全部内容（Panel 门户：apps/components/pages/

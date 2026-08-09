@@ -1,12 +1,15 @@
 """CLI：stkoe 命令入口（typer）
 
-统一动词：add / get / del / set / meta / list / scan（table · dataset · stat 对齐），
-外加 table col（字段元数据）、dataset describe（meta 别名）。
-CLI 默认同步执行（直接返回结果）；REPL 默认后台（返回 TaskHandle，见 __main__）。
+统一动词：add / get / del / set / meta / list / scan（table · dataset · stat 对齐）。
+
+输出约定（v0.5.0）：结构化结果（报告/元数据/任务）一律 JSON 一行（orjson），
+表格查询（get）原样打印 polars DataFrame；不提供 --json 开关（默认即 JSON）。
+所有命令默认同步执行，``--async`` 显式转后台（返回 task_id，``task get`` 查询）。
 """
 import sys
 
 import orjson
+import polars as pl
 import typer
 
 from . import table
@@ -56,29 +59,26 @@ def _print_json(obj):
     sys.stdout.buffer.write(orjson.dumps(obj) + b"\n")
 
 
-def _finish(res, *, action: str = "", name: str = ""):
-    """同步结果直接打印；后台 TaskHandle 打印任务登记"""
+def _jsonable(obj):
+    """dataclass/嵌套容器 → JSON 可序列化（dataclass 经 to_dict）"""
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    if isinstance(obj, dict):
+        return {k: _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(x) for x in obj]
+    return obj
+
+
+def _emit(res):
+    """统一结果输出：TaskHandle/结构化 → JSON 一行；DataFrame → 原样打印"""
     if isinstance(res, TaskHandle):
-        print(f"task={res.task_id} status={res.status} action={action or name}")
+        _print_json(res.to_dict())
         return
-    return res
-
-
-def _table_json(m: table.TableMeta) -> dict:
-    return {
-        "name": m.name,
-        "version": m.version,
-        "layout": m.layout.value,
-        "partition_by": list(m.partition_by),
-        "partition_count": m.partition_count,
-        "columns": [c.to_dict() for c in m.columns],
-        "consistent": m.consistent,
-        "display_name": m.display_name,
-        "description": m.description,
-        "tags": list(m.tags),
-        "created_at": m.created_at,
-        "updated_at": m.updated_at,
-    }
+    if isinstance(res, pl.DataFrame):
+        print(res)
+        return
+    _print_json(_jsonable(res))
 
 
 # ---------- table ----------
@@ -87,52 +87,23 @@ def _table_json(m: table.TableMeta) -> dict:
 def add(
     name: str = typer.Argument(None, help="表名；配合 --all 可省略"),
     all: bool = typer.Option(False, "--all", help="发现并注册 tables/ 下所有未注册且有数据的表"),
-    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局：CLI 同步 / REPL 后台）"),
+    async_: bool = typer.Option(False, "--async", help="后台执行（提交线程池，返回 task_id）"),
     dbt_manifest: str | None = typer.Option(None, "--dbt-manifest", help="DBT manifest 路径（文件/项目目录/自动发现），合并同名模型元数据"),
 ):
     """注册表（发现资产语义：目录不存在报错；已注册报错用 scan 刷新）"""
-    r = _finish(table.add(name, all=all, background=background, dbt_manifest=dbt_manifest))
-    if r is None:
-        return
-    if all:
-        if not r:
-            print("no unregistered tables found")
-        for x in r:
-            print(f"[{x.name}] v{x.version_before} -> v{x.version_after}"
-                  f" layout={x.layout.value} partitions={x.partition_count}"
-                  + (" (implicit)" if x.implicit_registered else ""))
-    else:
-        print(f"[{r.name}] v{r.version_before} -> v{r.version_after}"
-              f" layout={r.layout.value} partitions={r.partition_count}")
-        if dbt_manifest:
-            print(f"dbt: applied manifest for {r.name}")
+    _emit(table.add(name, all=all, background=async_, dbt_manifest=dbt_manifest))
 
 
 @table_app.command("list")
-def table_list(json: bool = typer.Option(False, help="JSON 输出")):
+def table_list():
     """列出已注册表"""
-    metas = table.list()
-    if json:
-        _print_json([_table_json(m) for m in metas])
-    else:
-        for m in metas:
-            print(f"{m.name:<24} v{m.version} {m.layout.value:<7} files={len(m.files):<5} "
-                  f"partitions={m.partition_count} consistent={m.consistent}")
+    _emit([m for m in table.list()])
 
 
 @table_app.command()
-def meta(name: str, json: bool = typer.Option(False, help="JSON 输出")):
+def meta(name: str):
     """表元数据：版本/布局/分区/文件/列"""
-    m = table.meta(name)
-    if json:
-        _print_json(_table_json(m))
-    else:
-        print(f"name:       {m.name}")
-        print(f"version:    {m.version}")
-        print(f"layout:     {m.layout.value}")
-        print(f"partition:  {', '.join(m.partition_by) or '-'}  count={m.partition_count}")
-        print(f"files:      {len(m.files)}  consistent={m.consistent}")
-        print(f"columns:    {', '.join(c.name + (':' + c.data_type if c.data_type else '') for c in m.columns)}")
+    _emit(table.meta(name))
 
 
 @table_app.command("get")
@@ -153,7 +124,7 @@ def get_cmd(
     if out:
         df = lf.collect()
         df.write_parquet(out)
-        print(f"written: {out} rows={df.height}")
+        _print_json({"written": out, "rows": df.height})
     else:
         print(lf.collect())
 
@@ -161,15 +132,14 @@ def get_cmd(
 @table_app.command("del")
 def del_cmd(name: str, force: bool = typer.Option(False, "--force", help="级联删除依赖方（dataset/stat 一并清理）")):
     """删除表注册（绝不删用户数据文件）"""
-    # 强制同步：删除必须当场返回（含 DependencyError 依赖信息），绝不落入后台任务
-    _finish(table.del_(name, force=force, background=False), name=name)
+    r = table.del_(name, force=force)
+    _emit(r if r is not None else {"deleted": name})
 
 
 @table_app.command()
 def rename(old: str, new: str):
     """改名（目录 tables/old → tables/new，并同步 catalog/下游引用）"""
-    m = table.rename(old, new)
-    print(f"renamed: {m.name} v{m.version}")
+    _emit(table.rename(old, new))
 
 
 @table_app.command()
@@ -183,11 +153,9 @@ def set(
                                             help="DBT manifest 路径，合并同名模型元数据（表/列描述）"),
 ):
     """修改表级元数据（display_name/description/tags，可配合 --dbt-manifest）"""
-    m = table.set(name, display_name=display_name, description=desc,
-                  tags=tags.split(",") if tags else None, new_name=new_name,
-                  dbt_manifest=dbt_manifest)
-    print(f"updated: {m.name} v{m.version} display_name={m.display_name}"
-          + (" dbt=applied" if dbt_manifest else ""))
+    _emit(table.set(name, display_name=display_name, description=desc,
+                    tags=tags.split(",") if tags else None, new_name=new_name,
+                    dbt_manifest=dbt_manifest))
 
 
 @table_app.command()
@@ -199,9 +167,7 @@ def col(
     unit: str = typer.Option(None, "--unit"),
 ):
     """更新字段（列）元数据"""
-    m = table.col(name, column, display_name=display_name, description=desc, unit=unit)
-    c = next(c for c in m.columns if c.name == column)
-    print(f"column {m.name}.{column}: display_name={c.display_name} description={c.description}")
+    _emit(table.col(name, column, display_name=display_name, description=desc, unit=unit))
 
 
 @table_app.command()
@@ -210,45 +176,27 @@ def scan(
     all: bool = typer.Option(False, "--all", help="扫描 tables/ 下全部目录（含未注册）"),
     resync: bool = typer.Option(False, "--resync", help="忽略快检强制全量读 footer"),
     cascade: bool = typer.Option(True, "--cascade/--no-cascade", help="变更后触发下游（默认开启）"),
-    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
+    async_: bool = typer.Option(False, "--async", help="后台执行（提交线程池，返回 task_id）"),
 ):
     """扫描同步元数据（幂等：无差异不 bump 版本）；变更后自动触发下游"""
-    reports = table.scan(name, all=all, resync=resync, cascade=cascade, background=background)
-    if isinstance(reports, TaskHandle):
-        print(f"task={reports.task_id} status={reports.status}")
-        return
-    rst = reports if all else [reports]
-    for r in rst:
-        print(f"[{r.name}] v{r.version_before} -> v{r.version_after}"
-              f" changed={r.changed} layout={r.layout.value} partitions={r.partition_count}"
-              + (" (implicit-registered)" if r.implicit_registered else ""))
-        if r.diffs:
-            for d in r.diffs:
-                print(f"  {d.kind}: {d.rel_path}")
-        if r.triggered:
-            print(f"  triggered: {', '.join(r.triggered)}")
+    _emit(table.scan(name, all=all, resync=resync, cascade=cascade, background=async_))
 
 
 # ---------- config ----------
 
 @config_app.command()
-def show(json: bool = typer.Option(False, help="JSON 输出")):
+def show():
     """查看当前配置（配置文件路径 + 生效值）"""
     c = load_config()
     p = config_path()
-    out = {
+    _print_json({
         "config_file": str(p),
         "data_path": c.data_path,
         "ignore_cols": list(c.ignore_cols),
         "grpc_host": c.grpc_host,
         "grpc_port": c.grpc_port,
         "resolved_data_path": str(resolve_data_path()),
-    }
-    if json:
-        _print_json(out)
-    else:
-        for k, v in out.items():
-            print(f"{k:<20} {v if not isinstance(v, list) else ','.join(v)}")
+    })
 
 
 @config_app.command()
@@ -267,7 +215,7 @@ def set(
         grpc_port=grpc_port if grpc_port is not None else c.grpc_port,
     )
     p = save_config(new)
-    print(f"written: {p}")
+    _print_json({"written": str(p)})
 
 
 # ---------- mock ----------
@@ -293,13 +241,7 @@ def gen(
     if kind not in gens:
         raise typer.BadParameter(f"unknown kind: {kind} (use {'|'.join(gens)})")
     df = gens[kind]()
-    res = mock_mod.write(name, df, partition_by=partition_by)
-    if isinstance(res, TaskHandle):
-        print(f"task={res.task_id} status={res.status} action=mock_write（后台生成中）")
-        return
-    report = res
-    print(f"[{report.name}] v{report.version_before} -> v{report.version_after}"
-          f" layout={report.layout.value} rows={len(df)}")
+    _emit(mock_mod.write(name, df, partition_by=partition_by))
 
 
 # ---------- task ----------
@@ -311,12 +253,7 @@ def task_list(
     limit: int = typer.Option(100, help="条数上限"),
 ):
     """任务列表"""
-    handles = task_mod.task_list(status=status, type=type, limit=limit)
-    if not handles:
-        print("no tasks")
-    for h in handles:
-        prog = f"{h.progress * 100:.0f}%" if h.status in ("running", "paused") else ""
-        print(f"{h.task_id[:8]:<10} {h.status:<10} {h.type:<24} {h.object_ref:<20} {prog} {h.stage}")
+    _emit(task_mod.task_list(status=status, type=type, limit=limit))
 
 
 @task_app.command()
@@ -328,13 +265,12 @@ def stop(
     if all_tasks:
         stopped = task_mod.task_stop_all()
         cleaned = task_mod.task_clean()
-        print(f"stop requested: {stopped} running, cleaned {cleaned} finished task(s)")
+        _print_json({"stopped": stopped, "cleaned": cleaned})
         return
     if not task_id:
         raise typer.BadParameter("需要提供 task_id 或使用 --all")
     try:
-        h = task_mod.task_stop(task_id)
-        print(f"stop requested: {task_id} status={h.status}")
+        _emit(task_mod.task_stop(task_id))
     except KeyError as e:
         raise typer.BadParameter(str(e))
 
@@ -342,16 +278,14 @@ def stop(
 @task_app.command()
 def clean():
     """删除全部完成态任务（succeeded/failed/cancelled，日志级联删除）"""
-    n = task_mod.task_clean()
-    print(f"cleaned {n} finished task(s)")
+    _print_json({"cleaned": task_mod.task_clean()})
 
 
 @task_app.command()
 def pause(task_id: str):
     """暂停任务（协作式，下一个分区边界生效）"""
     try:
-        h = task_mod.task_pause(task_id)
-        print(f"paused: {task_id} progress={h.progress:.0%}")
+        _emit(task_mod.task_pause(task_id))
     except KeyError as e:
         raise typer.BadParameter(str(e))
 
@@ -360,8 +294,7 @@ def pause(task_id: str):
 def resume(task_id: str):
     """恢复已暂停任务"""
     try:
-        h = task_mod.task_resume(task_id)
-        print(f"resumed: {task_id} status={h.status}")
+        _emit(task_mod.task_resume(task_id))
     except KeyError as e:
         raise typer.BadParameter(str(e))
 
@@ -376,10 +309,16 @@ def log(
     entries = task_mod.task_log(task_id, after_seq=after_seq)
     if tail is not None:
         entries = entries[-tail:]
-    if not entries:
-        print("(no log entries)")
-    for e in entries:
-        print(f"[{e.seq}] {e.ts} {e.level:<7} {e.message}")
+    _emit(entries)
+
+
+@task_app.command()
+def get(task_id: str):
+    """任务详情：状态/进度/阶段/错误 + 结果（result，异步任务完成可拉取）"""
+    try:
+        _emit(task_mod.task_get(task_id))
+    except KeyError as e:
+        raise typer.BadParameter(str(e))
 
 
 # ---------- dataset ----------
@@ -392,51 +331,28 @@ def add(
     keys: str = typer.Option(None, help="join 键，逗号分隔（缺省=index 全部列）"),
     no_materialize: bool = typer.Option(False, "--no-materialize", help="只注册不物化"),
     force: bool = typer.Option(False, "--force", help="已存在时覆盖重建"),
-    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
+    async_: bool = typer.Option(False, "--async", help="后台执行（提交线程池，返回 task_id）"),
 ):
     """注册 dataset（join 规格校验 → 注册 → 自动物化；get 前未物化也会自动）"""
     try:
-        r = dataset_mod.add(name, index_table, *tables,
-                           keys=keys.split(",") if keys else None,
-                           materialize=not no_materialize,
-                           force=force, background=background)
+        _emit(dataset_mod.add(name, index_table, *tables,
+                              keys=keys.split(",") if keys else None,
+                              materialize=not no_materialize,
+                              force=force, background=async_))
     except dataset_mod.DatasetExistsError as e:
         raise typer.BadParameter(str(e))
-    if isinstance(r, TaskHandle):
-        print(f"task={r.task_id} status={r.status}（物化将后台完成）")
-    else:
-        print(f"registered: {r.name} v{r.version} keys={','.join(r.keys)} "
-              f"materialized={r.materialized} partition={r.partition_gran or '-'}")
 
 
 @dataset_app.command("list")
-def dataset_list(json: bool = typer.Option(False, help="JSON 输出")):
+def dataset_list():
     """列出已注册 dataset"""
-    metas = dataset_mod.list()
-    if json:
-        _print_json([dm.to_dict() for dm in metas])
-        return
-    for dm in metas:
-        print(f"{dm.name:<24} v{dm.version} keys={','.join(dm.keys) or '-'} "
-              f"tables={len(dm.tables) + 1} mat={dm.materialized} "
-              f"gran={dm.partition_gran or '-'} curated={dm.curated}")
+    _emit([dm for dm in dataset_mod.list()])
 
 
 @dataset_app.command()
-def meta(name: str, json: bool = typer.Option(False, help="JSON 输出")):
+def meta(name: str):
     """dataset 元数据"""
-    dm = dataset_mod.meta(name)
-    if json:
-        _print_json(dm.to_dict())
-        return
-    print(f"name:        {dm.name}")
-    print(f"version:     {dm.version}")
-    print(f"index:       {dm.index_table}")
-    print(f"tables:      {', '.join(dm.tables) or '-'}")
-    print(f"keys:        {', '.join(dm.keys) or '-'}")
-    print(f"partition:   {', '.join(dm.partition_by) or '-'} gran={dm.partition_gran or '-'} "
-          f"curated={dm.curated}")
-    print(f"columns:     {', '.join(f'{c.name}:{c.source_table}.{c.source_field}' for c in dm.columns)}")
+    _emit(dataset_mod.meta(name))
 
 
 # describe 是 dataset 的兼容别名（老 REPL 习惯）
@@ -465,30 +381,12 @@ def dataset_scan(
     all: bool = typer.Option(False, "--all", help="增量重物化全部"),
     resync: bool = typer.Option(False, "--resync", help="强制全量重物化"),
     cascade: bool = typer.Option(True, "--cascade/--no-cascade", help="变更后级联下游 stat"),
-    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
+    async_: bool = typer.Option(False, "--async", help="后台执行（提交线程池，返回 task_id）"),
 ):
     """检查依赖并增量重物化（幂等）；变更后级联通知下游 stat"""
-    if all:
-        if name:
-            raise typer.BadParameter("--all 与 name 互斥")
-        res = dataset_mod.scan(None, all=True, resync=resync, cascade=cascade, background=background)
-        if isinstance(res, TaskHandle):
-            print(f"task={res.task_id} status={res.status}")
-            return
-        for r in res:
-            print(f"[{r.name}] v{r.version_before} -> v{r.version_after}"
-                  f" changed={r.changed} incremental={r.incremental} rebuilt={len(r.rebuilt_partitions)}")
-        return
-    r = dataset_mod.scan(name, resync=resync, cascade=cascade, background=background)
-    if isinstance(r, TaskHandle):
-        print(f"task={r.task_id} status={r.status}（物化中）")
-        return
-    print(f"[{r.name}] v{r.version_before} -> v{r.version_after} changed={r.changed} "
-          f"incremental={r.incremental} partition={','.join(r.partition_by) or '-'}")
-    for p in r.rebuilt_partitions:
-        print(f"  rebuilt: {p}")
-    if r.triggered:
-        print(f"  triggered: {', '.join(r.triggered)}")
+    if all and name:
+        raise typer.BadParameter("--all 与 name 互斥")
+    _emit(dataset_mod.scan(name, all=all, resync=resync, cascade=cascade, background=async_))
 
 
 @dataset_app.command("del")
@@ -496,15 +394,14 @@ def dataset_del(name: str, force: bool = typer.Option(False, "--force", help="�
                 with_data: bool = typer.Option(True, "--with-data/--no-with-data",
                                                help="同时删除物化产物（默认删除）")):
     """删除 dataset 注册与物化产物"""
-    # 强制同步：删除必须当场返回（含 DependencyError 依赖信息），绝不落入后台任务
-    _finish(dataset_mod.del_(name, force=force, with_data=with_data, background=False), name=name)
+    r = dataset_mod.del_(name, force=force, with_data=with_data)
+    _emit(r if r is not None else {"deleted": name})
 
 
 @dataset_app.command()
 def rename(old: str, new: str):
     """改名（目录 + catalog，关联 stat 级联改名）"""
-    m = dataset_mod.rename(old, new)
-    print(f"renamed: {m.name} v{m.version}")
+    _emit(dataset_mod.rename(old, new))
 
 
 # ---------- stat ----------
@@ -515,38 +412,22 @@ def add(
     group_col: list[str] = typer.Option(None, "--group-col", "--group_col", help="按列分组统计（可多次）"),
     all: bool = typer.Option(False, "--all", help="统计 'all' + 逐索引/业务列分组"),
     refresh: bool = typer.Option(False, "--refresh", help="强制重算（忽略缓存有效性）"),
-    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
+    async_: bool = typer.Option(False, "--async", help="后台执行（提交线程池，返回 task_id）"),
 ):
     """创建统计资产（缺省仅 'all'；产物 stats/<name>/group=*/stats.parquet）"""
-    _finish(stat_mod.add(name, group_col=group_col, all_=all, refresh=refresh, background=background),
-            name=name)
+    _emit(stat_mod.add(name, group_col=group_col, all_=all, refresh=refresh, background=async_))
 
 
 @stat_app.command("list")
-def stat_list(json: bool = typer.Option(False, help="JSON 输出")):
+def stat_list():
     """列出已注册 stat"""
-    metas = stat_mod.list()
-    if json:
-        _print_json([sm.to_dict() for sm in metas])
-        return
-    for sm in metas:
-        print(f"{sm.name:<24} v{sm.version} target={sm.target_type}:{sm.target_name:<20} "
-              f"groups={','.join(sm.groups) or '-'} stale={len(sm.stale_groups)}")
+    _emit([sm for sm in stat_mod.list()])
 
 
 @stat_app.command()
-def meta(name: str, json: bool = typer.Option(False, help="JSON 输出")):
+def meta(name: str):
     """stat 元数据（分组/是否 stale）"""
-    sm = stat_mod.meta(name)
-    if json:
-        _print_json(sm.to_dict())
-        return
-    print(f"name:        {sm.name}")
-    print(f"version:     {sm.version}")
-    print(f"target:      {sm.target_type}:{sm.target_name}")
-    print(f"groups:      {', '.join(sm.groups) or '-'}")
-    if sm.stale_groups:
-        print(f"stale:       {', '.join(sm.stale_groups)}（scan 重算）")
+    _emit(stat_mod.meta(name))
 
 
 @stat_app.command("get")
@@ -555,12 +436,12 @@ def stat_get(
     group_col: str = typer.Option(None, "--group-col", "--group_col", help="按列分组统计"),
     all: bool = typer.Option(False, "--all", help="返回 'all' + 逐列分组"),
     refresh: bool = typer.Option(False, "--refresh", help="强制重算（默认读缓存，缺失/过期自动重算）"),
-    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
+    async_: bool = typer.Option(False, "--async", help="后台执行（提交线程池，返回 task_id）"),
 ):
     """读统计（默认读缓存；缺失/过期自动重算；--all 返回全部分组）"""
-    res = stat_mod.get(name, group_col=group_col, all_=all, refresh=refresh, background=background)
+    res = stat_mod.get(name, group_col=group_col, all_=all, refresh=refresh, background=async_)
     if isinstance(res, TaskHandle):
-        print(f"task={res.task_id} status={res.status} action=stat_get（计算中）")
+        _print_json(res.to_dict())
         return
     if all:
         for group, df in res.items():
@@ -575,26 +456,19 @@ def scan(
     name: str = typer.Argument(None, help="stat 名（缺省配合 --all）"),
     all: bool = typer.Option(False, "--all", help="扫描全部已注册 stat"),
     refresh: bool = typer.Option(False, "--refresh", help="强制全量重算"),
-    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
+    async_: bool = typer.Option(False, "--async", help="后台执行（提交线程池，返回 task_id）"),
 ):
     """重算 data_key 失配的分组（幂等）"""
     if all and name:
         raise typer.BadParameter("--all 与 name 互斥")
-    res = stat_mod.scan(name, all=all, refresh=refresh, background=background)
-    if isinstance(res, TaskHandle):
-        print(f"task={res.task_id} status={res.status}")
-        return
-    rs = res if all else [res]
-    for r in rs:
-        print(f"[{r['name']}] target={r['target']} "
-              f"recomputed={','.join(r['recomputed']) or '-'} fresh={','.join(r['fresh']) or '-'}")
+    _emit(stat_mod.scan(name, all=all, refresh=refresh, background=async_))
 
 
 @stat_app.command("del")
 def stat_del(name: str):
     """删除统计注册与产物（stats/<name>/ + stkoe_depends 边）"""
-    # 强制同步：删除必须当场返回（含 DependencyError 依赖信息），绝不落入后台任务
-    _finish(stat_mod.del_(name, background=False), name=name)
+    r = stat_mod.del_(name)
+    _emit(r if r is not None else {"deleted": name})
 
 
 @stat_app.command()
@@ -603,11 +477,8 @@ def rename(old: str, new: str):
     m = stat_mod.rename(old, new)
     if m is None:
         raise typer.BadParameter(f"stat not registered: {old}")
-    print(f"renamed: {m.name} v{m.version}")
+    _emit(m)
 
-
-if __name__ == "__main__":
-    app()
 
 # ---------- field ----------
 
@@ -616,48 +487,34 @@ def add(name: str, dataset: str,
         formula: str = typer.Option(None, help="指标公式（存根，不物化计算）"),
         display_name: str = typer.Option(None, help="显示名称")):
     """注册指标：绑定 dataset + 公式存根（catalog 登记）"""
-    m = field_mod.create(name, dataset, formula=formula,
-                         **({"display_name": display_name} if display_name else {}))
-    print(f"registered: {m.name} dataset={m.dataset} v{m.version}")
+    _emit(field_mod.create(name, dataset, formula=formula,
+                           **({"display_name": display_name} if display_name else {})))
 
 
 @field_app.command("list")
-def field_list(json: bool = typer.Option(False, help="JSON 输出")):
+def field_list():
     """列出已注册指标"""
-    metas = field_mod.list()
-    if json:
-        _print_json([m.to_dict() for m in metas])
-        return
-    for m in metas:
-        print(f"{m.name:<24} v{m.version} dataset={m.dataset:<20} formula={m.formula or '-'}")
+    _emit([m for m in field_mod.list()])
 
 
 @field_app.command()
-def meta(name: str, json: bool = typer.Option(False, help="JSON 输出")):
+def meta(name: str):
     """指标元数据"""
-    m = field_mod.meta(name)
-    if json:
-        _print_json(m.to_dict())
-        return
-    print(f"name:        {m.name}")
-    print(f"version:     {m.version}")
-    print(f"dataset:     {m.dataset}")
-    print(f"formula:     {m.formula or '-'}")
-    print(f"display:     {m.display_name}")
-    print(f"description: {m.description}")
-    print(f"tags:        {', '.join(m.tags) or '-'}")
+    _emit(field_mod.meta(name))
 
 
 @field_app.command()
 def rename(old: str, new: str):
     """改名（catalog + 依赖边）"""
-    m = field_mod.rename(old, new)
-    print(f"renamed: {m.name} v{m.version}")
+    _emit(field_mod.rename(old, new))
 
 
 @field_app.command("del")
 def field_del(name: str):
     """删除指标注册"""
     field_mod.del_(name)
-    print(f"deleted: {name}")
+    _print_json({"deleted": name})
 
+
+if __name__ == "__main__":
+    app()

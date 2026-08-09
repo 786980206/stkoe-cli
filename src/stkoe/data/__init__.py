@@ -95,10 +95,9 @@ from .table import (  # noqa: E402
 )
 from .task import (  # noqa: E402
     defer,
-    is_default_async,
     run_task,
-    set_default_async,
     task_clean,
+    task_get,
     task_list,
     task_log,
     task_meta,
@@ -141,9 +140,8 @@ __all__ = [
     "table_set",
     "field_graph",
     "defer",
-    "is_default_async",
     "run_task",
-    "set_default_async",
+    "task_get",
     "task_list",
     "task_log",
     "task_meta",

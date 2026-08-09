@@ -357,7 +357,7 @@ def _dep_signature(conn, tabs: list[str], ids: dict[str, set[int]]) -> str:
 
 # ---------- 物化引擎 ----------
 
-def materialize_job(dm: DatasetMeta, conn, ctl: TaskControl | None,
+def materialize_job(dm: DatasetMeta, conn, ctl: TaskControl,
                     resync: bool = False) -> DatasetScanReport:
     """全量/增量物化；幂等（依赖未变的分区跳过，不 bump version）。
 
@@ -383,8 +383,7 @@ def materialize_job(dm: DatasetMeta, conn, ctl: TaskControl | None,
         target = out_dir / "data.parquet"
         dep = _dep_signature(cx, tabs, {t: builtins.set(_table_ids(cx, t)) for t in tabs})
         if resync or prev_deps.get("") != dep or not target.exists():
-            if ctl:
-                ctl.stage("materializing (flat)")
+            ctl.stage("materializing (flat)")
             lf.sink_parquet(target)
             rebuilt.append("")
             changed = True
@@ -404,9 +403,8 @@ def materialize_job(dm: DatasetMeta, conn, ctl: TaskControl | None,
             buckets = _bucket_values(gran, plan["lo"], plan["hi"])
         new_deps: dict[str, str] = {}
         for i, value in enumerate(buckets):
-            if ctl:
-                ctl.check()
-                ctl.stage(f"materializing part={value} ({i + 1}/{len(buckets)})")
+            ctl.check()
+            ctl.stage(f"materializing part={value} ({i + 1}/{len(buckets)})")
             if gran == "identity":
                 ids: dict[str, set[int]] = {}
                 for t in tabs:
@@ -432,9 +430,8 @@ def materialize_job(dm: DatasetMeta, conn, ctl: TaskControl | None,
             new_deps[value] = dep
             rebuilt.append(value)
             changed = True
-            if ctl:
-                ctl.progress((i + 1) / len(buckets), msg=f"part={value} done")
-                ctl.flush(cx)
+            ctl.progress((i + 1) / len(buckets), msg=f"part={value} done")
+            ctl.flush(cx)
 
     dm2 = _update_meta(cx, dm, new_deps, partition_by=partition_by,
                        partition_gran=partition_gran, bump=prev_materialized and changed)
@@ -740,8 +737,9 @@ def scan(name: str | None = None, *, all: bool = False, resync: bool = False,
 def scan_impl(dm: DatasetMeta, *, conn=None, ctl=None, resync: bool = False,
               cascade: bool = True) -> DatasetScanReport:
     """增量重物化（幂等）；变更后按 stkoe_depends 级联下游 stat scan"""
+    from .task import console_ctl
     cx = _with_conn(conn)
-    report = materialize_job(dm, cx, ctl, resync=resync)
+    report = materialize_job(dm, cx, ctl or console_ctl("dataset_scan", dm.name), resync=resync)
     if cascade and report.changed:
         _notify_stat_downstream(report.name)
     return report

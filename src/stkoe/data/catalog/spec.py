@@ -163,6 +163,18 @@ class TaskHandle:
     error: str | None = None
     result_ref: str | None = None
 
+    def to_dict(self) -> dict:
+        return {
+            "task_id": self.task_id,
+            "type": self.type,
+            "object_ref": self.object_ref,
+            "status": self.status,
+            "progress": self.progress,
+            "stage": self.stage,
+            "error": self.error,
+            "result": self.result_ref,
+        }
+
 
 @dataclass(frozen=True)
 class TaskLog:

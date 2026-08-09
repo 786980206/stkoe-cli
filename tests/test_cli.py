@@ -21,9 +21,7 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def _reset_async_default():
-    """REPL 测试会把默认执行模式切为后台，恢复同步避免顺序耦合"""
-    from stkoe.data.task import set_default_async
-    set_default_async(False)
+    """v0.5.0 起所有操作默认同步（无全局异步模式），fixture 仅作占位防顺序耦合"""
     yield
 
 
@@ -42,12 +40,13 @@ def test_cli_table_add_list_meta(root):
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
     r = runner.invoke(app, ["table", "scan", "t1"])
     assert r.exit_code == 0, r.stdout
-    assert "[t1] v0 -> v1" in r.stdout
+    j = orjson.loads(r.stdout)
+    assert j["name"] == "t1" and j["version_after"] == 1
 
     r = runner.invoke(app, ["table", "list"])
     assert r.exit_code == 0 and "t1" in r.stdout
 
-    r = runner.invoke(app, ["table", "meta", "t1", "--json"])
+    r = runner.invoke(app, ["table", "meta", "t1"])
     assert r.exit_code == 0, r.stdout
     j = orjson.loads(r.stdout.encode())
     assert j["name"] == "t1" and j["layout"] == "single"
@@ -68,11 +67,11 @@ def test_cli_table_set_rename_del(root):
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
     data.table.scan("t1")
     r = runner.invoke(app, ["table", "set", "t1", "--display-name", "hi"])
-    assert r.exit_code == 0 and "display_name=hi" in r.stdout
+    assert r.exit_code == 0 and orjson.loads(r.stdout)["display_name"] == "hi"
     r = runner.invoke(app, ["table", "rename", "t1", "t1b"])
-    assert r.exit_code == 0 and "t1b" in r.stdout
+    assert r.exit_code == 0 and orjson.loads(r.stdout)["name"] == "t1b"
     r = runner.invoke(app, ["table", "del", "t1b"])
-    assert r.exit_code == 0
+    assert r.exit_code == 0 and orjson.loads(r.stdout) == {"deleted": "t1b"}
     r = runner.invoke(app, ["table", "list"])
     assert r.exit_code == 0 and "t1b" not in r.stdout
     assert (root / "tables" / "t1b" / "t1.parquet").exists()  # 数据文件保留
@@ -82,17 +81,17 @@ def test_cli_dataset(root):
     _setup_pair(root)
     r = runner.invoke(app, ["dataset", "add", "ds", "idx", "m1"])
     assert r.exit_code == 0, r.stdout
-    assert "registered: ds" in r.stdout
+    assert orjson.loads(r.stdout)["name"] == "ds"
 
     r = runner.invoke(app, ["dataset", "list"])
     assert r.exit_code == 0 and "ds" in r.stdout
 
-    r = runner.invoke(app, ["dataset", "list", "--json"])
+    r = runner.invoke(app, ["dataset", "list"])
     assert r.exit_code == 0, r.stdout
     j = orjson.loads(r.stdout)
     assert isinstance(j, list) and any(d["name"] == "ds" for d in j)
 
-    r = runner.invoke(app, ["dataset", "meta", "ds", "--json"])
+    r = runner.invoke(app, ["dataset", "meta", "ds"])
     assert r.exit_code == 0, r.stdout
     dj = orjson.loads(r.stdout)
     assert dj["name"] == "ds" and dj["index_table"] == "idx" and dj["keys"] == ["date", "sym"]
@@ -101,7 +100,7 @@ def test_cli_dataset(root):
     assert r.exit_code == 0 and "b" in r.stdout
 
     r = runner.invoke(app, ["dataset", "scan", "ds"])
-    assert r.exit_code == 0 and "changed=False" in r.stdout
+    assert r.exit_code == 0 and orjson.loads(r.stdout)["changed"] is False
 
     r = runner.invoke(app, ["stat", "get", "ds"])
     assert r.exit_code == 0 and "field" in r.stdout
@@ -116,7 +115,7 @@ def test_cli_stat(root):
     runner.invoke(app, ["dataset", "add", "ds", "idx", "m1"])
     r = runner.invoke(app, ["stat", "add", "ds"])
     assert r.exit_code == 0, r.stdout
-    r = runner.invoke(app, ["stat", "meta", "ds", "--json"])
+    r = runner.invoke(app, ["stat", "meta", "ds"])
     assert r.exit_code == 0
     j = orjson.loads(r.stdout.encode())
     assert j["target_type"] == "dataset" and j["groups"] == ["all"]
@@ -132,7 +131,7 @@ def test_main_direct(root, capsys):
     write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
     rc = mainmod.main(["table", "scan", "t1"])
     assert rc == 0
-    rc = mainmod.main(["table", "meta", "t1", "--json"])
+    rc = mainmod.main(["table", "meta", "t1"])
     assert rc == 0
     assert "t1" in capsys.readouterr().out
 
@@ -141,7 +140,7 @@ def test_cli_task_clean(root):
     run_task("cli_clean", "obj", lambda c, k: None)
     r = runner.invoke(app, ["task", "clean"])
     assert r.exit_code == 0, r.stdout
-    assert "cleaned 1 finished task(s)" in r.stdout
+    assert orjson.loads(r.stdout)["cleaned"] == 1
     assert not data.task_list(type="cli_clean")
 
 
@@ -158,7 +157,7 @@ def test_cli_task_stop_all(root):
 
     r = runner.invoke(app, ["task", "stop", "--all"])
     assert r.exit_code == 0, r.stdout
-    assert "stop requested: 1 running, cleaned 1 finished task(s)" in r.stdout
+    assert orjson.loads(r.stdout) == {"stopped": 1, "cleaned": 1}
 
     assert not data.task_list(type="cli_stopall")
 
@@ -235,35 +234,50 @@ def test_dispatch_error(root):
     assert rc == 1
 
 
-def test_cli_del_sync_in_async_mode(root, capsys):
-    """REPL（默认后台）下 table/dataset del 仍同步抛 DependencyError（含依赖结构）。
+def test_cli_del_sync_dependency_error(root, capsys):
+    """table/dataset del 默认同步抛 DependencyError（含依赖结构）。
 
-    回归：CLI del 未强制 background=False 时，DependencyError 只进任务登记，
-    调用方拿不到依赖信息（gRPC Execute 层 v0.4.6 已强制同步，REPL 曾不一致）。
-    """
-    from stkoe.data.task import set_default_async
+    v0.5.0 起所有操作默认同步（无全局异步模式），删除必须当场返回依赖信息，
+    绝不落入后台任务。"""
     _setup_pair(root)
     r = runner.invoke(app, ["dataset", "add", "ds", "idx", "m1"])
     assert r.exit_code == 0, r.stdout
 
-    set_default_async(True)  # 模拟 REPL
-    try:
-        r = runner.invoke(app, ["table", "del", "idx"])
-        assert r.exit_code == 1
-        assert isinstance(r.exception, DependencyError)
-        assert "dependencies exist" in str(r.exception)
-        deps = r.exception.dependents
-        assert deps and deps[0]["obj_type"] == "dataset" and deps[0]["obj_name"] == "ds"
-        # 表仍在（未被误删）
-        r2 = runner.invoke(app, ["table", "list"])
-        assert r2.exit_code == 0 and "idx" in r2.stdout
+    r = runner.invoke(app, ["table", "del", "idx"])
+    assert r.exit_code == 1
+    assert isinstance(r.exception, DependencyError)
+    assert "dependencies exist" in str(r.exception)
+    deps = r.exception.dependents
+    assert deps and deps[0]["obj_type"] == "dataset" and deps[0]["obj_name"] == "ds"
+    # 表仍在（未被误删）
+    r2 = runner.invoke(app, ["table", "list"])
+    assert r2.exit_code == 0 and "idx" in r2.stdout
 
-        r = runner.invoke(app, ["dataset", "del", "ds"])
-        assert r.exit_code == 0, r.stdout
-        r = runner.invoke(app, ["table", "del", "idx"])
-        assert r.exit_code == 0, r.stdout
-    finally:
-        set_default_async(False)
+    r = runner.invoke(app, ["dataset", "del", "ds"])
+    assert r.exit_code == 0, r.stdout
+    r = runner.invoke(app, ["table", "del", "idx"])
+    assert r.exit_code == 0, r.stdout
+
+
+def test_cli_async_flag_returns_task_id(root):
+    """--async 显式转后台：返回 task_id，task get 可拉取状态与结果（v0.5.0 统一模型）"""
+    _setup_pair(root)
+    r = runner.invoke(app, ["table", "scan", "idx", "--async"])
+    assert r.exit_code == 0, r.stdout
+    task_id = orjson.loads(r.stdout)["task_id"]
+
+    # 轮询完成
+    meta = None
+    for _ in range(100):
+        r2 = runner.invoke(app, ["task", "get", task_id])
+        assert r2.exit_code == 0, r2.stdout
+        meta = orjson.loads(r2.stdout)
+        if meta["status"] in ("succeeded", "failed", "cancelled"):
+            break
+        time.sleep(0.05)
+    assert meta["status"] == "succeeded", meta
+    assert meta["result"] is not None  # 结果已持久化
+    assert meta["result"]["name"] == "idx"
 
 
 def test_cli_mock_gen(root):

@@ -282,17 +282,15 @@ def add(name: str, *, group_col: list[str] | None = None, all_: bool = False,
         groups = _resolve_groups(cx, name, *target, group_cols=group_col, all_=all_)
         _validate_groups(*target, groups)
         for i, g in enumerate(groups):
-            if ctl:
-                ctl.check()
-                ctl.stage(f"stat group={g} ({i + 1}/{len(groups)})")
+            ctl.check()
+            ctl.stage(f"stat group={g} ({i + 1}/{len(groups)})")
             if not refresh and not _need_recompute(cx, name, g, target):
                 continue
             df = _compute_for(*target, g)
             with conn_txn(cx):
                 _cache_write(cx, name, g, df, _target_key(*target))
-            if ctl:
-                ctl.progress((i + 1) / len(groups), msg=f"group={g} done")
-                ctl.flush(cx)
+            ctl.progress((i + 1) / len(groups), msg=f"group={g} done")
+            ctl.flush(cx)
         return _meta(cx, _object(cx, name))
     return defer("stat_add", name, _run, background=background)
 

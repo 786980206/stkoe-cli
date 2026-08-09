@@ -17,6 +17,7 @@ import polars as pl
 from . import catalog, get_root, logger
 from .catalog import access
 from .catalog.json import loads
+from .task import console_ctl
 
 
 class FieldError(ValueError):
@@ -211,14 +212,12 @@ def _dataset_lf(name: str) -> pl.LazyFrame:
     return get_lazy(name)
 
 
-def _run_formula(ds: str, code: str, ctl=None) -> pl.DataFrame:
+def _run_formula(ds: str, code: str, ctl) -> pl.DataFrame:
     """加载数据集并执行用户 calc(data)；返回 collect 后的 DataFrame。"""
-    if ctl:
-        ctl.progress(0.25, "加载数据集")
+    ctl.progress(0.25, "加载数据集")
     data = _dataset_lf(ds)
     calc = _load_calc(code)
-    if ctl:
-        ctl.progress(0.5, "执行 calc(data)")
+    ctl.progress(0.5, "执行 calc(data)")
     try:
         result = calc(data)
     except Exception as err:
@@ -233,6 +232,7 @@ def _run_formula(ds: str, code: str, ctl=None) -> pl.DataFrame:
 
 def test(name: str, *, limit: int = 200, ctl=None) -> dict:
     """调试执行公式：返回前 ``limit`` 行 + schema + 耗时（中文/指标元数据）"""
+    ctl = ctl or console_ctl("field_test", name)
     m = _raw_meta(name)
     ds = (m.get("dataset") or "").strip()
     code = (m.get("formula") or "").strip()
@@ -241,11 +241,9 @@ def test(name: str, *, limit: int = 200, ctl=None) -> dict:
     if not code:
         raise ValueError(f"指标公式为空（{name}）")
     t0 = time.time()
-    if ctl:
-        ctl.info(f"测试指标 {name}：加载数据集 {ds} …")
+    ctl.info(f"测试指标 {name}：加载数据集 {ds} …")
     df = _run_formula(ds, code, ctl)
-    if ctl:
-        ctl.progress(1.0, "完成")
+    ctl.progress(1.0, "完成")
     return {
         "name": name, "dataset": ds,
         "columns": df.columns,
@@ -262,6 +260,7 @@ def test_code(dataset: str, code: str, *, limit: int = 200, ctl=None) -> dict:
     与 ``test`` 同执行路径（dataset 加载 + calc(data)），但代码/数据集
     由调用方显式传入，结果不落盘。
     """
+    ctl = ctl or console_ctl("field_test_code", dataset)
     ds = (dataset or "").strip()
     code = (code or "").strip()
     if not ds:
@@ -269,11 +268,9 @@ def test_code(dataset: str, code: str, *, limit: int = 200, ctl=None) -> dict:
     if not code:
         raise ValueError("测试代码为空")
     t0 = time.time()
-    if ctl:
-        ctl.info(f"测试代码：加载数据集 {ds} …")
+    ctl.info(f"测试代码：加载数据集 {ds} …")
     df = _run_formula(ds, code, ctl)
-    if ctl:
-        ctl.progress(1.0, "完成")
+    ctl.progress(1.0, "完成")
     return {
         "name": "", "dataset": ds,
         "columns": df.columns,
@@ -290,6 +287,7 @@ def materialize(name: str, *, ctl=None) -> dict:
     结果必须存在与指标「名称」同名的列（否则报错并列出现有列）；
     按数据集索引列排序；产物为框架自持派生数据（fields/<name>/data.parquet）。
     """
+    ctl = ctl or console_ctl("field_materialize", name)
     m = _raw_meta(name)
     ds = (m.get("dataset") or "").strip()
     code = (m.get("formula") or "").strip()
@@ -299,13 +297,11 @@ def materialize(name: str, *, ctl=None) -> dict:
         raise ValueError(f"指标公式为空（{name}）")
     col = name  # 物化列 = 指标名（契约：结果须有同名列）
     t0 = time.time()
-    if ctl:
-        ctl.info(f"物化指标 {name}：数据集 {ds} …")
-        ctl.progress(0.1, "加载数据集")
+    ctl.info(f"物化指标 {name}：数据集 {ds} …")
+    ctl.progress(0.1, "加载数据集")
     data = _dataset_lf(ds)
     calc = _load_calc(code)
-    if ctl:
-        ctl.progress(0.3, "执行 calc(data)")
+    ctl.progress(0.3, "执行 calc(data)")
     try:
         result = calc(data)
     except Exception as err:
@@ -323,15 +319,13 @@ def materialize(name: str, *, ctl=None) -> dict:
     from .dataset import describe as ds_describe
     index_cols = [c for c in ds_describe(ds).keys if c in df.columns]
     if index_cols:
-        if ctl:
-            ctl.info(f"按索引列排序: {', '.join(index_cols)}")
+        ctl.info(f"按索引列排序: {', '.join(index_cols)}")
         df = df.sort(index_cols, nulls_last=True)
     out_dir = _root(name)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "data.parquet"
     df.select([col]).write_parquet(out_path)
-    if ctl:
-        ctl.progress(0.8, "写出产物")
+    ctl.progress(0.8, "写出产物")
     with catalog().txn() as cx:
         obj = _object(cx, name)
         if obj is not None:
@@ -340,8 +334,7 @@ def materialize(name: str, *, ctl=None) -> dict:
             meta["materialized_time"] = _now_str()
             access.update_object_meta(cx, obj["id"], meta, now_str=_now_str())
     logger.debug(f"field [{name}] materialized ({df.height} rows)")
-    if ctl:
-        ctl.progress(1.0, "物化完成")
+    ctl.progress(1.0, "物化完成")
     return {
         "name": name, "column": col, "rows": int(df.height),
         "dataFile": str(out_path),

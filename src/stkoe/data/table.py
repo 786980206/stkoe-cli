@@ -59,7 +59,16 @@ class TableExistsError(ValueError):
 
 
 class DependencyError(ValueError):
-    pass
+    """删除/重命名被依赖方时存在下游引用；``dependents`` 为结构化依赖列表"""
+
+    def __init__(self, dependents: list[dict], action: str = "delete"):
+        self.dependents = dependents
+        self.action = action
+        msg = "dependencies exist: " + ", ".join(
+            f"{d['obj_type']}:{d['obj_name']}" for d in dependents)
+        if not msg:
+            msg = "no dependencies"
+        super().__init__(msg + f" (use --force to {action})")
 
 
 def _root(name: str) -> Path:
@@ -394,9 +403,7 @@ def del_(name: str, *, force: bool = False, background: bool | None = None) -> T
                 raise TableNotFoundError(f"table not registered: {name}")
             dependents = access.dependents(cx, "table", name)
             if dependents and not force:
-                raise DependencyError("dependencies exist: " + ", ".join(
-                    f"{d['obj_type']}:{d['obj_name']}" for d in dependents)
-                    + " (use --force to cascade)")
+                raise DependencyError(dependents)
             cx.execute("DELETE FROM stkoe_objects WHERE id=?", (obj["id"],))
         if force:
             _drop_dependents_cascade(name)

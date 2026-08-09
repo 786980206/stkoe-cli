@@ -121,19 +121,20 @@ def _read_source_hash(dm: DatasetMeta) -> str:
 def scan_spec(index_table: str, *tables: str, keys: list[str] | None = None) -> dict:
     """校验 index + 成员表，自动推导 join 键与列映射
 
-    **join 键由 index 表定义**：keys 缺省 = index 表的全部列；每个键必须存在于所有成员表，
-    缺列明确报错（杜绝 join 键静默退化导致结果膨胀）。
+    **join 键由 index 表定义**：keys 缺省 = index 表的全部**非工具**列（排除
+    ignore_cols，如 ``optime``）；每个键必须存在于所有成员表，缺列明确报错
+    （杜绝 join 键静默退化导致结果膨胀）。
     """
     members = [index_table, *tables]
     metas = [table.meta(t) for t in members]
     for t, m in zip(members, metas):
         if not m.files:
             return {"ok": False, "message": f"table has no data: {t}"}
-    index_names = [c.name for c in metas[0].columns]
+    index_by_name = {c.name: c for c in metas[0].columns}
     if keys is None:
-        keys = [*index_names]
+        keys = [c.name for c in metas[0].columns if not c.is_tool]
     else:
-        missing = [k for k in keys if k not in index_names]
+        missing = [k for k in keys if k not in index_by_name]
         if missing:
             return {"ok": False, "message": f"join keys must be columns of index '{index_table}'; "
                                             f"not in index: {missing}"}
@@ -146,7 +147,6 @@ def scan_spec(index_table: str, *tables: str, keys: list[str] | None = None) -> 
         if missing:
             return {"ok": False, "message": f"member table '{t}' missing join keys: {missing}"}
 
-    index_by_name = {c.name: c for c in metas[0].columns}
     columns: list[ColumnMeta] = []
     used: set[str] = builtins.set()
     for k in keys:
@@ -156,7 +156,7 @@ def scan_spec(index_table: str, *tables: str, keys: list[str] | None = None) -> 
         used.add(k)
     for t, m in zip(members, metas):
         for c in m.columns:
-            if c.name in keys:
+            if c.is_tool or c.name in keys:
                 continue
             out = c.name if c.name not in used else f"{c.name}__{t}"
             used.add(out)
@@ -672,9 +672,7 @@ def del_(name: str, *, force: bool = False, with_data: bool = True,
                 raise DatasetNotFoundError(f"dataset not registered: {name}")
             dependents = access.dependents(cx, "dataset", name)
             if dependents and not force:
-                raise DependencyError("dependencies exist: " + ", ".join(
-                    f"{d['obj_type']}:{d['obj_name']}" for d in dependents)
-                    + " (use --force to cascade)")
+                raise DependencyError(dependents)
             cx.execute("DELETE FROM stkoe_objects WHERE id=?", (obj["id"],))
             access.clear_deps(cx, "dataset", name)
             if force:

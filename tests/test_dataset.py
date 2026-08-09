@@ -416,3 +416,57 @@ def test_rename_repoints_fields(root):
     rows = conn.execute(
         "SELECT dep_name FROM stkoe_depends WHERE obj_type='field' AND obj_name='fy'").fetchall()
     assert [r["dep_name"] for r in rows] == ["ds2"]
+
+
+# ---------- ignore_cols：dataset 创建/物化必须排除工具列 ----------
+
+def test_scan_spec_excludes_tool_cols(root):
+    """scan_spec 的 keys 缺省与列映射须排除工具列（optime 等 ignore_cols）"""
+    write_single(root, "it", pl.DataFrame({
+        "date": pl.Series("date", ["2020-01-01"], dtype=pl.Date),
+        "sym": ["a"],
+        "optime": ["2020-01-01 08:00:00"],
+    }))
+    write_single(root, "mt", pl.DataFrame({
+        "date": pl.Series("date", ["2020-01-01"], dtype=pl.Date),
+        "sym": ["a"],
+        "r": [0.1],
+        "optime": ["2020-01-01 08:00:00"],
+    }))
+    data.table.scan("it")
+    data.table.scan("mt")
+    r = data.dataset.scan_spec("it", "mt")
+    assert r["ok"]
+    assert r["keys"] == ["date", "sym"]  # optime 不参与 join 键
+    names = [c.name for c in r["columns"]]
+    assert "optime" not in names
+    assert {"date", "sym", "r"} <= set(names)
+
+
+def test_dataset_materialize_excludes_tool_cols(root):
+    """dataset 物化产物与 select 结果不得含工具列（optime）"""
+    write_single(root, "it", pl.DataFrame({
+        "date": pl.Series("date", ["2020-01-01"], dtype=pl.Date),
+        "sym": ["a"],
+        "optime": ["2020-01-01 08:00:00"],
+    }))
+    write_single(root, "mt", pl.DataFrame({
+        "date": pl.Series("date", ["2020-01-01"], dtype=pl.Date),
+        "sym": ["a"],
+        "r": [0.1],
+        "optime": ["2020-01-01 08:00:00"],
+    }))
+    data.table.scan("it")
+    data.table.scan("mt")
+    data.dataset.add("ds_tool", "it", "mt", background=False)
+    dm = _wait_materialized("ds_tool")
+    assert not any(c.is_tool for c in dm.columns)
+    assert "optime" not in {c.name for c in dm.columns}
+    # 物化产物 parquet 不含 optime
+    out = data.dataset.get("ds_tool")
+    assert "optime" not in out.columns
+    # 实时 join（未物化路径）同样排除
+    data.dataset.add("ds_tool2", "it", "mt", background=False, materialize=False)
+    out2 = data.dataset.get("ds_tool2")
+    assert "optime" not in out2.columns
+    assert "r" in out2.columns

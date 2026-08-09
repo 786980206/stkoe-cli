@@ -300,13 +300,13 @@ def _bucket_values(gran: str, lo, hi) -> list[str]:
     out: list[str] = []
     d = _as_date(lo)
     hi = _as_date(hi)
-    while d < hi:
+    while d <= hi:
         if gran == "year":
             out.append(str(d.year))
-            d = d.replace(year=d.year + 1)
+            d = d.replace(year=d.year + 1, month=1, day=1)
         elif gran == "month":
             out.append(d.strftime("%Y-%m"))
-            d = d.replace(year=d.year + 1, month=1) if d.month == 12 else d.replace(month=d.month + 1)
+            d = d.replace(year=d.year + 1, month=1, day=1) if d.month == 12 else d.replace(month=d.month + 1, day=1)
         else:
             out.append(d.isoformat())
             d += datetime.timedelta(days=1)

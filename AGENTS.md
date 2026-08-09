@@ -166,6 +166,11 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
   依赖登记 `stkoe_depends`：dataset → 成员 table（detail 记 join keys）。
 - **join 键由 index 表定义**：keys 缺省 = index 表的**全部列**；`keys=` 可显式指定 index 列的子集。
   每个键必须在所有成员表都存在，缺列明确报错（不让 join 键静默退化导致结果膨胀）。
+- **行数语义（left join 以 index 为基准）**：`_view_lf` 用 `how="left"` 以 index 表为左表，
+  **dataset 行数 == index 表行数**；成员表缺失的键行保留（该成员列值为 null），成员表多余的键行不参与。
+- **源表 meta 同步**：`scan_impl` 物化前调用 `_sync_source_meta` 对比成员表列定义
+  （name/data_type/source 映射/as_index），有变化则同步更新 dataset columns 并强制全量重物化
+  （schema 已变无法增量）；幂等（无差异不改写、不 bump）；join 键沿用 dm.keys 不随 index 全列漂移。
 - **接口对齐 table**：`scan/create/describe/list/update/drop/rename/status/schema/partitions/select/sniff/
   sniff_all/materialize`；`data.dataset.*` 命名空间（顶层 `list`/`create` 等仍属 table，避免遮蔽）。
 - **物化**：产物为框架自持派生数据，直接写 `datasets/<name>/`（**无 `.materialized/` 嵌套层级**；
@@ -292,6 +297,13 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
   `config show`/gRPC `config show` 返回 `log_level`。
 - 测试：全量 154 用例绿（新增 test_config 3 用例：log_level 默认值/roundtrip/非法回退 +
   CLI set；修复 get_lazy 日志对 polars Expr 的真值判断崩溃）。
+- **dataset join 行数语义修正（v0.5.1 追加）**：`_view_lf` 由 `how="inner"` 改为 `how="left"`
+  以 index 表为左表——**dataset 行数 == index 表行数**（inner join 曾丢弃 index 中有、成员表
+  缺失的键行，导致行数偏小）；成员表缺失的键行保留（列值 null）。
+- **dataset 源表 meta 同步（v0.5.1 追加）**：`scan_impl` 物化前调用 `_sync_source_meta` 对比
+  成员表列定义，变化则同步 dataset columns + 强制全量重物化（schema 已变无法增量）；
+  幂等（无差异不改写、不 bump）；join 键沿用 dm.keys。测试补 `test_scan_syncs_source_meta`。
+- 测试：v0.5.1 追加后全量 155 用例绿。
 
 ### v0.5.0（async 统一抽象 + CLI 输出标准化）
 - **async 抽象进 task 模块**：`TaskControl` 新增 `console` 模式——`console=True` 时

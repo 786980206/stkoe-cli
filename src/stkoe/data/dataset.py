@@ -187,7 +187,11 @@ def _align_keys(lf: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
 
 
 def _view_lf(dm: DatasetMeta) -> pl.LazyFrame:
-    """实时 join 视图（lazy）：按列映射重命名后 inner join on keys"""
+    """实时 join 视图（lazy）：按列映射重命名后 left join on keys
+
+    **行数语义**：以 index 表为基准（左表），dataset 行数 == index 表行数；
+    成员表缺失的键行保留（列值 null），成员表多余的键行不参与。
+    """
     by_src: dict[str, list[ColumnMeta]] = {}
     for c in dm.columns:
         by_src.setdefault(c.source_table, []).append(c)
@@ -204,7 +208,7 @@ def _view_lf(dm: DatasetMeta) -> pl.LazyFrame:
         frames.append(frame(t))
     joined = frames[0]
     for f in frames[1:]:
-        joined = joined.join(f, on=[*dm.keys], how="inner")
+        joined = joined.join(f, on=[*dm.keys], how="left")
     return joined.select(*[c.name for c in dm.columns])
 
 
@@ -768,10 +772,57 @@ def scan_impl(dm: DatasetMeta, *, conn=None, ctl=None, resync: bool = False,
     """增量重物化（幂等）；变更后按 stkoe_depends 级联下游 stat scan"""
     from .task import console_ctl
     cx = _with_conn(conn)
-    report = materialize_job(dm, cx, ctl or console_ctl("dataset_scan", dm.name), resync=resync)
+    meta_changed = _sync_source_meta(dm, cx)
+    if meta_changed:
+        # 源表列定义变化：用新 columns 全量重物化（schema 已变，无法增量）
+        dm = _dataset_meta(cx, _object(cx, dm.name))
+    report = materialize_job(dm, cx, ctl or console_ctl("dataset_scan", dm.name),
+                             resync=(resync or meta_changed))
     if cascade and report.changed:
         _notify_stat_downstream(report.name)
     return report
+
+
+def _cols_equal(a: list[dict], b: list[dict]) -> bool:
+    """columns 列表是否业务等价（name/data_type/source 映射/as_index，忽略 display 类）"""
+    def sig(c: dict) -> tuple:
+        return (c.get("name"), c.get("data_type"), c.get("source_table"),
+                c.get("source_field"), c.get("as_index"))
+    return [sig(x) for x in a] == [sig(x) for x in b]
+
+
+def _sync_source_meta(dm: DatasetMeta, conn) -> bool:
+    """对比成员表 meta，源表列定义变化则同步 dataset columns；返回是否变化。
+
+    幂等：无差异不改写 meta（不 bump version）。只在列集合/类型/来源映射
+    变化时更新，保留用户自定义的 display_name/description；join 键沿用 dm.keys，
+    不随 index 全列推导而漂移。
+    """
+    spec = scan_spec(dm.index_table, *dm.tables, keys=builtins.list(dm.keys))
+    if not spec["ok"]:
+        logger.debug(f"dataset {dm.name}: source meta sync skipped "
+                     f"(scan_spec: {spec['message']})")
+        return False
+    obj = _object(conn, dm.name)
+    if obj is None:
+        return False
+    meta = loads(obj["meta"])
+    old = meta.get("columns", [])
+    new = [c.to_dict() for c in spec["columns"]]
+    if _cols_equal(old, new):
+        logger.debug(f"dataset {dm.name}: source meta unchanged, no sync")
+        return False
+    meta["columns"] = new
+    with conn_txn(conn):
+        access.update_object_meta(conn, obj["id"], meta, now_str=now())
+        deps = []
+        for t in dict.fromkeys([dm.index_table, *dm.tables]):
+            fields = [c["source_field"] for c in new if c.get("source_table") == t]
+            deps.append(("table", t, {"keys": builtins.list(dm.keys), "fields": fields}))
+        access.set_deps(conn, "dataset", dm.name, deps)
+    logger.info(f"dataset {dm.name}: source meta changed, columns synced "
+                f"({len(old)} -> {len(new)} cols)")
+    return True
 
 
 def _notify_stat_downstream(name: str) -> None:

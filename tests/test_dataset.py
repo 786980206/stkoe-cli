@@ -241,14 +241,16 @@ def test_scan_incremental_identity_partition(root):
     part = data.dataset.get("ds", partition="2020-01-02")
     assert set(str(x) for x in part["date"].to_list()) == {"2020-01-02"}
 
-    # 追加一个同分区文件（内连接只保留有 mem 匹配的行，2020-01-02 保持 2 行）
+    # 追加一个同分区文件（left join 以 index 为基准，2020-01-02 变 3 行，s2 的 extra 为 null）
     extra = pl.DataFrame({"date": [datetime.date(2020, 1, 2)], "sym": ["s2"]})
     extra.write_parquet(d / "data" / "date=2020-01-02" / "data-extra.parquet")
     r = data.dataset.scan("ds")
     assert r.changed
     assert r.rebuilt_partitions == ("2020-01-02",)
     assert r.version_before == v1 and r.version_after == v1 + 1
-    assert data.dataset.get("ds", partition="2020-01-02").height == 2
+    got = data.dataset.get("ds", partition="2020-01-02")
+    assert got.height == 3  # index 该分区行数（s0/s1/s2），s2 的 extra 为 null
+    assert got.filter(pl.col("sym") == "s2").select("extra").to_series().is_null().all()
 
 
 def test_scan_incremental_flat(root):
@@ -263,6 +265,29 @@ def test_scan_incremental_flat(root):
     assert r.rebuilt_partitions == ("",)
     assert r.version_after == v1 + 1
     assert data.dataset.get("ds").height == 3
+
+
+def test_scan_syncs_source_meta(root):
+    """源表列定义变化时 dataset meta 同步更新列映射并重物化"""
+    write_single(root, "idx", _index_df(n=2))
+    mem_v1 = pl.DataFrame({
+        "date": [datetime.date(2020, 1, 1), datetime.date(2020, 1, 1)],
+        "sym": ["s0", "s1"],
+        "r": [0.1, 0.2],
+    })
+    write_single(root, "mem", mem_v1)
+    data.table.scan("idx")
+    data.table.scan("mem")
+    data.dataset.add("ds", "idx", "mem", background=False)
+    assert [c.name for c in data.dataset.meta("ds").columns] == ["date", "sym", "r"]
+
+    mem_v2 = mem_v1.with_columns(pl.Series("extra", [1, 2], dtype=pl.Int64))
+    write_single(root, "mem", mem_v2)
+    data.table.scan("mem")
+    dm = data.dataset.meta("ds")
+    assert [c.name for c in dm.columns] == ["date", "sym", "r", "extra"]
+    out = data.dataset.get("ds")
+    assert "extra" in out.columns and out.height == 2
 
 
 def test_scan_auto_year_partition(root):

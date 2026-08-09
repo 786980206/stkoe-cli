@@ -225,6 +225,18 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
   field 顺序按源表列序（数值/字符串/时间列各自内部保持原序）。
 - 测试：全量 105 用例 `uv run pytest -q` 全绿；test_cli 补 REPL 顺序隔离（autouse 恢复同步默认）。
 
+### v0.4.6（Execute 同步契约：table/dataset 写操作绝不落后台）
+- **根因**：`table add/del/set`、`dataset add/del/set/scan` 走 `defer(background=None)`，服从进程级
+  `set_default_async()`；REPL 内嵌 gRPC 服务（`stkoe` 交互模式自动起 9569）默认异步 → Execute 立即返回
+  TaskHandle / `{"deleted":…}`，真实失败（如依赖冲突）只进任务登记，**portal 前端删除表失败零感知**。
+- **修复**：`grpc/server.py::_execute` 对 table/dataset 的 add/del/set/scan 全部强制 `background=False`，
+  成功/失败当场返回（含 `DependencyError`）；顺带修掉 `dataset del` 同步路径访问 `None.object_ref` 的崩溃
+  （`task` 变量取值方式改为直接返回 `{"deleted": name}`）。
+- **portal 防呆**（v0.0.32）：`save/delete_local_table_meta`、`delete_dataset` 增加 TaskHandle 识别——
+  老版本/异步模式服务若返回 task 句柄，显式报错提示改起 `stkoe server run`，不再把"已提交后台"当成功。
+- 测试：全量 143 用例绿（新增 `tests/test_grpc.py::test_execute_table_ops_sync_in_async_mode`，
+  在 `set_default_async(True)` 下验证 Execute 仍同步：add 缺目录立即失败 / del 立即生效 / 依赖立即报错）。
+
 ### v0.4.5（--dbt-manifest：创建/修改物理表时导入 dbt 元数据）
 - **`table add` / `table set` 新增 `--dbt-manifest PATH`**：解析 DBT manifest 并合并同名
   模型（alias 优先，其次 name）的表描述 / 标签 / 列描述 / 列标签 / data_type 到当前表元数据；

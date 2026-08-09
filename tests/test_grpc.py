@@ -202,3 +202,38 @@ def test_run_task_dataset_materialize_payload(client, root):
     assert res["dataFile"] and Path(res["dataFile"]).exists()
     assert res["elapsedMs"] >= 0
     assert "close" in res["columns"]
+
+
+# ---------- Execute 同步契约：REPL/异步模式下 table/* 也同步完成 ----------
+
+def test_execute_table_ops_sync_in_async_mode(client, root):
+    """回归：portal 删除表失败无感知 —— REPL 服务（set_default_async(True)）把
+    table add/del 转成后台任务，Execute 立即返回成功，真实失败只进任务登记。
+
+    修复后 Execute RPC 的 table add/del/set 全部强制同步（background=False）：
+    成功/失败都当场返回，绝不落后台任务。"""
+    from stkoe.data.task import set_default_async, is_default_async
+    _setup(root)
+    was = is_default_async()
+    set_default_async(True)  # 模拟 REPL / STKOE_ASYNC 服务模式
+    try:
+        # 1) 目录不存在 → 同步失败（不落后台任务，不返回 task 句柄）
+        resp = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["add", "ghost"]))
+        assert resp.code != 0 and "not found" in resp.error
+        assert "task" not in resp.error
+
+        # 2) 正常删除 → 同步返回结果，catalog 立即可见已删
+        r = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["del", "t1"]))
+        assert r.code == 0 and json.loads(r.json_out) == {"deleted": "t1"}
+        m = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["meta", "t1"]))
+        assert m.code != 0 and "not registered" in m.error
+
+        # 3) 被 dataset 引用 → 同步 DependencyError，t1 仍在
+        data.table.scan("t1", background=False)  # 重新发现注册（数据文件未删）
+        data.dataset.add("ds", "t1", "t1", background=False)
+        d = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["del", "t1"]))
+        assert d.code != 0 and "dependencies exist" in d.error
+        m2 = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["meta", "t1"]))
+        assert m2.code == 0
+    finally:
+        set_default_async(was)

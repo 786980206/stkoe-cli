@@ -90,14 +90,15 @@ def _execute(cmd: str, args: list[str]) -> dict:
             return _jsonable(table.meta(args[1]))
         if sub == "add" and len(args) >= 2:
             _, kv = _parse_kv(args[1:])
-            return _jsonable(table.add(args[1], dbt_manifest=kv.get("dbt_manifest")))
+            return _jsonable(table.add(args[1], dbt_manifest=kv.get("dbt_manifest"),
+                                       background=False))
         if sub == "set" and len(args) >= 2:
             return _jsonable(_table_set(table, args[1], args[2:]))
         if sub == "del" and len(args) >= 2:
-            table.del_(args[1])
+            table.del_(args[1], background=False)
             return {"deleted": args[1]}
         if sub == "scan" and len(args) >= 2:
-            report = table.scan(args[1])
+            report = table.scan(args[1], background=False)
             return _jsonable(report)
 
     if cmd == "dataset":
@@ -111,10 +112,10 @@ def _execute(cmd: str, args: list[str]) -> dict:
         if sub == "set" and len(args) >= 2:
             return _jsonable(_dataset_set(dataset, args[1], args[2:]))
         if sub == "del" and len(args) >= 2:
-            task = dataset.del_(args[1])
-            return {"deleted": task.object_ref}
+            dataset.del_(args[1], background=False)
+            return {"deleted": args[1]}
         if sub == "scan" and len(args) >= 2:
-            return _jsonable(dataset.scan(args[1]))
+            return _jsonable(dataset.scan(args[1], background=False))
         if sub == "validate" and len(args) >= 2:
             mode = "full"
             if "--mode" in args:
@@ -186,7 +187,8 @@ def _table_set(table, name: str, args: list[str]):
                      description=kv.get("description"),
                      tags=kv["tags"].split(",") if kv.get("tags") else None,
                      source=kv.get("source"),
-                     dbt_manifest=kv.get("dbt_manifest"))
+                     dbt_manifest=kv.get("dbt_manifest"),
+                     background=False)
 
 
 def _dataset_add(dataset, args: list[str]) -> dict:
@@ -208,7 +210,8 @@ def _dataset_add(dataset, args: list[str]) -> dict:
         meta_extra["tags"] = meta_extra["tags"].split(",")
     if not tables:
         raise ValueError("dataset add 需要至少一张成员表: " + " ".join(args))
-    return dataset.add(name, index_table, *tables, keys=keys, **meta_extra)
+    return dataset.add(name, index_table, *tables, keys=keys, background=False,
+                       **meta_extra)
 
 
 def _dataset_set(dataset, name: str, args: list[str]):
@@ -217,7 +220,8 @@ def _dataset_set(dataset, name: str, args: list[str]):
                        display_name=kv.get("display_name"),
                        description=kv.get("description"),
                        tags=kv["tags"].split(",") if kv.get("tags") else None,
-                       category=kv.get("category"))
+                       category=kv.get("category"),
+                       background=False)
 
 
 def _field_create(field, args: list[str]) -> dict:

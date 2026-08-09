@@ -161,7 +161,8 @@ def get_cmd(
 @table_app.command("del")
 def del_cmd(name: str, force: bool = typer.Option(False, "--force", help="级联删除依赖方（dataset/stat 一并清理）")):
     """删除表注册（绝不删用户数据文件）"""
-    _finish(table.del_(name, force=force), name=name)
+    # 强制同步：删除必须当场返回（含 DependencyError 依赖信息），绝不落入后台任务
+    _finish(table.del_(name, force=force, background=False), name=name)
 
 
 @table_app.command()
@@ -495,7 +496,8 @@ def dataset_del(name: str, force: bool = typer.Option(False, "--force", help="�
                 with_data: bool = typer.Option(True, "--with-data/--no-with-data",
                                                help="同时删除物化产物（默认删除）")):
     """删除 dataset 注册与物化产物"""
-    _finish(dataset_mod.del_(name, force=force, with_data=with_data), name=name)
+    # 强制同步：删除必须当场返回（含 DependencyError 依赖信息），绝不落入后台任务
+    _finish(dataset_mod.del_(name, force=force, with_data=with_data, background=False), name=name)
 
 
 @dataset_app.command()
@@ -591,7 +593,8 @@ def scan(
 @stat_app.command("del")
 def stat_del(name: str):
     """删除统计注册与产物（stats/<name>/ + stkoe_depends 边）"""
-    _finish(stat_mod.del_(name), name=name)
+    # 强制同步：删除必须当场返回（含 DependencyError 依赖信息），绝不落入后台任务
+    _finish(stat_mod.del_(name, background=False), name=name)
 
 
 @stat_app.command()

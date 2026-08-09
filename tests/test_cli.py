@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 import stkoe.data as data
 from stkoe import __main__ as mainmod
 from stkoe.data.cli import app
+from stkoe.data.table import DependencyError
 from stkoe.data.task import run_task
 
 from conftest import make_df, write_single
@@ -232,6 +233,37 @@ def test_dispatch_error(root):
     """错误命令返回退出码 1"""
     rc = mainmod._dispatch(["table", "meta", "nope"])
     assert rc == 1
+
+
+def test_cli_del_sync_in_async_mode(root, capsys):
+    """REPL（默认后台）下 table/dataset del 仍同步抛 DependencyError（含依赖结构）。
+
+    回归：CLI del 未强制 background=False 时，DependencyError 只进任务登记，
+    调用方拿不到依赖信息（gRPC Execute 层 v0.4.6 已强制同步，REPL 曾不一致）。
+    """
+    from stkoe.data.task import set_default_async
+    _setup_pair(root)
+    r = runner.invoke(app, ["dataset", "add", "ds", "idx", "m1"])
+    assert r.exit_code == 0, r.stdout
+
+    set_default_async(True)  # 模拟 REPL
+    try:
+        r = runner.invoke(app, ["table", "del", "idx"])
+        assert r.exit_code == 1
+        assert isinstance(r.exception, DependencyError)
+        assert "dependencies exist" in str(r.exception)
+        deps = r.exception.dependents
+        assert deps and deps[0]["obj_type"] == "dataset" and deps[0]["obj_name"] == "ds"
+        # 表仍在（未被误删）
+        r2 = runner.invoke(app, ["table", "list"])
+        assert r2.exit_code == 0 and "idx" in r2.stdout
+
+        r = runner.invoke(app, ["dataset", "del", "ds"])
+        assert r.exit_code == 0, r.stdout
+        r = runner.invoke(app, ["table", "del", "idx"])
+        assert r.exit_code == 0, r.stdout
+    finally:
+        set_default_async(False)
 
 
 def test_cli_mock_gen(root):

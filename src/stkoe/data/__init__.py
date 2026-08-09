@@ -35,12 +35,14 @@ def config() -> StkoeConfig:
     return load_config()
 
 
-def set_config(data_path: str | None = None, ignore_cols=None) -> StkoeConfig:
+def set_config(data_path: str | None = None, ignore_cols=None,
+               grpc_port: int | None = None) -> StkoeConfig:
     """写入配置并落盘 stkoe.json；返回新配置"""
     cur = load_config()
     cfg = StkoeConfig(
         data_path=data_path if data_path is not None else cur.data_path,
         ignore_cols=tuple(ignore_cols) if ignore_cols is not None else cur.ignore_cols,
+        grpc_port=grpc_port if grpc_port is not None else cur.grpc_port,
     )
     save_config(cfg)
     return cfg

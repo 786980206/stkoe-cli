@@ -1,0 +1,60 @@
+// stkoe gRPC 协议：数据管理框架远程访问
+//
+// 约定：
+// - 小数据量结果（元数据/列表/状态）走 JSON 字符串（json_out）
+// - 表格数据（select 查询）走 Arrow IPC 字节（ipc），schema 随附 JSON
+syntax = "proto3";
+
+package stkoe;
+
+// stkoe 数据服务
+service StkoeService {
+  // 通用命令执行：元数据/列表/状态等小结果，返回 JSON
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+  // 表格查询：table/dataset 数据读取，返回 Arrow IPC 序列化帧
+  rpc Select(SelectRequest) returns (SelectResponse);
+}
+
+message ExecuteRequest {
+  // 命令名（同 CLI 顶层语义）：table/dataset/stat/field/config/task/mock/version
+  string cmd = 1;
+  // 子命令 + 参数（等价于 `stkoe <cmd> <sub> <args...>` 位置参数）
+  repeated string args = 2;
+}
+
+message ExecuteResponse {
+  // 0 = 成功；非 0 = 业务错误（error 带原因）
+  int32 code = 1;
+  string error = 2;
+  // 小数据 JSON 输出（对象/数组/字符串）
+  string json_out = 3;
+  // 若命令产生表格形态的结果（如 scan 报告），以 Arrow IPC 帧返回
+  bytes table = 4;
+  // table 的元信息 JSON：{"name": ..., "num_rows": n, "columns": [{"name","dtype"}]}
+  string table_schema = 5;
+}
+
+message SelectRequest {
+  // 查询对象名（table 或 dataset）
+  string name = 1;
+  // 对象类型："" 自动识别（先 dataset 后 table）、"table"/"dataset" 显式
+  string type = 2;
+  // 需要的业务列（缺省 = 全部非工具列）
+  repeated string columns = 3;
+  // 谓词表达式（同 CLI select 的 --where，如 `date >= 20240101 and sym like '6%'`）
+  string where = 4;
+  // dataset 分区过滤（如 `2024-01`）
+  string partition = 5;
+  // 是否包含工具字段（默认排除）
+  bool include_tool = 6;
+}
+
+message SelectResponse {
+  // Arrow IPC 完整帧（schema + record batch），可用 polars/pyarrow 直接读取
+  bytes ipc = 1;
+  // 元信息 JSON：{"name", "num_rows", "columns": [{"name","dtype"}], "partition"}
+  string schema_json = 2;
+  int64 num_rows = 3;
+  // 业务错误信息（非空表示查询失败，ipc 为空）
+  string error = 4;
+}

@@ -136,6 +136,34 @@ class _Completer(Completer):
 
 
 _session = None
+_grpc_server = None
+
+
+def _start_grpc_background() -> None:
+    """REPL 启动时同步后台启动 gRPC 服务（端口取配置，缺省 9569）
+
+    端口被占用/绑定失败不阻断 REPL（打印警告降级）。
+    """
+    global _grpc_server
+    if _grpc_server is not None:
+        return
+    try:
+        from .grpc.server import serve as grpc_serve
+        from .data.settings import load_config
+        _grpc_server = grpc_serve()
+        cfg = load_config()
+        print(f"gRPC 服务已启动: 127.0.0.1:{_grpc_server.port}"
+              f"{'（config set --grpc-port 可改端口）' if cfg.grpc_port == _grpc_server.port else ''}")
+    except Exception as e:
+        _grpc_server = None
+        print(f"警告: gRPC 服务启动失败（{e}），REPL 继续运行")
+
+
+def _stop_grpc_background() -> None:
+    global _grpc_server
+    if _grpc_server is not None:
+        _grpc_server.stop()
+        _grpc_server = None
 
 
 def _readline(prompt: str) -> str | None:
@@ -161,26 +189,30 @@ def _readline(prompt: str) -> str | None:
 def repl() -> int:
     """交互式 CLI 提示符（后台执行默认开启，`table scan --background` 等可覆盖）"""
     set_default_async(True)
+    _start_grpc_background()
     print("stkoe 数据管理 CLI — 输入时 Tab 补全 / 实时提示")
     print(f"命令: {', '.join(TOP_COMMANDS)} | `table --help` 查看子命令 | `exit` 退出")
     print("REPL 下任务默认后台执行（返回 task_id，用 `task log <id>` 观察）")
-    while True:
-        line = _readline(PROMPT)
-        if line is None:
-            print()
-            return 0
-        line = line.strip()
-        if not line:
-            continue
-        if line.lower() in EXIT_WORDS:
-            return 0
-        if line.lower() in HELP_WORDS:
-            _dispatch(["--help"])
-            continue
-        try:
-            _dispatch(shlex.split(line))
-        except ValueError as e:
-            print(f"语法错误: {e}")
+    try:
+        while True:
+            line = _readline(PROMPT)
+            if line is None:
+                print()
+                return 0
+            line = line.strip()
+            if not line:
+                continue
+            if line.lower() in EXIT_WORDS:
+                return 0
+            if line.lower() in HELP_WORDS:
+                _dispatch(["--help"])
+                continue
+            try:
+                _dispatch(shlex.split(line))
+            except ValueError as e:
+                print(f"语法错误: {e}")
+    finally:
+        _stop_grpc_background()
 
 
 def main(argv: list[str] | None = None) -> int:

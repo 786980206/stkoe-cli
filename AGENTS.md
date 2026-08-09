@@ -33,6 +33,7 @@ stkoe/
 │   │   ├── settings.py    # 配置：data_path + ignore_cols
 │   │   ├── cli.py         # typer：table/config/mock/task/dataset/stat 子命令
 │   │   ├── mock.py        # 参数化数据生成 + write + write_demo
+│   │   ├── grpc/         # gRPC 服务：stkoe.proto + 生成 stub + server.py（端口 9569，config 可改）
 │   │   ├── catalog/       # db.py(SQLite schema)/spec.py(dataclass)/access.py(行访问)/json.py
 │   │   ├── dataset.py     # dataset：scan/create/sniff/materialize/select + 增量/自动分区（产物直接写 datasets/<name>/）
 │   │   ├── stat.py        # stat：dataset 统计物化（产物在 stats/<name>/，catalog type='stat'，依赖登记 stkoe_depends）
@@ -223,6 +224,18 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
 - **stat 输出对齐**：分组统计首列以**分组列名**命名（如 `sym`/`date`，非固定 `group`）；
   field 顺序按源表列序（数值/字符串/时间列各自内部保持原序）。
 - 测试：全量 105 用例 `uv run pytest -q` 全绿；test_cli 补 REPL 顺序隔离（autouse 恢复同步默认）。
+
+### v0.4.3（gRPC 交互服务）
+- **gRPC 服务**：`src/stkoe/grpc/`（stkoe.proto + 生成 stub + server.py）；默认端口 9569，
+  `config set --grpc-port` 可改（StkoeConfig.grpc_port）；REPL 启动时同步后台启动
+  （绑定失败降级不阻断），退出自动停止；独立前台运行 `stkoe server`。
+- **接口约定**：小数据量（table/dataset/stat/field 的 list/meta、config show、task list、version）
+  走 Execute RPC → JSON；表格数据走 Select RPC → 完整 Arrow IPC 帧（bytes ipc + schema_json，
+  polars/pyarrow 直接读）；type 空则自动探测（先 dataset 后 table）；业务错误放响应体
+  （code/error 字段），不用传输层状态。只绑定 127.0.0.1。
+- **依赖**：grpcio（运行时）+ grpcio-tools（dev）；protoc 生成后需手动把 stkoe_pb2_grpc.py
+  顶部 `import stkoe_pb2` 改为 `from . import stkoe_pb2`。
+- 测试：全量 116 用例 `uv run pytest -q` 全绿（新增 tests/test_grpc.py 7 用例）。
 
 ### v0.4.2（field 迁移 + factor/barra/portal 导入修复）
 - **field 迁移完成**：遗留 YAML 实现（依赖已删的 `ResponseData`/`SYS_COLS`）替换为 catalog 注册

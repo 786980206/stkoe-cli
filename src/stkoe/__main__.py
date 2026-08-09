@@ -152,8 +152,8 @@ def _start_grpc_background() -> None:
         from .data.settings import load_config
         _grpc_server = grpc_serve()
         cfg = load_config()
-        print(f"gRPC 服务已启动: 127.0.0.1:{_grpc_server.port}"
-              f"{'（config set --grpc-port 可改端口）' if cfg.grpc_port == _grpc_server.port else ''}")
+        print(f"gRPC 服务已启动: {_grpc_server.host}:{_grpc_server.port}"
+              f"{'（config set --grpc-host/--grpc-port 可改）' if cfg.grpc_host == _grpc_server.host and cfg.grpc_port == _grpc_server.port else ''}")
     except Exception as e:
         _grpc_server = None
         print(f"警告: gRPC 服务启动失败（{e}），REPL 继续运行")

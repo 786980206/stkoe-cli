@@ -104,6 +104,28 @@ def test_server_port_config(root, tmp_path, monkeypatch):
     assert server_port() == 9876
 
 
+def test_server_host_config(root, tmp_path, monkeypatch):
+    """server_host() 读配置 grpc_host（缺省 127.0.0.1；可改 0.0.0.0）"""
+    from stkoe.grpc.server import server_host
+    assert server_host() == "127.0.0.1"
+    monkeypatch.setenv("STKOE_CONFIG", str(tmp_path / "stkoe.json"))
+    data.set_config(grpc_host="0.0.0.0")
+    assert server_host() == "0.0.0.0"
+    # 与端口同写：config set 同时持久化 host+port
+    data.set_config(grpc_host="0.0.0.0", grpc_port=9123)
+    assert data.config().grpc_host == "0.0.0.0"
+    assert data.config().grpc_port == 9123
+
+
+def test_execute_config_show_has_host(client, root):
+    """Execute config show 输出含 grpc_host（portal 桥可读）"""
+    resp = client.Execute(stkoe_pb2.ExecuteRequest(cmd="config", args=["show"]))
+    assert resp.code == 0
+    out = json.loads(resp.json_out)
+    assert "grpc_host" in out
+    assert out["grpc_host"] == "127.0.0.1"
+
+
 def test_port_conflict(srv):
     with pytest.raises(Exception):
         StkoeServer(port=srv.port).start()
@@ -257,3 +279,25 @@ def test_execute_table_add_report_jsonable(client, root):
     assert rep["layout"]
     assert rep["version_before"] >= 0 and rep["version_after"] >= rep["version_before"]
     assert "changed" in rep and "partition_by" in rep and "diffs" in rep and "triggered" in rep
+
+
+def test_execute_del_error_returns_dependencies(client, root):
+    """Execute 删除被引用对象时，error 带原因 + json_out 返回结构化依赖列表"""
+    _setup(root)
+    data.dataset.add("ds_dep", "t1", "t1", background=False, materialize=False)
+    # table del 被 dataset 引用 → code=2 + dependencies 结构
+    resp = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["del", "t1"]))
+    assert resp.code == 2
+    assert "dependencies exist" in resp.error and "dataset:ds_dep" in resp.error
+    deps = json.loads(resp.json_out)["dependencies"]
+    assert any(d["obj_type"] == "dataset" and d["obj_name"] == "ds_dep" for d in deps)
+    assert all("obj_type" in d and "obj_name" in d for d in deps)
+    # 未被删除：对象仍在
+    m = client.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["meta", "t1"]))
+    assert m.code == 0
+    # dataset del 被 stat 引用 → 同样返回依赖
+    data.stat.add("ds_dep", background=False)
+    resp2 = client.Execute(stkoe_pb2.ExecuteRequest(cmd="dataset", args=["del", "ds_dep"]))
+    assert resp2.code == 2
+    deps2 = json.loads(resp2.json_out)["dependencies"]
+    assert any(d["obj_type"] == "stat" and d["obj_name"] == "ds_dep" for d in deps2)

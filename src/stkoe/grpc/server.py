@@ -1,6 +1,7 @@
 """stkoe gRPC 服务：数据管理框架远程访问
 
-- 默认端口 9569，可通过 `config set --grpc-port` 修改；也支持 `--port` 显式覆盖
+- 默认绑定 127.0.0.1:9569，可通过 `config set --grpc-host` / `--grpc-port` 修改；
+  也支持 `--host` / `--port` 显式覆盖
 - REPL 启动时同步后台启动（进程内单例），退出时停止；也可 `stkoe server` 独立前台运行
 - 约定：
   - 小数据量（元数据/列表/状态）走 ``json_out``（Execute）
@@ -8,7 +9,7 @@
     支持分页（page/page_size）+ 结构化过滤（filter）+ 排序（sort），响应带 ``total``
   - 长任务（物化/公式执行/统计）走 ``RunTask`` 服务端流式（log/progress/result 事件）
   - 存活探针走 ``Health``
-- 只绑定 127.0.0.1（本地服务）
+- 缺省只绑定 127.0.0.1（本地服务）；改绑其他地址前确认网络安全策略
 """
 import io
 import json
@@ -24,6 +25,7 @@ from typing import Iterator
 import grpc
 import polars as pl
 
+from ..data.table import DependencyError
 from . import stkoe_pb2, stkoe_pb2_grpc
 
 
@@ -75,7 +77,8 @@ def _execute(cmd: str, args: list[str]) -> dict:
     c = load_config()
     if cmd == "config" and (not args or args[0] == "show"):
         return {"config_file": str(cfg_path()), "data_path": c.data_path,
-                "grpc_port": c.grpc_port, "ignore_cols": list(c.ignore_cols)}
+                "grpc_host": c.grpc_host, "grpc_port": c.grpc_port,
+                "ignore_cols": list(c.ignore_cols)}
     if cmd == "version":
         return {"version": _pkg_version("stkoe")}
     if cmd == "task" and args and args[0] == "list":
@@ -90,8 +93,11 @@ def _execute(cmd: str, args: list[str]) -> dict:
         if sub in ("meta", "get") and len(args) >= 2:
             return _jsonable(table.meta(args[1]))
         if sub == "add" and len(args) >= 2:
-            _, kv = _parse_kv(args[1:])
-            return _jsonable(table.add(args[1], dbt_manifest=kv.get("dbt_manifest"),
+            name, kv = _parse_kv(args[1:])
+            if kv.get("all"):
+                # table add --all：批量发现并注册 tables/ 下所有未注册且有数据的目录
+                return [_jsonable(r) for r in table.add("*", all=True, background=False)]
+            return _jsonable(table.add(name or args[1], dbt_manifest=kv.get("dbt_manifest"),
                                        background=False))
         if sub == "set" and len(args) >= 2:
             return _jsonable(_table_set(table, args[1], args[2:]))
@@ -468,6 +474,11 @@ class _StkoeServicer(stkoe_pb2_grpc.StkoeServiceServicer):
     def Execute(self, request, context):
         try:
             out = _execute(request.cmd, list(request.args))
+        except DependencyError as e:
+            # 业务冲突：error 带原因 + json_out 带结构化依赖列表（供前端展示/操作）
+            return stkoe_pb2.ExecuteResponse(
+                code=2, error=str(e),
+                json_out=_dumps({"dependencies": [dict(d) for d in e.dependents]}))
         except Exception as e:
             return stkoe_pb2.ExecuteResponse(code=2, error=str(e))
         return stkoe_pb2.ExecuteResponse(
@@ -554,12 +565,21 @@ def server_port() -> int:
     return load_config().grpc_port
 
 
-def serve(port: int | None = None) -> StkoeServer:
-    """启动服务并返回（端口缺省取配置）；供 REPL 同步启动与 `stkoe server` 使用"""
-    return StkoeServer(port=port if port is not None else server_port()).start()
+def server_host() -> str:
+    """生效绑定地址：配置 grpc_host（缺省 127.0.0.1）"""
+    from ..data.settings import load_config
+    return load_config().grpc_host
 
 
-def serve_reload(port: int | None = None) -> None:
+def serve(port: int | None = None, host: str | None = None) -> StkoeServer:
+    """启动服务并返回（host/port 缺省取配置）；供 REPL 同步启动与 `stkoe server` 使用"""
+    return StkoeServer(
+        host=host if host is not None else server_host(),
+        port=port if port is not None else server_port(),
+    ).start()
+
+
+def serve_reload(port: int | None = None, host: str | None = None) -> None:
     """带代码监听重载的前台服务：改任一 stkoe 源码文件自动重启。"""
     import subprocess
     import sys
@@ -568,10 +588,12 @@ def serve_reload(port: int | None = None) -> None:
 
     pkg_dir = Path(_stkoe_root())
     port_arg = port if port is not None else server_port()
-    print(f"[server] watch mode: {pkg_dir}  (port {port_arg})", flush=True)
+    host_arg = host if host is not None else server_host()
+    print(f"[server] watch mode: {pkg_dir}  (host {host_arg} port {port_arg})", flush=True)
     while True:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "stkoe", "server", "run", "--port", str(port_arg)],
+            [sys.executable, "-m", "stkoe", "server", "run",
+             "--host", host_arg, "--port", str(port_arg)],
         )
         changed = _watch_pkg(pkg_dir)
         if proc.poll() is None:

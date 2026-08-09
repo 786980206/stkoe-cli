@@ -38,15 +38,16 @@ app.add_typer(server_app, name="server")
 
 
 @server_app.command()
-def run(port: int | None = typer.Option(None, help="端口（缺省取配置 grpc_port）"),
+def run(host: str | None = typer.Option(None, help="绑定地址（缺省取配置 grpc_host）"),
+     port: int | None = typer.Option(None, help="端口（缺省取配置 grpc_port）"),
      reload: bool = typer.Option(False, "--reload", help="监听 stkoe 源码变更自动重启（开发用）")):
     """前台运行 gRPC 服务（阻塞；REPL 已同步后台启动）"""
     if reload:
         from ..grpc.server import serve_reload
-        serve_reload(port)
+        serve_reload(port, host)
         return
     from ..grpc.server import serve as grpc_serve
-    srv = grpc_serve(port)
+    srv = grpc_serve(port, host)
     print(f"stkoe gRPC listening on {srv.host}:{srv.port}")
     srv.wait()
 
@@ -238,6 +239,7 @@ def show(json: bool = typer.Option(False, help="JSON 输出")):
         "config_file": str(p),
         "data_path": c.data_path,
         "ignore_cols": list(c.ignore_cols),
+        "grpc_host": c.grpc_host,
         "grpc_port": c.grpc_port,
         "resolved_data_path": str(resolve_data_path()),
     }
@@ -252,6 +254,7 @@ def show(json: bool = typer.Option(False, help="JSON 输出")):
 def set(
     data_path: str = typer.Option(None, "--data-path", help="默认数据根目录"),
     ignore_cols: str = typer.Option(None, "--ignore-cols", help="忽略的工具字段，逗号分隔（可多个）"),
+    grpc_host: str = typer.Option(None, "--grpc-host", help="gRPC 服务绑定地址（缺省 127.0.0.1）"),
     grpc_port: int = typer.Option(None, "--grpc-port", help="gRPC 服务端口（缺省 9569）"),
 ):
     """修改配置并写入 stkoe.json"""
@@ -259,6 +262,7 @@ def set(
     new = StkoeConfig(
         data_path=data_path or c.data_path,
         ignore_cols=tuple(ignore_cols.split(",")) if ignore_cols else c.ignore_cols,
+        grpc_host=grpc_host or c.grpc_host,
         grpc_port=grpc_port if grpc_port is not None else c.grpc_port,
     )
     p = save_config(new)

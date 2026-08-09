@@ -16,6 +16,7 @@ from pathlib import Path
 CONFIG_ENV = "STKOE_CONFIG"
 CONFIG_NAME = "stkoe.json"
 DEFAULT_IGNORE_COLS = ("optime",)
+DEFAULT_GRPC_HOST = "127.0.0.1"
 DEFAULT_GRPC_PORT = 9569
 
 
@@ -25,17 +26,21 @@ class StkoeConfig:
 
     - ``data_path``：默认数据根目录（未显式 configure / 未设环境变量时使用）
     - ``ignore_cols``：工具字段（如 ``optime``），处理数据时忽略；支持多个
+    - ``grpc_host``：gRPC 服务绑定地址（REPL 启动时同步监听；缺省 127.0.0.1）
     - ``grpc_port``：gRPC 服务端口（REPL 启动时同步监听；缺省 9569）
     """
 
     data_path: str | None = None
     ignore_cols: tuple[str, ...] = DEFAULT_IGNORE_COLS
+    grpc_host: str = DEFAULT_GRPC_HOST
     grpc_port: int = DEFAULT_GRPC_PORT
 
     def to_dict(self) -> dict:
         d: dict = {"data_path": self.data_path}
         if self.ignore_cols != DEFAULT_IGNORE_COLS:
             d["ignore_cols"] = list(self.ignore_cols)
+        if self.grpc_host != DEFAULT_GRPC_HOST:
+            d["grpc_host"] = self.grpc_host
         if self.grpc_port != DEFAULT_GRPC_PORT:
             d["grpc_port"] = self.grpc_port
         return d
@@ -45,6 +50,7 @@ class StkoeConfig:
         return cls(
             data_path=d.get("data_path"),
             ignore_cols=tuple(d.get("ignore_cols") or DEFAULT_IGNORE_COLS),
+            grpc_host=d.get("grpc_host") or DEFAULT_GRPC_HOST,
             grpc_port=int(d.get("grpc_port") or DEFAULT_GRPC_PORT),
         )
 

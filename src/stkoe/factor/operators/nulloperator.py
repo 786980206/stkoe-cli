@@ -1,8 +1,9 @@
 from ..core import Operator, Feature
-from ...data import get_common_data
+from ...data.plugins.wsdata import get_common_data
 from dataclasses import dataclass
 from typing import Any, Literal
-from ...data import pl, c
+import polars as pl
+from ..core.funcs import c
 
 @dataclass(frozen=True)    
 class NAKeep(Operator):

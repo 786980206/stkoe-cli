@@ -1,6 +1,7 @@
 
 from ...core import FeatureBuilder, FeatureSpec, Pipeline
-from ....data import c, pl, pls
+import polars as pl
+from ...core.funcs import c
 
 class FacBTOPBuilder(FeatureBuilder):
 

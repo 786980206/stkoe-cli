@@ -14,8 +14,8 @@ pn.extension("gridstack")
 pn.config.design = Quant
 
 from stkoe.portal.config import DEFAULT_RESULT_ID
-from stkoe.portal.models.factor_test import FactorTestModel
-from stkoe.portal.viewers.BucketReturnsViewer import BucketReturnsViewer
+from stkoe.portal.models.factor_test_result import FactorTestResultModel as FactorTestModel
+from stkoe.portal.viewers.factor_test_result.bucket_returns import BucketReturnsViewer
 from stkoe.portal.viewers.FactorReturnsViewer import FactorReturnsViewer
 from stkoe.portal.viewers.ICViewer import ICViewer
 from stkoe.portal.viewers.CoverageViewer import CoverageViewer

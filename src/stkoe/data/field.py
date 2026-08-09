@@ -1,42 +1,133 @@
-import polars as pl
+"""field 指标管理（v0.4.1 迁移：catalog 注册，替换遗留 YAML 实现）
+
+指标是 dataset 之上的派生定义（formula 为表达式存根，不做物化计算）；
+注册存 catalog type='field'，产物不落盘（fields/ 目录仅作存档保留）。
+接口对齐 table/dataset/stat：create（add）/meta/list/del/rename。
+"""
 import datetime
-import yaml
-import shutil
-from functools import reduce
-from . import STKOE_LOCAL_DATA, logger, ResponseData, SYS_COLS
-from .dataset import describe as describe_dataset, select as select_dataset
+from dataclasses import dataclass
 
-def create(field_name, dataset, formula=None, **meta_input):
-    """新建指标"""
-    dataset_meta_ret = describe_dataset(dataset)
-    if not dataset_meta_ret.success: return dataset_meta_ret
+from .catalog import access
+from . import catalog, logger
 
-    # 创建 field 文件夹
-    field_folder = STKOE_LOCAL_DATA / "fields" / field_name
-    field_folder.mkdir(parents=True, exist_ok=True)
 
-    # 生成 meta 信息
+class FieldError(ValueError):
+    pass
+
+
+class FieldExistsError(FieldError):
+    pass
+
+
+class FieldNotFoundError(FieldError):
+    pass
+
+
+@dataclass(frozen=True)
+class FieldMeta:
+    """指标元数据"""
+    name: str
+    version: int
+    dataset: str
+    formula: str | None = None
+    display_name: str = ""
+    description: str = ""
+    tags: tuple[str, ...] = ()
+    materialized: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name, "version": self.version, "dataset": self.dataset,
+            "formula": self.formula, "display_name": self.display_name,
+            "description": self.description, "tags": list(self.tags),
+            "materialized": self.materialized,
+            "created_at": self.created_at, "updated_at": self.updated_at,
+        }
+
+
+def _object(conn, name: str):
+    return access.get_object(conn, name, "field")
+
+
+def _meta(conn, obj) -> FieldMeta:
+    m = __import__("json").loads(obj["meta"])
+    return FieldMeta(
+        name=obj["name"], version=obj["version"], dataset=m.get("dataset", ""),
+        formula=m.get("formula"), display_name=m.get("display_name", obj["name"]),
+        description=m.get("description", ""), tags=tuple(m.get("tags", [])),
+        materialized=bool(m.get("materialized", False)),
+        created_at=obj["created_at"], updated_at=obj["updated_at"],
+    )
+
+
+def create(name: str, dataset: str, formula: str | None = None, **meta_input) -> FieldMeta:
+    """新建指标：绑定 dataset（必须已注册）+ 公式存根，注册 catalog。
+
+    ``**meta_input`` 可覆盖 display_name/description/tags 等。
+    """
+    from .dataset import describe as describe_dataset
+    describe_dataset(dataset)  # 未注册抛 DatasetNotFoundError
+    conn = catalog().conn
+    if _object(conn, name) is not None:
+        raise FieldExistsError(f"field already registered: {name}")
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     meta = {
-        "display_name": field_name,
-        "description": "can be modified by user",
-        "data_type": None,
-        "unit": None,
-        "tags": [],
-        "dataset": dataset,
-        "formula": formula,
+        "dataset": dataset, "formula": formula,
+        "display_name": name, "description": "", "tags": [],
         "materialized": False,
-        "materialized_time": None,
-        "create_time": now,
-        "update_time": now,
-    } | meta_input
+        "create_time": now, "update_time": now,
+    }
+    meta.update(meta_input)
+    obj = access.insert_object(conn, "field", name, meta, "", now)
+    # 指标依赖 dataset（供血缘/级联）
+    access.add_dep(conn, "field", name, "dataset", dataset, {"formula": formula})
+    logger.debug(f"field [{name}] created on dataset {dataset}")
+    return _meta(conn, obj)
 
-    # 生成配置文件
-    meta_file = field_folder / "_meta.yaml"
-    with open(meta_file, 'w', encoding='utf-8') as f:
-        yaml.dump(meta, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-    logger.debug( f"Field [{field_name}] created successfully" )
-    return ResponseData(data=meta)    
 
-if __name__ == "__main__":
-    create("test_field", "test_success")
+def meta(name: str) -> FieldMeta:
+    conn = catalog().conn
+    obj = _object(conn, name)
+    if obj is None:
+        raise FieldNotFoundError(f"field not registered: {name}")
+    return _meta(conn, obj)
+
+
+def list() -> list[FieldMeta]:
+    conn = catalog().conn
+    rows = conn.execute("SELECT * FROM stkoe_objects WHERE type='field' "
+                        "ORDER BY name").fetchall()
+    return [_meta(conn, r) for r in rows]
+
+
+def rename(old: str, new: str) -> FieldMeta:
+    """改名（catalog + 依赖边）"""
+    conn = catalog().conn
+    with catalog().txn() as cx:
+        obj = _object(cx, old)
+        if obj is None:
+            raise FieldNotFoundError(f"field not registered: {old}")
+        if _object(cx, new) is not None:
+            raise FieldExistsError(f"field already registered: {new}")
+        cx.execute("UPDATE stkoe_objects SET name=? WHERE id=?", (new, obj["id"]))
+        access.rename_obj(cx, "field", old, new)
+        access.rename_dep(cx, "field", old, new)
+    return _meta(conn, _object(conn, new))
+
+
+def del_(name: str) -> None:
+    """删除指标注册（fields/<name>/ 历史 YAML 存档目录保留）"""
+    conn = catalog().conn
+    with catalog().txn() as cx:
+        obj = _object(cx, name)
+        if obj is None:
+            raise FieldNotFoundError(f"field not registered: {name}")
+        cx.execute("DELETE FROM stkoe_objects WHERE id=?", (obj["id"],))
+        access.clear_deps(cx, "field", name)
+
+
+def describe(name: str) -> FieldMeta:
+    """兼容别名：旧 field 使用 describe(name) 读取"""
+    return meta(name)

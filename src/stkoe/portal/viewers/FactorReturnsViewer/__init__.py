@@ -4,7 +4,7 @@ import asyncio
 import holoviews as hv
 import panel as pn
 from panel_splitjs import Split
-from ...models.factor_test import FactorTestModel
+from ...models.factor_test_result import FactorTestResultModel as FactorTestModel
 
 desc = r"""## 因子收益
 

@@ -3,7 +3,7 @@
 import panel as pn
 from .turnover import TurnoverViewer
 from .autocorr import AutoCorrViewer
-from ...models.factor_test import FactorTestModel
+from ...models.factor_test_result import FactorTestResultModel as FactorTestModel
 
 
 class StabilityView:

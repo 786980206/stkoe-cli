@@ -2,7 +2,7 @@
 
 import panel as pn
 from panel_splitjs import Split
-from ...models.factor_test import FactorTestModel
+from ...models.factor_test_result import FactorTestResultModel as FactorTestModel
 from ..base2 import build_standard_layout, toggle_split, make_loading
 
 desc = """## 截面回归模型
@@ -154,7 +154,7 @@ class CSRegModelController:
             plot_data = data.select(cols)
             # 生成 t 值和 R2 的折线图
             import holoviews as hv
-            from ....data import NumeralTickFormatter
+            from ....factor.testers.base import NumeralTickFormatter
 
             t_plot = plot_data.hvplot.line(
                 x="date",
@@ -179,7 +179,7 @@ class CSRegModelController:
             # Delta R2
             core = model.calc_core_index()
             import holoviews as hv
-            from ....data import NumeralTickFormatter
+            from ....factor.testers.base import NumeralTickFormatter
 
             delta_cols = [c for c in core.columns if c != "date"]
             delta_plot = core.hvplot.line(

@@ -4,7 +4,8 @@
 from ..core import FactorTester, FactorTesterSpec
 from dataclasses import dataclass
 import polars as pl
-from ...data import WSData, c, NumeralTickFormatter, hv
+from ..core.funcs import c
+from ..testers.base import NumeralTickFormatter, hv
 import polars_ds as plds
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ def CSRegModelTest(tester: FactorTester) -> CSRegModelTestResults:
     - m1: `Rex ~ 1 + factor + beta`
     - m2: `Rex ~ 1 + factor + beta + size`
     """
+    from wsdata import WSData
     data = tester.factor_data.join(
         # 市场超额收益率和无风险利率
         WSData.query("select date,rmx,rf from df_inday").pl(), on="date"

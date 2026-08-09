@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import polars as pl
 from .builder import FeatureBuilder
-from ...data import get_feature_data
+from ...data.plugins.wsdata import get_feature_data
 from typing import Union, Any
 
 class Operator(ABC):
@@ -134,6 +134,7 @@ class FeatureSpec:
     builder:FeatureBuilder
     pipeline:"Pipeline"
     description: str|None = None
+    direction: int = 1  # 因子方向：1=值越大越好，-1=值越小越好（zoo 规范）
 
     def __or__(self, other: Pipeline|Operator) -> "Feature":
         """重载 | 运算符"""

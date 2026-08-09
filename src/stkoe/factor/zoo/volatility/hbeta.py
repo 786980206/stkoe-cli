@@ -50,7 +50,7 @@ fac_hbeta = FeatureSpec(
 
     
 if __name__ == '__main__':
-    from ....data import WSData
+    from wsdata import WSData
     data = WSData.query("""
         select 
             base.date,

@@ -14,6 +14,7 @@ from . import mock as mock_mod
 from . import task as task_mod
 from . import dataset as dataset_mod
 from . import stat as stat_mod
+from . import field as field_mod
 from .settings import StkoeConfig, config_path, load_config, resolve_data_path, save_config
 from .task import TaskHandle
 
@@ -24,12 +25,14 @@ mock_app = typer.Typer(help="mock 子命令：生成演示数据", no_args_is_he
 task_app = typer.Typer(help="任务子命令：进度/日志/暂停/取消", no_args_is_help=True)
 dataset_app = typer.Typer(help="dataset 子命令：索引表+多表 join 逻辑数据集", no_args_is_help=True)
 stat_app = typer.Typer(help="stat 子命令：table/dataset 统计资产（stats/ 目录，经 stkoe_depends 关联）", no_args_is_help=True)
+field_app = typer.Typer(help="field 子命令：dataset 派生指标（catalog 注册，formula 存根）", no_args_is_help=True)
 app.add_typer(table_app, name="table")
 app.add_typer(config_app, name="config")
 app.add_typer(mock_app, name="mock")
 app.add_typer(task_app, name="task")
 app.add_typer(dataset_app, name="dataset")
 app.add_typer(stat_app, name="stat")
+app.add_typer(field_app, name="field")
 
 
 def _print_json(obj):
@@ -67,7 +70,7 @@ def _table_json(m: table.TableMeta) -> dict:
 def add(
     name: str = typer.Argument(None, help="表名；配合 --all 可省略"),
     all: bool = typer.Option(False, "--all", help="发现并注册 tables/ 下所有未注册且有数据的表"),
-    background: bool = typer.Option(False, "--background", help="后台执行（CLI 默认同步）"),
+    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局：CLI 同步 / REPL 后台）"),
 ):
     """注册表（发现资产语义：目录不存在报错；已注册报错用 scan 刷新）"""
     r = _finish(table.add(name, all=all, background=background))
@@ -182,7 +185,7 @@ def scan(
     all: bool = typer.Option(False, "--all", help="扫描 tables/ 下全部目录（含未注册）"),
     resync: bool = typer.Option(False, "--resync", help="忽略快检强制全量读 footer"),
     cascade: bool = typer.Option(True, "--cascade/--no-cascade", help="变更后触发下游（默认开启）"),
-    background: bool = typer.Option(False, "--background", help="后台执行"),
+    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
 ):
     """扫描同步元数据（幂等：无差异不 bump 版本）；变更后自动触发下游"""
     reports = table.scan(name, all=all, resync=resync, cascade=cascade, background=background)
@@ -259,7 +262,11 @@ def gen(
     if kind not in gens:
         raise typer.BadParameter(f"unknown kind: {kind} (use {'|'.join(gens)})")
     df = gens[kind]()
-    report = mock_mod.write(name, df, partition_by=partition_by)
+    res = mock_mod.write(name, df, partition_by=partition_by)
+    if isinstance(res, TaskHandle):
+        print(f"task={res.task_id} status={res.status} action=mock_write（后台生成中）")
+        return
+    report = res
     print(f"[{report.name}] v{report.version_before} -> v{report.version_after}"
           f" layout={report.layout.value} rows={len(df)}")
 
@@ -354,7 +361,7 @@ def add(
     keys: str = typer.Option(None, help="join 键，逗号分隔（缺省=index 全部列）"),
     no_materialize: bool = typer.Option(False, "--no-materialize", help="只注册不物化"),
     force: bool = typer.Option(False, "--force", help="已存在时覆盖重建"),
-    background: bool = typer.Option(False, "--background", help="后台执行"),
+    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
 ):
     """注册 dataset（join 规格校验 → 注册 → 自动物化；get 前未物化也会自动）"""
     try:
@@ -427,7 +434,7 @@ def dataset_scan(
     all: bool = typer.Option(False, "--all", help="增量重物化全部"),
     resync: bool = typer.Option(False, "--resync", help="强制全量重物化"),
     cascade: bool = typer.Option(True, "--cascade/--no-cascade", help="变更后级联下游 stat"),
-    background: bool = typer.Option(False, "--background", help="后台执行"),
+    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
 ):
     """检查依赖并增量重物化（幂等）；变更后级联通知下游 stat"""
     if all:
@@ -476,7 +483,7 @@ def add(
     group_col: list[str] = typer.Option(None, "--group-col", "--group_col", help="按列分组统计（可多次）"),
     all: bool = typer.Option(False, "--all", help="统计 'all' + 逐索引/业务列分组"),
     refresh: bool = typer.Option(False, "--refresh", help="强制重算（忽略缓存有效性）"),
-    background: bool = typer.Option(False, "--background", help="后台执行"),
+    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
 ):
     """创建统计资产（缺省仅 'all'；产物 stats/<name>/group=*/stats.parquet）"""
     _finish(stat_mod.add(name, group_col=group_col, all_=all, refresh=refresh, background=background),
@@ -516,9 +523,13 @@ def stat_get(
     group_col: str = typer.Option(None, "--group-col", "--group_col", help="按列分组统计"),
     all: bool = typer.Option(False, "--all", help="返回 'all' + 逐列分组"),
     refresh: bool = typer.Option(False, "--refresh", help="强制重算（默认读缓存，缺失/过期自动重算）"),
+    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
 ):
     """读统计（默认读缓存；缺失/过期自动重算；--all 返回全部分组）"""
-    res = stat_mod.get(name, group_col=group_col, all_=all, refresh=refresh, background=False)
+    res = stat_mod.get(name, group_col=group_col, all_=all, refresh=refresh, background=background)
+    if isinstance(res, TaskHandle):
+        print(f"task={res.task_id} status={res.status} action=stat_get（计算中）")
+        return
     if all:
         for group, df in res.items():
             print(f"--- {group} ---")
@@ -532,7 +543,7 @@ def scan(
     name: str = typer.Argument(None, help="stat 名（缺省配合 --all）"),
     all: bool = typer.Option(False, "--all", help="扫描全部已注册 stat"),
     refresh: bool = typer.Option(False, "--refresh", help="强制全量重算"),
-    background: bool = typer.Option(False, "--background", help="后台执行"),
+    background: bool | None = typer.Option(None, "--background", help="后台执行（缺省跟随全局）"),
 ):
     """重算 data_key 失配的分组（幂等）"""
     if all and name:
@@ -564,3 +575,56 @@ def rename(old: str, new: str):
 
 if __name__ == "__main__":
     app()
+
+# ---------- field ----------
+
+@field_app.command()
+def add(name: str, dataset: str,
+        formula: str = typer.Option(None, help="指标公式（存根，不物化计算）"),
+        display_name: str = typer.Option(None, help="显示名称")):
+    """注册指标：绑定 dataset + 公式存根（catalog 登记）"""
+    m = field_mod.create(name, dataset, formula=formula,
+                         **({"display_name": display_name} if display_name else {}))
+    print(f"registered: {m.name} dataset={m.dataset} v{m.version}")
+
+
+@field_app.command("list")
+def field_list(json: bool = typer.Option(False, help="JSON 输出")):
+    """列出已注册指标"""
+    metas = field_mod.list()
+    if json:
+        _print_json([m.to_dict() for m in metas])
+        return
+    for m in metas:
+        print(f"{m.name:<24} v{m.version} dataset={m.dataset:<20} formula={m.formula or '-'}")
+
+
+@field_app.command()
+def meta(name: str, json: bool = typer.Option(False, help="JSON 输出")):
+    """指标元数据"""
+    m = field_mod.meta(name)
+    if json:
+        _print_json(m.to_dict())
+        return
+    print(f"name:        {m.name}")
+    print(f"version:     {m.version}")
+    print(f"dataset:     {m.dataset}")
+    print(f"formula:     {m.formula or '-'}")
+    print(f"display:     {m.display_name}")
+    print(f"description: {m.description}")
+    print(f"tags:        {', '.join(m.tags) or '-'}")
+
+
+@field_app.command()
+def rename(old: str, new: str):
+    """改名（catalog + 依赖边）"""
+    m = field_mod.rename(old, new)
+    print(f"renamed: {m.name} v{m.version}")
+
+
+@field_app.command("del")
+def field_del(name: str):
+    """删除指标注册"""
+    field_mod.del_(name)
+    print(f"deleted: {name}")
+

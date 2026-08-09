@@ -111,7 +111,7 @@ class CSRegModelController:
             plot_data = data.select(cols)
             # 生成 t 值和 R2 的折线图
             import holoviews as hv
-            from ....data import NumeralTickFormatter
+            from ....factor.testers.base import NumeralTickFormatter
 
             t_plot = plot_data.hvplot.line(
                 x="date",
@@ -136,7 +136,7 @@ class CSRegModelController:
             # Delta R2
             core = model.calc_core_index()
             import holoviews as hv
-            from ....data import NumeralTickFormatter
+            from ....factor.testers.base import NumeralTickFormatter
 
             delta_cols = [c for c in core.columns if c != "date"]
             delta_plot = core.hvplot.line(

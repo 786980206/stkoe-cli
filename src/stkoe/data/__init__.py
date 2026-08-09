@@ -105,6 +105,7 @@ from .task import (  # noqa: E402
 )
 from . import dataset  # noqa: E402
 from . import stat  # noqa: E402
+from . import field  # noqa: E402
 
 # 旧版轻量别名（只读观察者时代：sniff = 扫描同步；select = 读）
 sniff = scan
@@ -149,6 +150,7 @@ __all__ = [
     "task_clean",
     "dataset",
     "stat",
+    "field",
     "sniff",
     "sniff_all",
 ]

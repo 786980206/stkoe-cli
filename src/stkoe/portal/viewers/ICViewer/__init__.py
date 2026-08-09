@@ -5,7 +5,7 @@ from .ic_series import ICSeriesViewer
 from .ic_hist import ICHistViewer
 from .ic_cums import ICCumsViewer
 from .ic_month import ICMonthViewer
-from ...models.factor_test import FactorTestModel
+from ...models.factor_test_result import FactorTestResultModel as FactorTestModel
 
 
 class ICView:

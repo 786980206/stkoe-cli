@@ -1,6 +1,5 @@
 import pandas as pd
 from ..components.table import PerspectiveTable
-from ...data import get_cnstk_klday
 
 # data = get_cnstk_klday().head(100000).to_pandas()
 data = pd.DataFrame({"A":[1] * 1000, "B":[2] * 1000})

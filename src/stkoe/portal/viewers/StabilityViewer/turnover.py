@@ -2,7 +2,7 @@
 
 import panel as pn
 from panel_splitjs import Split
-from ...models.factor_test import FactorTestModel
+from ...models.factor_test_result import FactorTestResultModel as FactorTestModel
 from ..base2 import build_standard_layout, toggle_split, make_loading
 
 desc = """## 分组换手率

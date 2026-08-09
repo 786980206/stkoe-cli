@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import polars as pl
 from datetime import date
-from ...data import get_cnstk_tdday
+from ...data.plugins.wsdata import get_cnstk_tdday
 
 
 class FeatureBuilder(ABC):

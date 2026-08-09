@@ -16,6 +16,7 @@ from typer.main import get_command
 
 from .data import dataset as dataset_mod
 from .data import stat as stat_mod
+from .data import field as field_mod
 from .data import table
 from .data.cli import app
 from .data.task import set_default_async
@@ -24,11 +25,14 @@ PROMPT = "stkoe> "
 EXIT_WORDS = {"exit", "quit", "q", ":q", "bye"}
 HELP_WORDS = {"help", "?", ":h"}
 
-TOP_COMMANDS = ["table", "task", "dataset", "stat", "config", "mock", "help", "exit", "quit"]
+TOP_COMMANDS = ["table", "task", "dataset", "stat", "field", "config", "mock", "help", "exit", "quit"]
 TABLE_SUBCOMMANDS = ["add", "list", "meta", "get", "del", "rename", "set", "col", "scan"]
 TASK_SUBCOMMANDS = ["list", "stop", "pause", "resume", "log", "clean"]
 DATASET_SUBCOMMANDS = ["add", "list", "meta", "get", "scan", "del", "rename"]
 STAT_SUBCOMMANDS = ["add", "list", "meta", "get", "scan", "del", "rename"]
+FIELD_SUBCOMMANDS = ["add", "list", "meta", "rename", "del"]
+FIELD_NAME_SUBS = ["meta", "rename", "del"]
+
 # 第一个位置参数为表名/dataset 名的子命令（补全时提示已注册对象）
 TABLE_NAME_SUBS = {"meta", "get", "del", "set", "col", "scan"}
 DATASET_NAME_SUBS = {"meta", "get", "del", "scan"}
@@ -59,6 +63,7 @@ class _Completer(Completer):
         self._tables: list[str] | None = None
         self._datasets: list[str] | None = None
         self._stats: list[str] | None = None
+        self._fields: list[str] | None = None
 
     def _table_names(self) -> list[str]:
         if self._tables is None:
@@ -83,6 +88,14 @@ class _Completer(Completer):
             except Exception:
                 self._stats = []
         return self._stats
+
+    def _field_names(self) -> list[str]:
+        if self._fields is None:
+            try:
+                self._fields = sorted(m.name for m in field_mod.list())
+            except Exception:
+                self._fields = []
+        return self._fields
 
     def _yield(self, words: list[str], word: str):
         for w in words:
@@ -115,6 +128,11 @@ class _Completer(Completer):
                 yield from self._yield(STAT_SUBCOMMANDS, word)
             elif len(parts) == 2 and parts[1] in STAT_NAME_SUBS:
                 yield from self._yield(self._stat_names(), word)
+        elif cmd == "field":
+            if len(parts) == 1:
+                yield from self._yield(FIELD_SUBCOMMANDS, word)
+            elif len(parts) == 2 and parts[1] in FIELD_NAME_SUBS:
+                yield from self._yield(self._field_names(), word)
 
 
 _session = None
@@ -141,7 +159,7 @@ def _readline(prompt: str) -> str | None:
 
 
 def repl() -> int:
-    """交互式 CLI 提示符（后台执行默认开启，`table scan --sync` 等可覆盖）"""
+    """交互式 CLI 提示符（后台执行默认开启，`table scan --background` 等可覆盖）"""
     set_default_async(True)
     print("stkoe 数据管理 CLI — 输入时 Tab 补全 / 实时提示")
     print(f"命令: {', '.join(TOP_COMMANDS)} | `table --help` 查看子命令 | `exit` 退出")

@@ -224,7 +224,18 @@ WAL 多连接读写分离；pause/stop 协作式（`ctl.check()` 在分区边界
   field 顺序按源表列序（数值/字符串/时间列各自内部保持原序）。
 - 测试：全量 105 用例 `uv run pytest -q` 全绿；test_cli 补 REPL 顺序隔离（autouse 恢复同步默认）。
 
-### v0.2.0（commit `83d962f`，tag `v0.2.0`）
+### v0.4.2（field 迁移 + factor/barra/portal 导入修复）
+- **field 迁移完成**：遗留 YAML 实现（依赖已删的 `ResponseData`/`SYS_COLS`）替换为 catalog 注册
+  模式（`stkoe/data/field.py`）：type='field'，meta 存 `FieldMeta`（dataset/formula/display_name/…），
+  依赖边 field→dataset（stkoe_depends）；接口 `add/list/meta/rename/del` + CLI `field` 子命令
+  + REPL 补全；字段不物化（formula 存根），fields/ 目录仅作存档保留。
+- **factor/barra/portal 导入修复**：nulloperator/btop 相对导入层级修正；`FeatureSpec` 补
+  `direction` 字段（zoo 因子方向规范，log_market_cap 已按标准 `fac_*` 形态重写）；
+  `barra/__init__.py` 拆 WSData 为惰性导入（高层模块不硬依赖 wsdata）；portal viewers
+  统一指向 `models/factor_test_result`；`portal/pages/factor.py` 调试残留改惰性加载+降级提示。
+- **测试**：全量 109 用例 `uv run pytest -q` 全绿（新增 tests/test_field.py 4 用例）。
+
+### v0.4.0（目标 `83d962f`，tag `v0.2.0`）
 - **模块化重构**：table.py（原 613 行）公共逻辑抽离为 `util.py`/`task.py`/`query.py`/`catalog/access.py`，只留 table 业务。
 - **配置系统**：`settings.py`（原 `config.py` 改名，规避遮蔽 `data.config()`）＋ `stkoe config show/set` CLI。
 - **工具字段简化**：`sys_cols`/`tool_cols` 统一为 `ignore_cols`（支持多个）；`ColumnMeta.is_tool`。

@@ -88,13 +88,16 @@ class TaskManager:
         return self.tasks.get(task_id)
 
     def cancel(self, task_id: str) -> bool:
-        """请求取消：置取消标记 + 直接终态 cancelled（Handler 协作式尽早退出）"""
+        """请求取消：置取消标记；未启动的 pending 任务直接终态 cancelled，
+        运行中的任务由 Handler 在检查点看到标记后自行抛出 TaskCancelled 结束
+        （协作式尽早退出，不会出现标记被终态流程提前清掉导致任务继续跑）"""
         task = self.get(task_id)
         if task is None or task.is_terminal():
             return False
         with self._lock:
             self._cancelled.add(task_id)
-        self._finalize(task, "cancelled", message="任务已取消")
+        if task.state == "pending":
+            self._finalize(task, "cancelled", message="任务已取消")
         return True
 
     def pause(self, task_id: str) -> bool:
@@ -241,15 +244,16 @@ class TaskManager:
                 for ev in self.events.list_by_task(task_id, after_seq=seen):
                     seen = ev.seq
                     yield self._event_response(ev)
-                cur = self.get(task_id)
-                if cur is None or cur.is_terminal():
-                    for ev in self.events.list_by_task(task_id, after_seq=seen):
-                        seen = ev.seq
-                        yield self._event_response(ev)
-                    return  # EOF
                 try:
                     ev = q.get(timeout=POLL_INTERVAL)
                 except queue.Empty:
+                    cur = self.get(task_id)
+                    if cur is None or cur.is_terminal():
+                        # 终态事件先于 _live 摘除落库/入队，等一个轮询周期后补读
+                        for ev in self.events.list_by_task(task_id, after_seq=seen):
+                            seen = ev.seq
+                            yield self._event_response(ev)
+                        return  # EOF
                     continue
                 if ev.seq > seen:
                     seen = ev.seq

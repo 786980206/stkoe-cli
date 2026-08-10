@@ -87,22 +87,25 @@ def test_task_persisted_across_manager_reload(tmp_path):
 
 
 def test_cancel_running_task(mgr):
-    """运行中取消：终态 cancelled，事件流以 cancelled 结束"""
+    """运行中取消：标记置位，Handler 在检查点退出，终态 cancelled（且未跑完）"""
     task = mgr.submit("mock", "", [])
-    # 等它进入 running 再取消（mock 每步 sleep 0.01，5 步）
+    # 等它进入 running 且进度未满（进度 1.0 说明 mock 已跑到最后一步）
     deadline = time.monotonic() + 5
-    while not mgr.is_cancelled(task) and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
         cur = mgr.get(task.task_id)
-        if cur.state == "running":
+        if cur.state == "running" and cur.progress < 0.9:
             break
         time.sleep(0.02)
     assert mgr.cancel(task.task_id) is True
-    assert mgr.cancel(task.task_id) is False  # 终态后再次取消返回 False
 
     events = _collect(mgr, task.task_id)
     assert events[-1][1] == "cancelled"
     assert events[-1][2] < 1.0  # 未跑完
     assert mgr.get(task.task_id).state == "cancelled"
+
+    # 终态后再次取消返回 False；cancelled 后无后续进度事件（Handler 已退出）
+    assert mgr.cancel(task.task_id) is False
+    assert all(e[1] == "cancelled" for e in events[-1:])
 
 
 def test_pause_and_resume(mgr):

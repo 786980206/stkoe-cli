@@ -5,7 +5,7 @@ import warnings
 
 from . import stkoe_pb2 as stkoe__pb2
 
-GRPC_GENERATED_VERSION = '1.83.0'
+GRPC_GENERATED_VERSION = '1.70.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,14 +18,14 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in stkoe_pb2_grpc.py depends on'
+        + f' but the generated code in stkoe_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
-class StkoeServiceStub:
+class StkoeServiceStub(object):
     """stkoe 数据服务
     """
 
@@ -50,11 +50,6 @@ class StkoeServiceStub:
                 request_serializer=stkoe__pb2.SubscribeTaskRequest.SerializeToString,
                 response_deserializer=stkoe__pb2.SubscribeTaskResponse.FromString,
                 _registered_method=True)
-        self.TaskControl = channel.unary_unary(
-                '/stkoe.StkoeService/TaskControl',
-                request_serializer=stkoe__pb2.TaskControlRequest.SerializeToString,
-                response_deserializer=stkoe__pb2.TaskControlResponse.FromString,
-                _registered_method=True)
         self.Health = channel.unary_unary(
                 '/stkoe.StkoeService/Health',
                 request_serializer=stkoe__pb2.HealthRequest.SerializeToString,
@@ -62,7 +57,7 @@ class StkoeServiceStub:
                 _registered_method=True)
 
 
-class StkoeServiceServicer:
+class StkoeServiceServicer(object):
     """stkoe 数据服务
     """
 
@@ -83,13 +78,6 @@ class StkoeServiceServicer:
 
     def SubscribeTask(self, request, context):
         """任务订阅：按 task_id 订阅任务事件流（进度/日志/状态/结果）
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def TaskControl(self, request, context):
-        """任务操作
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -120,11 +108,6 @@ def add_StkoeServiceServicer_to_server(servicer, server):
                     request_deserializer=stkoe__pb2.SubscribeTaskRequest.FromString,
                     response_serializer=stkoe__pb2.SubscribeTaskResponse.SerializeToString,
             ),
-            'TaskControl': grpc.unary_unary_rpc_method_handler(
-                    servicer.TaskControl,
-                    request_deserializer=stkoe__pb2.TaskControlRequest.FromString,
-                    response_serializer=stkoe__pb2.TaskControlResponse.SerializeToString,
-            ),
             'Health': grpc.unary_unary_rpc_method_handler(
                     servicer.Health,
                     request_deserializer=stkoe__pb2.HealthRequest.FromString,
@@ -138,7 +121,7 @@ def add_StkoeServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class StkoeService:
+class StkoeService(object):
     """stkoe 数据服务
     """
 
@@ -213,33 +196,6 @@ class StkoeService:
             '/stkoe.StkoeService/SubscribeTask',
             stkoe__pb2.SubscribeTaskRequest.SerializeToString,
             stkoe__pb2.SubscribeTaskResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def TaskControl(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/stkoe.StkoeService/TaskControl',
-            stkoe__pb2.TaskControlRequest.SerializeToString,
-            stkoe__pb2.TaskControlResponse.FromString,
             options,
             channel_credentials,
             insecure,

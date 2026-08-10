@@ -1,13 +1,13 @@
-// stkoe gRPC 协议：stkoe 数据服务
+// stkoe gRPC 协议：stkoe 数据服务远程访问
 //
 // 约定：
-// - 所有请求均采用 `<source> <action> <args...>` 形态（等价于
+// - 所有请求都采用 `<source> <action> <args...>` 形态（等价于
 //   `stkoe <source> <action> <args...>` 位置参数），args 是 action 之后的位置参数
 // - source：table / dataset / stat / field / config / task / mock / version
-// - action：add / get / del / set / list / meta / ... 等子命令动词
+// - action：add / get / del / set / list / meta / scan / ... 等子命令动词
 // - Execute：服务端流式。第一条消息恒为 DataHeader（code=0 成功 / 非 0 业务错误），
-//   成功后按需跟随 JsonData（小结果 JSON）或 ArrowTable（表格数据 Arrow IPC）
-// - SubmitTask / SubscribeTask：长任务提交与事件订阅
+//   成功后按需跟随 JsonData（小结果）或 ArrowTable（表格数据）消息
+// - SubmitTask / SubscribeTask：长任务（物化/统计/公式）提交后台执行，随后订阅事件流
 // - 存活探活走 Health
 syntax = "proto3";
 
@@ -24,8 +24,6 @@ service StkoeService {
   rpc SubmitTask(SubmitTaskRequest) returns (SubmitTaskResponse);
   // 任务订阅：按 task_id 订阅任务事件流（进度/日志/状态/结果）
   rpc SubscribeTask(SubscribeTaskRequest) returns (stream SubscribeTaskResponse);
-  // 任务操作
-  rpc TaskControl(TaskControlRequest) returns (TaskControlResponse);
   // 服务存活探活 + 版本
   rpc Health(HealthRequest) returns (HealthResponse);
 }
@@ -109,7 +107,7 @@ message TaskEvent {
 message SubscribeTaskResponse {
   oneof type {
     DataHeader header = 1;
-    TaskEvent event = 2;
+    TaskEvent event  = 2;
   }
 }
 
@@ -120,16 +118,4 @@ message HealthResponse {
   string status = 1;
   // stkoe 包版本
   string version = 2;
-}
-
-message TaskControlRequest {
-  // 任务 ID
-  string task_id = 1;
-  // cancel/pause/resume
-  string action = 2;
-}
-
-message TaskControlResponse {
-  DataHeader header = 1;
-  string task_id = 2;
 }

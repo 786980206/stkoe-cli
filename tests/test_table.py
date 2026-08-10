@@ -1,235 +1,261 @@
-"""table 模块测试：scan 差异/幂等/布局识别、meta/consistent、set/rename/del"""
+# -*- coding: utf-8 -*-
+"""TableController 测试：add/get/delete/list/meta + 布局识别 + 读前自动同步 + 任务框架接入"""
 import polars as pl
 import pytest
 
-import stkoe.data as data
-from stkoe.data.table import DependencyError, TableExistsError, TableNotFoundError
-from stkoe.data.catalog.spec import TableLayout
-
-from conftest import make_df, write_hive, write_single
+from stkoe.table import TableController
+from stkoe.table.controller import TableExistsError, TableNotFoundError
 
 
-def test_scan_registers_single(root):
-    """隐式注册：scan 发现未注册目录自动注册，INSERT version=1 不再 bump"""
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0), ("2020-01-02", "b", 2.0)]))
-    r = data.table.scan("t1")
-    assert r.implicit_registered and r.changed
-    assert r.layout == TableLayout.SINGLE
-    assert r.version_before == 0 and r.version_after == 1
-    assert r.partition_count == 1
+@pytest.fixture()
+def mgr(tmp_path):
+    from stkoe.task import TaskManager
 
-    m = data.table.meta("t1")
+    m = TaskManager(data_dir=tmp_path / "data")
+    m.start()
+    yield m
+    m.stop()
+
+
+@pytest.fixture()
+def ctl(tmp_path):
+    return TableController(data_dir=tmp_path / "data")
+
+
+def _write_single(root, name, rows, columns=("sym", "price")):
+    d = root / "tables" / name
+    d.mkdir(parents=True, exist_ok=True)
+    if isinstance(rows, pl.DataFrame):
+        df = rows
+    else:
+        df = pl.DataFrame({c: rows[c] for c in columns})
+    df.write_parquet(d / "data.parquet")
+    return df
+
+
+def test_add_single_then_meta(ctl, tmp_path):
+    _write_single(tmp_path / "data", "demo", {
+        "sym": ["a", "b"], "optime": ["2024-01-01", "2024-01-02"], "price": [1.0, 2.0]},
+        columns=("sym", "optime", "price"))
+
+    report = _add(ctl, "demo")
+    assert report.name == "demo"
+    assert report.version_before == 0
+    assert report.version_after == 1
+    assert report.implicit_registered is True  # add 经 _scan_impl 注册，视为隐式
+    assert report.layout.value == "single"
+
+    m = _meta(ctl, "demo")
+    assert m.name == "demo"
     assert m.version == 1
+    assert m.layout.value == "single"
+    assert m.partition_count == 0
     assert len(m.files) == 1
-    assert [c.name for c in m.columns] == ["date", "sym", "r"]
-    assert all(c.data_type for c in m.columns)
+    assert [c.name for c in m.columns] == ["sym", "optime", "price"]
+    assert m.columns[1].is_tool is True  # optime 为默认工具字段
 
 
-def test_scan_idempotent_no_bump(root):
-    """无差异重复 scan 不 bump version"""
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.table.scan("t1")
-    r = data.table.scan("t1")
-    assert not r.changed
-    assert r.version_after == 1
-    assert data.table.meta("t1").version == 1
+def test_add_all_batch_discovers(ctl, tmp_path):
+    root = tmp_path / "data"
+    for name in ("t1", "t2"):
+        _write_single(root, name, {"sym": ["x"], "price": [1.0]})
+
+    reports = _add_all(ctl)
+    assert sorted(r.name for r in reports) == ["t1", "t2"]
+    assert _names(ctl) == ["t1", "t2"]
 
 
-def test_scan_detect_new_file_bumps(root):
-    d = root / "tables" / "t1"
-    d.mkdir(parents=True, exist_ok=True)
-    make_df([("2020-01-01", "a", 1.0)]).write_parquet(d / "a.parquet")
-    data.table.scan("t1")
-    make_df([("2020-02-01", "b", 2.0)]).write_parquet(d / "b.parquet")
-    r = data.table.scan("t1")
-    assert r.changed
-    assert [x.kind for x in r.diffs] == ["added"]
-    assert r.version_before == 1 and r.version_after == 2
-    assert data.table.meta("t1").consistent
+def test_add_errors(ctl, tmp_path):
+    with pytest.raises(TableNotFoundError):
+        _add(ctl, "missing")
+    _write_single(tmp_path / "data", "demo", {"sym": ["a"], "price": [1.0]})
+    _add(ctl, "demo")
+    with pytest.raises(TableExistsError):
+        _add(ctl, "demo")
 
 
-def test_scan_detect_removed_file(root):
-    d = root / "tables" / "t1"
-    d.mkdir(parents=True, exist_ok=True)
-    make_df([("2020-01-01", "a", 1.0)]).write_parquet(d / "a.parquet")
-    make_df([("2020-02-01", "b", 2.0)]).write_parquet(d / "b.parquet")
-    data.table.scan("t1")
-    (d / "a.parquet").unlink()
-    r = data.table.scan("t1")
-    assert [x.kind for x in r.diffs] == ["removed"]
-    assert r.version_after == 2
-    assert len(data.table.meta("t1").files) == 1
+def test_get_returns_data(ctl, tmp_path):
+    src = pl.DataFrame({"sym": ["a", "b", "c"], "optime": ["2024-01-01"] * 3,
+                        "price": [1.0, 2.0, 3.0]})
+    _write_single(tmp_path / "data", "demo", src)
+    _add(ctl, "demo")
+
+    df = _get(ctl, "demo")
+    assert df.height == 3
+    assert df["price"].to_list() == [1.0, 2.0, 3.0]
+
+    got = _get(ctl, "demo", where="price>=2")
+    assert got.height == 2
+
+    cols = _get(ctl, "demo", columns=["sym", "price"])
+    assert cols.columns == ["sym", "price"]
+
+    tool = _get(ctl, "demo", exclude_tool=True)
+    assert "optime" not in tool.columns
+
+    lim = _get(ctl, "demo", limit=2)
+    assert lim.height == 2
 
 
-def test_scan_detect_inplace_modify(root):
-    d = root / "tables" / "t1"
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / "a.parquet"
-    make_df([("2020-01-01", "a", 1.0)]).write_parquet(p)
-    data.table.scan("t1")
-    make_df([("2020-01-01", "a", 9.9)]).write_parquet(p)
-    r = data.table.scan("t1")
-    assert [x.kind for x in r.diffs] == ["changed"]
-    assert r.version_after == 2
+def test_get_reads_partitioned_hive(ctl, tmp_path):
+    root = tmp_path / "data"
+    d = root / "tables" / "parted"
+    (d / "date=2024-01-01").mkdir(parents=True)
+    (d / "date=2024-01-02").mkdir(parents=True)
+    pl.DataFrame({"sym": ["a"], "price": [1.0]}).write_parquet(d / "date=2024-01-01" / "f.parquet")
+    pl.DataFrame({"sym": ["b"], "price": [2.0]}).write_parquet(d / "date=2024-01-02" / "f.parquet")
 
+    report = _add(ctl, "parted")
+    assert report.layout.value == "hive"
+    assert report.partition_by == ("date",)
+    assert report.partition_count == 2
 
-def test_scan_hive_layout(root):
-    df = make_df([("2020-01-01", "a", 1.0), ("2020-06-01", "b", 2.0), ("2021-01-01", "c", 3.0)])
-    write_hive(root, "t1", df, partition_by="year")
-    r = data.table.scan("t1")
-    assert r.layout == TableLayout.HIVE
-    assert r.partition_by == ("year",)
-    assert r.partition_count == 2
-
-    m = data.table.meta("t1")
+    m = _meta(ctl, "parted")
     assert m.partition_count == 2
-    assert len(m.files) == 2
-    assert all(f.partition_path for f in m.files)
+    assert m.partition_by == ("date",)
 
-
-def test_scan_flat_layout(root):
-    d = root / "tables" / "t1"
-    d.mkdir(parents=True, exist_ok=True)
-    make_df([("2020-01-01", "a", 1.0)]).write_parquet(d / "a.parquet")
-    make_df([("2020-02-01", "b", 2.0)]).write_parquet(d / "b.parquet")
-    r = data.table.scan("t1")
-    assert r.layout == TableLayout.FLAT
-    assert r.partition_count == 1
-
-
-def test_read_path_auto_sniff(root):
-    """未注册目录：get 读前快检自动隐式注册并读到数据"""
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    df = data.table.get("t1")
-    assert df.height == 1
-    m = data.table.meta("t1")
-    assert m.name == "t1" and m.version == 1
-
-
-def test_read_path_detect_manual_change(root):
-    """手工改文件后 get 自动 scan 到新数据并 bump"""
-    d = root / "tables" / "t1"
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / "a.parquet"
-    make_df([("2020-01-01", "a", 1.0)]).write_parquet(p)
-    data.table.scan("t1")
-    v1 = data.table.meta("t1").version
-    make_df([("2020-01-01", "a", 1.0), ("2020-01-02", "b", 2.0)]).write_parquet(p)
-    df = data.table.get("t1")
+    df = _get(ctl, "parted")
     assert df.height == 2
-    assert data.table.meta("t1").version == v1 + 1
+    assert "date" in df.columns  # hive 分区列在读取时物化
+    sub = _get(ctl, "parted", partition="date=2024-01-01")
+    assert sub.height == 1
+    assert sub["sym"].to_list() == ["a"]
 
 
-def test_meta_consistent_readonly(root):
-    """meta 只读对账：磁盘新增文件 → consistent=False 且不 bump；scan 后恢复"""
-    d = root / "tables" / "t1"
-    d.mkdir(parents=True, exist_ok=True)
-    make_df([("2020-01-01", "a", 1.0)]).write_parquet(d / "a.parquet")
-    data.table.scan("t1")
-    assert data.table.meta("t1").consistent
+def test_get_auto_sync_on_change(ctl, tmp_path):
+    """读前快检：磁盘数据变更后自动重扫，get 返回新数据"""
+    root = tmp_path / "data"
+    d = root / "tables" / "demo"
+    d.mkdir(parents=True)
+    pl.DataFrame({"sym": ["a"], "price": [1.0]}).write_parquet(d / "data.parquet")
+    _add(ctl, "demo")
+    before = _meta(ctl, "demo")
+    assert before.version == 1
 
-    make_df([("2020-02-01", "b", 2.0)]).write_parquet(d / "b.parquet")
-    m = data.table.meta("t1")
-    assert not m.consistent and m.version == 1  # meta 不动手
+    # 磁盘追加数据（mtime 变化），直接 get 应自动同步
+    pl.DataFrame({"sym": ["b"], "price": [2.0]}).write_parquet(d / "more.parquet")
+    df = _get(ctl, "demo")
+    assert df.height == 2
+    after = _meta(ctl, "demo")
+    assert after.version == 2
 
-    r = data.table.scan("t1")
-    assert r.changed and r.version_after == 2
-    assert data.table.meta("t1").consistent
 
+def test_delete_removes_registration_keeps_data(ctl, tmp_path):
+    _write_single(tmp_path / "data", "demo", {"sym": ["a"], "price": [1.0]})
+    _add(ctl, "demo")
 
-def test_add_and_list(root):
-    """add 注册已有数据目录；--all 批量发现未注册表"""
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    write_single(root, "t2", make_df([("2020-01-01", "a", 1.0)]))
-    r = data.table.add("t1")
-    assert r.name == "t1" and r.implicit_registered and r.changed
-    with pytest.raises(TableExistsError):
-        data.table.add("t1")
+    out = _delete(ctl, "demo")
+    assert out == {"deleted": "demo"}
+    assert _names(ctl) == []
     with pytest.raises(TableNotFoundError):
-        data.table.add("nope")
-    reports = data.table.add(None, all=True)
-    assert [x.name for x in reports] == ["t2"]
-    assert [m.name for m in data.table.list()] == ["t1", "t2"]
+        _meta(ctl, "demo")
+    # 用户数据文件仍在
+    assert (tmp_path / "data" / "tables" / "demo" / "data.parquet").exists()
 
-
-def test_scan_all(root):
-    write_single(root, "a", make_df([("2020-01-01", "a", 1.0)]))
-    write_single(root, "b", make_df([("2020-01-01", "b", 1.0)]))
-    reports = data.table.scan(None, all=True)
-    assert {r.name for r in reports} == {"a", "b"}
-    assert all(r.implicit_registered for r in reports)
-
-
-def test_set_metadata_no_bump(root):
-    """set 改 display_name/tags 是纯元数据修改，不 bump version"""
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.table.scan("t1")
-    m = data.table.set("t1", display_name="新名字", tags=["x"])
-    assert m.display_name == "新名字" and m.version == 1
-    assert data.table.meta("t1").display_name == "新名字"
-
-
-def test_col_metadata(root):
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.table.scan("t1")
-    m = data.table.col("t1", "r", display_name="收益", unit="pct")
-    c = next(c for c in m.columns if c.name == "r")
-    assert c.display_name == "收益" and c.unit == "pct"
-
-
-def test_rename_moves_dir_and_catalog(root):
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.table.scan("t1")
-    data.table.set("t1", display_name="旧名")
-    m = data.table.rename("t1", "t1b")
-    assert m.name == "t1b"
-    assert (root / "tables" / "t1b").exists()
-    assert not (root / "tables" / "t1").exists()
-    assert data.table.meta("t1b").display_name == "旧名"  # 自定义 display_name 保留
     with pytest.raises(TableNotFoundError):
-        data.table.meta("t1")
-
-    # 冲突：目标已注册 → TableExistsError
-    write_single(root, "t2", make_df([("2020-01-01", "a", 1.0)]))
-    data.table.scan("t2")
-    with pytest.raises(TableExistsError):
-        data.table.rename("t1b", "t2")
-    # 目录存在但未注册 → FileExistsError
-    (root / "tables" / "t3").mkdir(parents=True)
-    with pytest.raises(FileExistsError):
-        data.table.rename("t1b", "t3")
+        _delete(ctl, "demo")
 
 
-def test_del_removes_registration_keeps_data(root):
-    """del 只删 catalog 登记，绝不删用户数据文件"""
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.table.scan("t1")
-    data.table.del_("t1")
+def test_delete_requires_existing(ctl, tmp_path):
     with pytest.raises(TableNotFoundError):
-        data.table.meta("t1")
-    assert (root / "tables" / "t1" / "t1.parquet").exists()
-    with pytest.raises(TableNotFoundError):
-        data.table.del_("nope")
+        _delete(ctl, "nope")
 
 
-def test_del_dependency_guard(root):
-    """被 dataset 引用时 del 默认报错，force 级联清理"""
-    write_single(root, "idx", make_df([("2020-01-01", "a", 1.0)]))
-    write_single(root, "mem", make_df([("2020-01-01", "a", 1.0)]))
-    data.table.scan("idx")
-    data.table.scan("mem")
-    data.dataset.add("ds", "idx", "mem", background=False)
-    with pytest.raises(DependencyError):
-        data.table.del_("idx")
-    data.table.del_("idx", force=True)
-    with pytest.raises(data.dataset.DatasetNotFoundError):
-        data.dataset.describe("ds")
+def test_add_implicitly_registers_unregistered_dir(ctl, tmp_path):
+    """sniff 语义：get 对未注册目录自动注册后再读"""
+    _write_single(tmp_path / "data", "auto", {"sym": ["a"], "price": [1.0]})
+    df = _get(ctl, "auto")
+    assert df.height == 1
+    assert "auto" in _names(ctl)
 
 
-def test_data_key_changes_with_content(root):
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)]))
-    data.table.scan("t1")
-    k1 = data.table.data_key("t1")
-    assert k1
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0), ("2020-01-02", "b", 2.0)]))
-    assert data.table.data_key("t1") != k1
+def test_re_register_after_delete(ctl, tmp_path):
+    _write_single(tmp_path / "data", "demo", {"sym": ["a"], "price": [1.0]})
+    _add(ctl, "demo")
+    _delete(ctl, "demo")
+    # 数据还在 → 可再次 add
+    report = _add(ctl, "demo")
+    assert report.version_after == 1
+    assert _meta(ctl, "demo").version == 1
+
+
+def test_task_framework_table_handlers(mgr):
+    """table handlers 注册进任务框架：add→meta→get 全链路"""
+    _write_single(mgr.data_dir, "demo", {"sym": ["a", "b"], "price": [1.0, 2.0]})
+
+    t_add = mgr.submit("table", "add", ["demo"])
+    _await(mgr, t_add)
+    assert _mgr_result(mgr, t_add)["name"] == "demo"
+
+    t_meta = mgr.submit("table", "meta", ["demo"])
+    _await(mgr, t_meta)
+    assert _mgr_result(mgr, t_meta)["layout"] == "single"
+
+    t_get = mgr.submit("table", "get", ["demo", "--where=price>=2"])
+    _await(mgr, t_get)
+    res = _mgr_result(mgr, t_get)
+    assert res["rows"] == 1
+
+    t_list = mgr.submit("table", "list", [])
+    _await(mgr, t_list)
+    assert [m["name"] for m in _mgr_result(mgr, t_list)] == ["demo"]
+
+    t_del = mgr.submit("table", "delete", ["demo"])
+    _await(mgr, t_del)
+    assert _mgr_result(mgr, t_del) == {"deleted": "demo"}
+
+
+# ---------- async 助手 ----------
+
+def _run(awaitable):
+    import asyncio
+
+    return asyncio.run(awaitable)
+
+
+def _add(ctl, name):
+    return _run(ctl.add(name))
+
+
+def _add_all(ctl):
+    return _run(ctl.add("", all=True))
+
+
+def _get(ctl, name, **kw):
+    return _run(ctl.get(name, **kw))
+
+
+def _meta(ctl, name):
+    return _run(ctl.meta(name))
+
+
+def _delete(ctl, name, **kw):
+    return _run(ctl.delete(name, **kw))
+
+
+def _names(ctl):
+    return [m.name for m in _run(ctl.list())]
+
+
+# ---------- 任务框架助手 ----------
+
+def _await(mgr, task, timeout=5.0):
+    import time
+
+    from stkoe.task.model import TERMINAL_STATES
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        cur = mgr.get(task.task_id)
+        if cur is not None and cur.state in TERMINAL_STATES:
+            return cur
+        time.sleep(0.02)
+    raise TimeoutError(f"task not terminal: {mgr.get(task.task_id).state}")
+
+
+def _mgr_result(mgr, task):
+    """取任务最后一个事件携带的 data（JSON 字符串）"""
+    import json
+
+    evs = mgr.events.list_by_task(task.task_id)
+    return json.loads(evs[-1].data) if evs and evs[-1].data else None

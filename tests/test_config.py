@@ -1,138 +1,102 @@
-"""config 模块测试：默认数据路径 + 工具字段配置"""
-import importlib
+# -*- coding: utf-8 -*-
+"""stkoe.json 配置：settings 加载/保存 + CLI config show/set"""
 import json
 from pathlib import Path
 
-import polars as pl
 import pytest
 
-import stkoe.data as data
-
-cfg = importlib.import_module("stkoe.data.settings")
-from stkoe.data.settings import (  # noqa: E402
-    StkoeConfig,
-    load_config,
-    save_config,
-)
-
-from conftest import make_df, write_single
+from stkoe import settings
+from stkoe.cli import main
 
 
-def _write_cfg(monkeypatch, tmp_path, **kw) -> cfg.StkoeConfig:
-    p = tmp_path / "stkoe.json"
-    c = StkoeConfig(**kw)
-    cfg.save_config(c, path=p)
-    monkeypatch.setenv("STKOE_CONFIG", str(p))
-    return c
-
-
-def test_default_config(monkeypatch, tmp_path):
-    monkeypatch.setenv("STKOE_CONFIG", str(tmp_path / "nope.json"))
-    c = cfg.load_config()
-    assert c.data_path is None
-    assert c.ignore_cols == ("optime",)
-    assert c.log_level == "WARNING"
-
-
-def test_config_load_roundtrip(monkeypatch, tmp_path):
-    c = _write_cfg(monkeypatch, tmp_path, data_path="/tmp/x", ignore_cols=["_etl", "_tag"])
-    got = cfg.load_config()
-    assert got.data_path == "/tmp/x"
-    assert got.ignore_cols == ("_etl", "_tag")
-    assert got.log_level == "WARNING"
-
-
-def test_config_log_level_roundtrip(monkeypatch, tmp_path):
-    _write_cfg(monkeypatch, tmp_path, log_level="debug")
-    got = cfg.load_config()
-    assert got.log_level == "DEBUG"
-    _write_cfg(monkeypatch, tmp_path, log_level="TRACE")
-    assert cfg.load_config().log_level == "WARNING"
-
-
-def test_config_ignore_cols_override(monkeypatch, tmp_path):
-    _write_cfg(monkeypatch, tmp_path, ignore_cols=["_sys", "_etl"])
-    assert cfg.load_config().ignore_cols == ("_sys", "_etl")
-
-
-def test_resolve_data_path_priority(monkeypatch, tmp_path):
-    _write_cfg(monkeypatch, tmp_path, data_path="/cfg/path")
-    # 配置文件 data_path 生效（未设环境变量）
-    monkeypatch.delenv("STKOE_LOCAL_DATA", raising=False)
-    assert str(cfg.resolve_data_path()) == str(Path("/cfg/path"))
-    # 环境变量优先
-    monkeypatch.setenv("STKOE_LOCAL_DATA", "/env/path")
-    assert str(cfg.resolve_data_path()) == str(Path("/env/path"))
-
-
-def test_set_config(monkeypatch, tmp_path):
-    _write_cfg(monkeypatch, tmp_path)
-    data.set_config(data_path="/new/root", ignore_cols=["_x", "_y"])
-    c = cfg.load_config()
-    assert c.data_path == "/new/root"
-    assert c.ignore_cols == ("_x", "_y")
-    # 未指定字段保持原值
-    data.set_config(data_path="/other")
-    assert cfg.load_config().data_path == "/other"
-    assert cfg.load_config().ignore_cols == ("_x", "_y")
-
-
-def test_tool_cols_marked(root):
-    """meta 中工具字段被标记 is_tool；data_cols 剔除之"""
-    write_single(root, "t1", make_df([("2020-01-01", "a", 1.0)])).parent
-    # 表带 optime 工具列
-    df = pl.DataFrame({
-        "date": pl.Series("date", ["2020-01-01"], dtype=pl.Date),
-        "sym": ["a"],
-        "optime": ["2020-01-01 08:00:00"],
-    })
-    write_single(root, "t2", df)
-    data.table.scan("t2")
-    m = data.table.meta("t2")
-    tool = [c for c in m.columns if c.is_tool]
-    assert [c.name for c in tool] == ["optime"]
-    assert "optime" not in data.data_cols(m.columns)
-
-
-def test_select_exclude_tool(root):
-    df = pl.DataFrame({
-        "date": pl.Series("date", ["2020-01-01", "2020-01-02"], dtype=pl.Date),
-        "sym": ["a", "b"],
-        "r": [0.01, 0.02],
-        "optime": ["2020-01-01", "2020-01-02"],
-    })
-    write_single(root, "t1", df)
-    data.table.scan("t1")
-    assert "optime" in data.table.get("t1").columns
-    got = data.table.get("t1", exclude_tool=True)
-    assert got.columns == ["date", "sym", "r"]
-    # columns 显式指定时不受 exclude_tool 影响
-    got2 = data.table.get("t1", columns=["sym", "optime"], exclude_tool=True)
-    assert got2.columns == ["sym", "optime"]
-
-
-def test_cli_config_set(monkeypatch, tmp_path):
-    from typer.testing import CliRunner
-    from stkoe.data.cli import app
-
+@pytest.fixture()
+def cfg_env(tmp_path, monkeypatch):
+    """隔离的配置路径（STKOE_CONFIG → tmp 下 stkoe.json）"""
     p = tmp_path / "stkoe.json"
     monkeypatch.setenv("STKOE_CONFIG", str(p))
-    r = CliRunner().invoke(app, ["config", "set", "--data-path", "/cli/root", "--ignore-cols", "_a,_b"])
-    assert r.exit_code == 0
-    raw = json.loads(p.read_text("utf-8"))
-    assert raw["data_path"] == "/cli/root"
-    assert raw["ignore_cols"] == ["_a", "_b"]
+    return p
 
 
-def test_cli_config_set_log_level(monkeypatch, tmp_path):
-    from typer.testing import CliRunner
-    from stkoe.data.cli import app
+def test_load_defaults(cfg_env):
+    cfg = settings.load_config()
+    assert cfg.grpc_host == "127.0.0.1"
+    assert cfg.grpc_port == 9569
+    assert cfg.data_dir == "~/.stkoe"
+    assert cfg.to_dict() == {
+        "grpc-host": "127.0.0.1", "grpc-port": 9569, "data-dir": "~/.stkoe"}
 
-    p = tmp_path / "stkoe.json"
-    monkeypatch.setenv("STKOE_CONFIG", str(p))
-    r = CliRunner().invoke(app, ["config", "set", "--log-level", "debug"])
-    assert r.exit_code == 0
-    assert cfg.load_config().log_level == "DEBUG"
-    r2 = CliRunner().invoke(app, ["config", "set", "--log-level", "bogus"])
-    assert r2.exit_code == 0
-    assert cfg.load_config().log_level == "WARNING"
+
+def test_save_then_load_merge(cfg_env):
+    settings.save_config({"grpc-host": "0.0.0.0"})
+    settings.save_config({"grpc-port": "9000"})
+    cfg = settings.load_config()
+    assert cfg.grpc_host == "0.0.0.0"
+    assert cfg.grpc_port == 9000  # 数字键映射为 int
+
+
+def test_save_keeps_hyphen_key(cfg_env):
+    p = settings.save_config({"grpc-host": "0.0.0.0"})
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert "grpc-host" in data  # 键名保持连字符，不转下划线
+
+
+def test_config_path_env_priority(tmp_path, monkeypatch):
+    """STKOE_CONFIG 优先于本地/家目录"""
+    monkeypatch.setenv("STKOE_CONFIG", str(tmp_path / "x.json"))
+    assert settings.config_path() == tmp_path / "x.json"
+    assert settings.save_path() == tmp_path / "x.json"
+
+
+def test_corrupt_config_raises(cfg_env):
+    cfg_env.write_text("{bad json", encoding="utf-8")
+    with pytest.raises(settings.ConfigError):
+        settings.load_config()
+
+
+def test_extra_keys_preserved(cfg_env):
+    """自定义任意键保留在 extra，to_dict 原样带出"""
+    settings.save_config({"foo-bar": "baz"})
+    cfg = settings.load_config()
+    assert cfg.extra == {"foo-bar": "baz"}
+    assert cfg.to_dict()["foo-bar"] == "baz"
+
+
+def test_cli_config_show_defaults(cfg_env, capsys):
+    assert main(["config", "show"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["grpc-host"] == "127.0.0.1"
+    assert out["config_file"] == str(cfg_env)
+
+
+def test_cli_config_set_and_show(cfg_env, capsys):
+    assert main(["config", "set", "--grpc-host", "0.0.0.0",
+                 "--grpc-port", "9000"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["written"] == str(cfg_env)
+    assert out["set"] == {"grpc-host": "0.0.0.0", "grpc-port": "9000"}
+
+    assert main(["config", "show"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["grpc-host"] == "0.0.0.0"
+    assert out["grpc-port"] == 9000
+
+
+def test_cli_config_set_empty_returns_error(cfg_env, capsys):
+    assert main(["config", "set"]) == 2
+    assert "用法" in capsys.readouterr().out
+
+
+def test_cli_serve_uses_config_host_port(cfg_env, capsys):
+    """stkoe serve 缺省 host/port 取配置 grpc-host / grpc-port"""
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    settings.save_config({"grpc-host": "127.0.0.1", "grpc-port": str(port)})
+    from stkoe.grpc.server import serve
+
+    srv = serve()
+    assert srv.host == "127.0.0.1"
+    assert srv.port == port  # 来自配置 grpc-port
+    srv.stop()

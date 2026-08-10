@@ -1,141 +1,117 @@
 # stkoe
 
-量化数据管理 / 因子研究框架（自 DataCenter 仓库拆分的独立项目）。
+stkoe 数据服务（重构版）。当前阶段：gRPC 服务器骨架，实现 `stkoe.proto` 协议。
 
-专注后端任务：数据资产登记、逻辑数据集、指标管理、统计物化、因子研究与
-gRPC 数据服务。不包含任何前端（Portal/Web UI 已于 v0.4.8 移除）。
-
-## 功能总览
-
-| 模块 | 说明 |
-|---|---|
-| `data/` | 数据管理框架：只读表资产（sniff 自动注册）、逻辑数据集（join/增量/自动分区）、指标（field）、统计物化（stat）、任务管理（后台/暂停/取消） |
-| `data/plugins/` | 数据插件（`wsdata` 实时接入、`mock` 演示数据） |
-| `factor/` | 因子研究框架：core 构建器、zoo 因子库、operators、testers（IC/分组收益/稳定性等测试与绘图） |
-| `barra/` | Barra 风格因子 |
-| `grpc/` | gRPC 数据服务（Execute JSON / Select Arrow IPC / RunTask 流式 / Health） |
-
-## 快速开始
-
-### 环境要求
+## 环境要求
 
 - Python >= 3.13
 - 包管理用 [uv](https://docs.astral.sh/uv/)
 
-### 安装
+## 安装
 
 ```bash
 uv sync                 # 安装依赖
+uv run stkoe serve      # 前台运行 gRPC 服务（默认 127.0.0.1:9569）
 ```
 
-### 运行
+## 配置（stkoe.json）
+
+- 查找优先级：`STKOE_CONFIG` 环境变量 > `./stkoe.json`（若存在）> `~/.stkoe.json`
+- 写入位置：`STKOE_CONFIG`（若设置）> `./stkoe.json`
+- 键名保持输入形态（含连字符），支持任意字段
 
 ```bash
-uv run python -m stkoe                    # 交互式 REPL（Tab 补全，自动起 gRPC 服务）
-uv run python -m stkoe table list         # 列出已注册表
-uv run python -m stkoe server run         # 前台 gRPC 服务（默认端口 9569）
+uv run stkoe config show                          # 查看生效配置
+uv run stkoe config set --grpc-host 0.0.0.0       # 写入 {"grpc-host": "0.0.0.0"}
+uv run stkoe config set --grpc-port 9000
 ```
 
-### 测试
+`stkoe serve` 缺省 host/port 取 `grpc-host` / `grpc-port`；`--host` / `--port` 显式覆盖。
+配置同样可通过 gRPC `Execute(source="config", action="show"|"set", args=["--key", "value"])` 读写。
 
-```bash
-uv run pytest -q                          # 全量测试
-```
+## gRPC 协议
 
-## 数据模型
-
-- **数据根目录**优先级：`STKOE_LOCAL_DATA` 环境变量 > 配置 `data_path` > `~/.stkoe`
-- **配置查找**：`STKOE_CONFIG` 环境变量 > `./stkoe.json` > `~/.stkoe.json`
-- **表数据只读**：用户用外部工具更新数据文件，框架只登记元数据，绝不改写用户数据
-- **目录布局**：
-
-```
-<data_root>/
-├── catalog.db            # SQLite 元数据（stkoe_objects/data_files/file_stats/depends/tasks）
-├── tables/<name>/        # 用户表数据（只读观察，sniff 自动注册）
-├── datasets/<name>/      # dataset 物化产物（part=<v>/data.parquet 或 data.parquet）
-├── stats/<name>/         # stat 统计物化（group=<all|col>/stats.parquet）
-└── fields/<name>/        # field 物化存档
-```
-
-- **catalog 对象身份**为 `(type, name)` 复合唯一：table / dataset / field / stat
-- **依赖图** `stkoe_depends` 登记资源依赖（dataset→table、stat→dataset、field→dataset），
-  用于 rename/drop 级联保护
-
-## gRPC 服务
-
-服务定义见 `src/stkoe/grpc/stkoe.proto`，仅绑定 127.0.0.1（本地服务）。
+协议定义见 `src/stkoe/grpc/stkoe.proto`：
 
 | RPC | 用途 | 数据形态 |
 |---|---|---|
-| `Execute` | 元数据/列表/状态等小结果 | JSON 字符串 |
-| `Select` | 表格查询（table/dataset/stat/field） | Arrow IPC 帧 + schema JSON，支持分页/过滤/排序 |
-| `RunTask` | 长任务（物化/公式/统计） | 服务端流式事件：log / progress / result / done / error |
+| `Execute` | 命令执行 | 服务端流式：首条 `DataHeader`，成功后跟随 `JsonData` / `ArrowTable` |
+| `SubmitTask` | 后台任务 | 提交返回 `task_id` |
+| `SubscribeTask` | 任务订阅 | 服务端流式 `TaskEvent`（seq/progress/message/data/state） |
 | `Health` | 存活探活 + 版本 | 状态/版本 |
 
-示例（Python + grpcio）：
+请求统一为 `<source> <action> <args...>` 位置参数形态（`args` 等价于
+`stkoe <source> <action> <args...>`）。
+
+### Execute 流式约定
+
+- 首条消息恒为 `DataHeader`：`code=0` 成功 / 非 0 业务错误（`message` 带原因）
+- 成功后可跟随 0..N 条数据消息：`JsonData`（小结果 JSON）或 `ArrowTable`（表格 Arrow IPC）
+- 每条数据消息带 `name` 用于区分
+
+### 客户端示例（Python + grpcio）
 
 ```python
 import grpc
-import polars as pl
 from stkoe.grpc import stkoe_pb2, stkoe_pb2_grpc
 
 ch = grpc.insecure_channel("127.0.0.1:9569")
 stub = stkoe_pb2_grpc.StkoeServiceStub(ch)
 
-# Execute：元数据 JSON
-resp = stub.Execute(stkoe_pb2.ExecuteRequest(cmd="table", args=["list"]))
-items = json.loads(resp.json_out)
+# Health
+h = stub.Health(stkoe_pb2.HealthRequest())
+print(h.status, h.version)
 
-# Select：Arrow IPC 直接读
-resp = stub.Select(stkoe_pb2.SelectRequest(name="t1", where="close >= 10"))
-df = pl.read_ipc(resp.ipc)
+# Execute：流式，首条 DataHeader
+for r in stub.Execute(stkoe_pb2.ExecuteRequest(source="version", action="")):
+    if r.WhichOneof("type") == "header":
+        print("code:", r.header.code, r.header.message)
+    elif r.WhichOneof("type") == "json":
+        print(r.json.name, r.json.data)
 
-# RunTask：流式事件
-for ev in stub.RunTask(stkoe_pb2.TaskRequest(
-        cmd="dataset", args=["materialize", "ds"], task_id="t1")):
-    print(ev.type, ev.message)
+# SubmitTask + SubscribeTask
+resp = stub.SubmitTask(stkoe_pb2.SubmitTaskRequest(source="version", action="get"))
+for r in stub.SubscribeTask(stkoe_pb2.SubscribeTaskRequest(task_id=resp.task_id, replay=True)):
+    if r.WhichOneof("type") == "event":
+        print(r.event.state, r.event.progress, r.event.message)
 ```
 
-## 设计要点
+## 测试
 
-- **sniff 幂等**：无差异重复 sniff 不 bump version；发现未注册目录自动注册（version=1）
-- **读路径不碰数据**：select 走 catalog 文件级裁剪（谓词→列统计），不读 footer、不 collect
-- **读前快检**：`_ensure_fresh` 比对文件签名，不一致自动 sniff
-- **布局自动识别**：SINGLE / FLAT / HIVE，不提供手动指定分区键
-- **dataset**：join 键由 index 表定义（缺省=全部列，各成员表必须存在）；增量按
-  `partition_deps` 源文件签名重算失配分区；自动分区镜像 index HIVE 键或按行数/时间跨度
-- **stat**：与 dataset 解耦的独立统计物化视图，缓存有效性键 `data_key`，`--refresh` 强制重算
-- **任务**：submitted → running ⇄ paused → succeeded/failed/cancelled，日志增量拉取，
-  pause/stop 在分区边界协作式生效
+```bash
+uv run pytest -q
+```
 
 ## 目录结构
 
 ```
-stkoe/
-├── pyproject.toml
-├── src/stkoe/
-│   ├── __main__.py        # CLI 入口 + REPL（prompt_toolkit，Tab 补全）
-│   ├── data/              # 数据管理框架
-│   │   ├── table.py       # table 业务（sniff/add/meta/del/rename…）
-│   │   ├── dataset.py     # 逻辑数据集（scan/create/materialize/增量/自动分区）
-│   │   ├── stat.py        # 统计物化（create/select/sniff/…，与 dataset 解耦）
-│   │   ├── field.py       # 指标管理（catalog 注册 + formula 物化）
-│   │   ├── task.py        # 任务管理（同步/后台 + 日志/进度/暂停/取消）
-│   │   ├── query.py       # 谓词解析 + 文件级裁剪
-│   │   ├── util.py        # 通用能力（FileInfo/layout/signature/diff）
-│   │   ├── settings.py    # 配置（data_path/ignore_cols/grpc_port）
-│   │   ├── dbt.py         # DBT manifest 元数据导入
-│   │   ├── mock.py        # 参数化演示数据
-│   │   ├── cli.py         # typer 子命令
-│   │   ├── catalog/       # SQLite schema + 行访问（db/spec/access/json）
-│   │   └── plugins/       # wsdata / mock 数据插件
-│   ├── factor/            # 因子框架（core/zoo/operators/testers）
-│   ├── barra/             # Barra 风格因子
-│   └── grpc/              # gRPC 服务（stkoe.proto + server.py）
-└── tests/                 # pytest（conftest 提供 make_df/write_single/write_hive）
+src/stkoe/
+├── __main__.py        # python -m stkoe
+├── cli.py             # stkoe serve / config 命令入口
+├── args.py            # 共享 flag 解析
+├── jsonutil.py        # 统一 orjson 序列化
+├── settings.py        # stkoe.json 配置（StkoeConfig dataclass）
+├── grpc/
+│   ├── stkoe.proto    # 协议定义
+│   ├── stkoe_pb2.py / stkoe_pb2_grpc.py   # protoc 生成
+│   ├── dispatch.py    # (source, action, args) Execute 命令分发
+│   └── server.py      # StkoeService 实现 + StkoeServer
+├── table/             # 表数据资产（TableController）
+│   ├── spec.py        # TableLayout/ColumnMeta/TableMeta/TableScanReport 等 dataclass
+│   ├── util.py        # parquet 指纹/布局识别/footer/差异对比
+│   ├── catalog.py     # SQLite catalog（stkoe_objects/stkoe_data_files/stkoe_file_stats）
+│   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
+│   ├── controller.py  # TableController：async add/get/delete/list/meta
+│   └── handlers.py    # 任务框架接入（source="table"）
+└── task/              # 任务框架
+    ├── model.py       # Task / TaskEvent / TaskResult / TaskContext
+    ├── registry.py    # TaskHandler + TaskRegistry
+    ├── store.py       # SQLite：TaskStore(task) / EventStore(task_event)
+    ├── scheduler.py   # asyncio 调度器（独立事件循环线程）
+    ├── logs.py        # LogStore → tasks/<id>/task.log
+    ├── results.py     # ResultStore → tasks/<id>/<name> 大结果
+    ├── handlers.py    # 内置 Handler（version/config/mock）
+    └── manager.py     # TaskManager 编排核心
 ```
 
-## 演进记录
-
-完整演进记录见 [AGENTS.md](AGENTS.md)「演进记录」章节。
+> v1.0/ 为旧版参考实现（v0.5.1），本仓库正在按新需求重新构造。

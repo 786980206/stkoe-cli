@@ -22,35 +22,44 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
+from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bstkoe.proto\x12\x05stkoe\"+\n\x0e\x45xecuteRequest\x12\x0b\n\x03\x63md\x18\x01 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x02 \x03(\t\"e\n\x0f\x45xecuteResponse\x12\x0c\n\x04\x63ode\x18\x01 \x01(\x05\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x10\n\x08json_out\x18\x03 \x01(\t\x12\r\n\x05table\x18\x04 \x01(\x0c\x12\x14\n\x0ctable_schema\x18\x05 \x01(\t\"2\n\x06\x46ilter\x12\r\n\x05\x66ield\x18\x01 \x01(\t\x12\n\n\x02op\x18\x02 \x01(\t\x12\r\n\x05value\x18\x03 \x01(\t\"(\n\tSortField\x12\r\n\x05\x66ield\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x65sc\x18\x02 \x01(\x08\"\xd4\x01\n\rSelectRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0f\n\x07\x63olumns\x18\x03 \x03(\t\x12\r\n\x05where\x18\x04 \x01(\t\x12\x11\n\tpartition\x18\x05 \x01(\t\x12\x14\n\x0cinclude_tool\x18\x06 \x01(\x08\x12\x0c\n\x04page\x18\x07 \x01(\x05\x12\x11\n\tpage_size\x18\x08 \x01(\x05\x12\x1d\n\x06\x66ilter\x18\t \x03(\x0b\x32\r.stkoe.Filter\x12\x1e\n\x04sort\x18\n \x03(\x0b\x32\x10.stkoe.SortField\"b\n\x0eSelectResponse\x12\x0b\n\x03ipc\x18\x01 \x01(\x0c\x12\x13\n\x0bschema_json\x18\x02 \x01(\t\x12\x10\n\x08num_rows\x18\x03 \x01(\x03\x12\r\n\x05\x65rror\x18\x04 \x01(\t\x12\r\n\x05total\x18\x05 \x01(\x03\"9\n\x0bTaskRequest\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x0b\n\x03\x63md\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x03(\t\"s\n\tTaskEvent\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05level\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x0c\n\x04\x64one\x18\x04 \x01(\x03\x12\r\n\x05total\x18\x05 \x01(\x03\x12\x0c\n\x04\x64\x61ta\x18\x06 \x01(\t\x12\r\n\x05\x65rror\x18\x07 \x01(\t\"\x0f\n\rHealthRequest\"1\n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t2\xe9\x01\n\x0cStkoeService\x12\x38\n\x07\x45xecute\x12\x15.stkoe.ExecuteRequest\x1a\x16.stkoe.ExecuteResponse\x12\x35\n\x06Select\x12\x14.stkoe.SelectRequest\x1a\x15.stkoe.SelectResponse\x12\x31\n\x07RunTask\x12\x12.stkoe.TaskRequest\x1a\x10.stkoe.TaskEvent0\x01\x12\x35\n\x06Health\x12\x14.stkoe.HealthRequest\x1a\x15.stkoe.HealthResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bstkoe.proto\x12\x05stkoe\x1a\x1fgoogle/protobuf/timestamp.proto\">\n\x0e\x45xecuteRequest\x12\x0e\n\x06source\x18\x01 \x01(\t\x12\x0e\n\x06\x61\x63tion\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x03(\t\"+\n\nDataHeader\x12\x0c\n\x04\x63ode\x18\x01 \x01(\x05\x12\x0f\n\x07message\x18\x02 \x01(\t\"&\n\x08JsonData\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\t\"6\n\nArrowTable\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\x12\x0c\n\x04meta\x18\x03 \x01(\t\"\x83\x01\n\x0f\x45xecuteResponse\x12#\n\x06header\x18\x01 \x01(\x0b\x32\x11.stkoe.DataHeaderH\x00\x12\x1f\n\x04json\x18\x02 \x01(\x0b\x32\x0f.stkoe.JsonDataH\x00\x12\"\n\x05table\x18\x03 \x01(\x0b\x32\x11.stkoe.ArrowTableH\x00\x42\x06\n\x04type\"A\n\x11SubmitTaskRequest\x12\x0e\n\x06source\x18\x01 \x01(\t\x12\x0e\n\x06\x61\x63tion\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x03(\t\"H\n\x12SubmitTaskResponse\x12!\n\x06header\x18\x01 \x01(\x0b\x32\x11.stkoe.DataHeader\x12\x0f\n\x07task_id\x18\x02 \x01(\t\"7\n\x14SubscribeTaskRequest\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x0e\n\x06replay\x18\x02 \x01(\x08\"\x82\x01\n\tTaskEvent\x12\x0b\n\x03seq\x18\x01 \x01(\x03\x12(\n\x04time\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x10\n\x08progress\x18\x03 \x01(\x02\x12\x0f\n\x07message\x18\x04 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x05 \x01(\t\x12\r\n\x05state\x18\x06 \x01(\t\"g\n\x15SubscribeTaskResponse\x12#\n\x06header\x18\x01 \x01(\x0b\x32\x11.stkoe.DataHeaderH\x00\x12!\n\x05\x65vent\x18\x02 \x01(\x0b\x32\x10.stkoe.TaskEventH\x00\x42\x06\n\x04type\"\x0f\n\rHealthRequest\"1\n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\"5\n\x12TaskControlRequest\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x0e\n\x06\x61\x63tion\x18\x02 \x01(\t\"I\n\x13TaskControlResponse\x12!\n\x06header\x18\x01 \x01(\x0b\x32\x11.stkoe.DataHeader\x12\x0f\n\x07task_id\x18\x02 \x01(\t2\xd8\x02\n\x0cStkoeService\x12:\n\x07\x45xecute\x12\x15.stkoe.ExecuteRequest\x1a\x16.stkoe.ExecuteResponse0\x01\x12\x41\n\nSubmitTask\x12\x18.stkoe.SubmitTaskRequest\x1a\x19.stkoe.SubmitTaskResponse\x12L\n\rSubscribeTask\x12\x1b.stkoe.SubscribeTaskRequest\x1a\x1c.stkoe.SubscribeTaskResponse0\x01\x12\x44\n\x0bTaskControl\x12\x19.stkoe.TaskControlRequest\x1a\x1a.stkoe.TaskControlResponse\x12\x35\n\x06Health\x12\x14.stkoe.HealthRequest\x1a\x15.stkoe.HealthResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'stkoe_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_EXECUTEREQUEST']._serialized_start=22
-  _globals['_EXECUTEREQUEST']._serialized_end=65
-  _globals['_EXECUTERESPONSE']._serialized_start=67
-  _globals['_EXECUTERESPONSE']._serialized_end=168
-  _globals['_FILTER']._serialized_start=170
-  _globals['_FILTER']._serialized_end=220
-  _globals['_SORTFIELD']._serialized_start=222
-  _globals['_SORTFIELD']._serialized_end=262
-  _globals['_SELECTREQUEST']._serialized_start=265
-  _globals['_SELECTREQUEST']._serialized_end=477
-  _globals['_SELECTRESPONSE']._serialized_start=479
-  _globals['_SELECTRESPONSE']._serialized_end=577
-  _globals['_TASKREQUEST']._serialized_start=579
-  _globals['_TASKREQUEST']._serialized_end=636
-  _globals['_TASKEVENT']._serialized_start=638
-  _globals['_TASKEVENT']._serialized_end=753
-  _globals['_HEALTHREQUEST']._serialized_start=755
-  _globals['_HEALTHREQUEST']._serialized_end=770
-  _globals['_HEALTHRESPONSE']._serialized_start=772
-  _globals['_HEALTHRESPONSE']._serialized_end=821
-  _globals['_STKOESERVICE']._serialized_start=824
-  _globals['_STKOESERVICE']._serialized_end=1057
+  _globals['_EXECUTEREQUEST']._serialized_start=55
+  _globals['_EXECUTEREQUEST']._serialized_end=117
+  _globals['_DATAHEADER']._serialized_start=119
+  _globals['_DATAHEADER']._serialized_end=162
+  _globals['_JSONDATA']._serialized_start=164
+  _globals['_JSONDATA']._serialized_end=202
+  _globals['_ARROWTABLE']._serialized_start=204
+  _globals['_ARROWTABLE']._serialized_end=258
+  _globals['_EXECUTERESPONSE']._serialized_start=261
+  _globals['_EXECUTERESPONSE']._serialized_end=392
+  _globals['_SUBMITTASKREQUEST']._serialized_start=394
+  _globals['_SUBMITTASKREQUEST']._serialized_end=459
+  _globals['_SUBMITTASKRESPONSE']._serialized_start=461
+  _globals['_SUBMITTASKRESPONSE']._serialized_end=533
+  _globals['_SUBSCRIBETASKREQUEST']._serialized_start=535
+  _globals['_SUBSCRIBETASKREQUEST']._serialized_end=590
+  _globals['_TASKEVENT']._serialized_start=593
+  _globals['_TASKEVENT']._serialized_end=723
+  _globals['_SUBSCRIBETASKRESPONSE']._serialized_start=725
+  _globals['_SUBSCRIBETASKRESPONSE']._serialized_end=828
+  _globals['_HEALTHREQUEST']._serialized_start=830
+  _globals['_HEALTHREQUEST']._serialized_end=845
+  _globals['_HEALTHRESPONSE']._serialized_start=847
+  _globals['_HEALTHRESPONSE']._serialized_end=896
+  _globals['_TASKCONTROLREQUEST']._serialized_start=898
+  _globals['_TASKCONTROLREQUEST']._serialized_end=951
+  _globals['_TASKCONTROLRESPONSE']._serialized_start=953
+  _globals['_TASKCONTROLRESPONSE']._serialized_end=1026
+  _globals['_STKOESERVICE']._serialized_start=1029
+  _globals['_STKOESERVICE']._serialized_end=1373
 # @@protoc_insertion_point(module_scope)

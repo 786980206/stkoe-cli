@@ -67,10 +67,13 @@ class TaskControl:
     _lock: threading.RLock = field(default_factory=threading.RLock)
     _progress: float = 0.0
     _stage: str = ""
+    _state: str = "submitted"
     _paused: bool = False
     _cancelled: bool = False
     _seq: int = 0
-    _log: list[tuple[str, str, str]] = field(default_factory=list)  # (ts, level, msg)
+    _log: list[tuple[int, str, str, str]] = field(default_factory=list)  # (seq, ts, level, msg)
+    # 订阅事件流（seq 单调递增；日志/进度/状态统一入列，供 gRPC SubscribeTask 拉取）
+    _events: list[dict] = field(default_factory=list)
     _dirty: bool = True
 
     # --- 日志 ---
@@ -79,7 +82,13 @@ class TaskControl:
             logger.log(level, msg)
             return
         with self._lock:
-            self._log.append((now(), level, msg))
+            self._seq += 1
+            ts = now()
+            self._log.append((self._seq, ts, level, msg))
+            self._events.append({
+                "seq": self._seq, "ts": ts, "kind": "log", "level": level,
+                "message": msg, "progress": self._progress, "state": self._state,
+            })
             self._dirty = True
 
     def info(self, msg: str) -> None:
@@ -104,6 +113,11 @@ class TaskControl:
             self._progress = max(0.0, min(1.0, float(value)))
             if msg:
                 self._stage = msg
+            self._seq += 1
+            self._events.append({
+                "seq": self._seq, "ts": now(), "kind": "progress", "level": "INFO",
+                "message": msg or "", "progress": self._progress, "state": self._state,
+            })
             self._dirty = True
 
     def stage(self, msg: str) -> None:
@@ -112,7 +126,31 @@ class TaskControl:
             return
         with self._lock:
             self._stage = msg
+            self._seq += 1
+            self._events.append({
+                "seq": self._seq, "ts": now(), "kind": "progress", "level": "INFO",
+                "message": msg, "progress": self._progress, "state": self._state,
+            })
             self._dirty = True
+
+    def set_state(self, state: str, message: str = "") -> None:
+        """记录状态迁移事件（running/succeeded/failed/cancelled…）"""
+        if self.console:
+            return
+        with self._lock:
+            self._state = state
+            self._seq += 1
+            self._events.append({
+                "seq": self._seq, "ts": now(), "kind": "state", "level": "INFO",
+                "message": message, "progress": self._progress, "state": state,
+            })
+            self._dirty = True
+
+    def events_since(self, seq: int) -> tuple[list[dict], int, float, str, str]:
+        """返回 seq 大于给定值的未读事件 + 最新 seq/progress/stage/state（订阅拉取）"""
+        with self._lock:
+            out = [e for e in self._events if e["seq"] > seq]
+            return out, self._seq, self._progress, self._stage, self._state
 
     # --- 协作控制（分区边界调用）---
     def check(self) -> None:
@@ -155,12 +193,11 @@ class TaskControl:
             progress, stage = self._progress, self._stage
             self._dirty = False
         with conn_txn(conn):
-            for ts, level, msg in logs:
-                self._seq += 1
+            for seq, ts, level, msg in logs:
                 conn.execute(
                     "INSERT INTO stkoe_task_logs (task_id, seq, ts, level, message) "
                     "VALUES (?,?,?,?,?)",
-                    (self.task_id, self._seq, ts, level, msg),
+                    (self.task_id, seq, ts, level, msg),
                 )
             conn.execute(
                 "UPDATE stkoe_tasks SET progress=?, stage=?, updated_at=? WHERE task_id=?",
@@ -243,17 +280,21 @@ def _worker(ctl: TaskControl, fn, result_fn=None) -> TaskHandle:
     error = None
     try:
         _set_status(conn, ctl.task_id, "running")
+        ctl.set_state("running")
         out = fn(conn, ctl)
         result = result_fn(out) if result_fn else out
         result_ref = _result_json(result)
+        ctl.set_state("succeeded")
         _set_status(conn, ctl.task_id, "succeeded", result_ref=result_ref, finished=True)
     except TaskCancelled:
         status = "cancelled"
+        ctl.set_state("cancelled")
         _set_status(conn, ctl.task_id, "cancelled", finished=True)
     except Exception as e:
         status = "failed"
         error = f"{type(e).__name__}: {e}"
         ctl.error(error)
+        ctl.set_state("failed", message=error)
         _set_status(conn, ctl.task_id, "failed", error=error, finished=True)
     finally:
         try:
@@ -450,3 +491,9 @@ def task_log(task_id: str, *, after_seq: int = 0, limit: int = 500) -> list[Task
     ).fetchall()
     return [TaskLog(id=r["id"], task_id=r["task_id"], seq=r["seq"], ts=r["ts"],
                     level=r["level"], message=r["message"]) for r in rows]
+
+
+def live_control(task_id: str) -> TaskControl | None:
+    """运行中任务的实时控制对象（用于订阅进度/日志；未运行/不存在返回 None）"""
+    with _reg_lock:
+        return _controls.get(task_id)

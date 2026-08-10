@@ -49,6 +49,9 @@ from .util import (
 
 DEFAULT_IGNORE_COLS = ("optime",)
 
+#: ``table set`` 可编辑的标准元数据字段（其余任意键进 extra）
+META_FIELDS = ("display_name", "description", "source")
+
 
 class TableNotFoundError(FileNotFoundError):
     pass
@@ -147,6 +150,35 @@ class TableController:
             if self._object(conn, name) is not None:
                 raise TableExistsError(f"table already registered: {name} (use scan to refresh)")
         return self._scan_impl(name)
+
+    # ---------- set（元数据更新） ----------
+
+    async def set(self, name: str, **kw) -> TableMeta:
+        """更新表元数据：display_name/description/source/tags 为标准字段，其余任意键进 extra；
+        版本递增，返回更新后的 TableMeta（表未注册报错，不做隐式注册）"""
+        return await asyncio.to_thread(self._set_sync, name, kw)
+
+    def _set_sync(self, name: str, kw: dict) -> TableMeta:
+        conn = self.catalog.new_conn()
+        try:
+            obj = self._object(conn, name)
+            if obj is None:
+                raise TableNotFoundError(f"table not registered: {name}")
+            meta = dict(meta_of(obj))
+            for key, value in kw.items():
+                if key == "tags":
+                    meta["tags"] = [t.strip() for t in str(value).split(",") if t.strip()]
+                elif key in META_FIELDS:
+                    meta[key] = str(value)
+                else:
+                    extra = dict(meta.get("extra") or {})
+                    extra[key] = value
+                    meta["extra"] = extra
+            update_object_meta(conn, obj["id"], meta, now_str=now(), bump=True)
+            conn.commit()
+            return self._to_meta(conn, self._object(conn, name))
+        finally:
+            conn.close()
 
     # ---------- get / meta / list ----------
 

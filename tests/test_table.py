@@ -140,6 +140,31 @@ def test_get_auto_sync_on_change(ctl, tmp_path):
     assert after.version == 2
 
 
+def test_set_updates_metadata(ctl, tmp_path):
+    """table set：标准字段 + tags + 任意键进 extra，版本递增，返回更新后 meta"""
+    _write_single(tmp_path / "data", "demo", {"sym": ["a"], "price": [1.0]})
+    _add(ctl, "demo")
+    assert _meta(ctl, "demo").version == 1
+
+    m = _set(ctl, "demo", display_name="Demo表", description="测试描述",
+             source="local", tags="a, b, c", foo="bar")
+    assert m.display_name == "Demo表"
+    assert m.description == "测试描述"
+    assert m.source == "local"
+    assert m.tags == ("a", "b", "c")
+    assert m.extra == {"foo": "bar"}
+    assert m.version == 2
+
+    # 再次 set 只更新传入字段，其余保留
+    m2 = _set(ctl, "demo", display_name="改名")
+    assert m2.display_name == "改名"
+    assert m2.description == "测试描述"
+    assert m2.extra == {"foo": "bar"}
+
+    with pytest.raises(TableNotFoundError):
+        _set(ctl, "nope", display_name="x")
+
+
 def test_delete_removes_registration_keeps_data(ctl, tmp_path):
     _write_single(tmp_path / "data", "demo", {"sym": ["a"], "price": [1.0]})
     _add(ctl, "demo")
@@ -200,6 +225,15 @@ def test_task_framework_table_handlers(mgr):
     _await(mgr, t_list)
     assert [m["name"] for m in _mgr_result(mgr, t_list)] == ["demo"]
 
+    t_set = mgr.submit("table", "set", ["demo", "--display_name=D表", "--source=local"])
+    _await(mgr, t_set)
+    set_res = _mgr_result(mgr, t_set)
+    assert set_res["display_name"] == "D表"
+    assert set_res["description"] == ""
+
+    meta_check = _meta(TableController(data_dir=mgr.data_dir), "demo")
+    assert meta_check.display_name == "D表"
+
     t_del = mgr.submit("table", "delete", ["demo"])
     _await(mgr, t_del)
     assert _mgr_result(mgr, t_del) == {"deleted": "demo"}
@@ -227,6 +261,10 @@ def _get(ctl, name, **kw):
 
 def _meta(ctl, name):
     return _run(ctl.meta(name))
+
+
+def _set(ctl, name, **kw):
+    return _run(ctl.set(name, **kw))
 
 
 def _delete(ctl, name, **kw):

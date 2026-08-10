@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """gRPC 服务测试：Execute 流式（DataHeader/JsonData）+ SubmitTask/SubscribeTask + Health"""
 import json
+import logging
 import socket
+from pathlib import Path
 
 import grpc
 import pytest
@@ -90,10 +92,123 @@ def test_execute_config_set_then_show(client, tmp_path, monkeypatch):
 def test_execute_unknown_command_error_header(client):
     """未注册命令：首条即错误 DataHeader，且无数据消息"""
     header, datas = _collect(client.Execute(
-        stkoe_pb2.ExecuteRequest(source="table", action="list")))
+        stkoe_pb2.ExecuteRequest(source="no_such_source", action="bogus")))
     assert header.code != 0
     assert "不支持的命令" in header.message
     assert datas == []
+
+
+# ---------- Execute 版 table ----------
+
+def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
+    """Execute 路径 table add/list/meta/get/delete 全链路（与 s:table 任务版对齐）"""
+    import polars as pl
+
+    root = Path(srv.data_dir) / "tables" / "demo"
+    root.mkdir(parents=True)
+    pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}).write_parquet(root / "p1.parquet")
+
+    def _json(payloads, name):
+        for d in payloads:
+            if d.WhichOneof("type") == "json" and d.json.name == name:
+                return json.loads(d.json.data)
+        return None
+
+    # add
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="add", args=["demo"])))
+    assert header.code == 0
+    report = _json(datas, "table")
+    assert report["name"] == "demo"
+    assert report["changed"] or True
+
+    # list
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="list")))
+    assert header.code == 0
+    names = [t["name"] for t in _json(datas, "tables")]
+    assert "demo" in names
+
+    # meta
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="meta", args=["demo"])))
+    assert header.code == 0
+    assert _json(datas, "table")["name"] == "demo"
+
+    # set：更新元数据
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="set",
+        args=["demo", "--display_name=D表", "--description=测试", "--source=local"])))
+    assert header.code == 0
+    set_meta = _json(datas, "table")
+    assert set_meta["display_name"] == "D表"
+    assert set_meta["description"] == "测试"
+    assert set_meta["source"] == "local"
+
+    # get：json 元信息 + ArrowTable 数据
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="get", args=["demo"])))
+    assert header.code == 0
+    meta = _json(datas, "demo")
+    assert meta["rows"] == 3
+    tables = [d for d in datas if d.WhichOneof("type") == "table"]
+    assert len(tables) == 1
+    assert tables[0].table.name == "demo"
+
+    # delete
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="delete", args=["demo"])))
+    assert header.code == 0
+    assert _json(datas, "table") == {"deleted": "demo"}
+
+
+def test_execute_table_add_duplicate_error(client, srv, tmp_path):
+    """重复 add：TableExistsError 以错误 DataHeader 返回（code!=0）"""
+    import polars as pl
+
+    root = Path(srv.data_dir) / "tables" / "dup"
+    root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"a": [1]}).write_parquet(root / "p1.parquet")
+
+    header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="add", args=["dup"])))
+    assert header.code == 0
+
+    header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="add", args=["dup"])))
+    assert header.code != 0
+    assert "already registered" in header.message
+
+
+def test_execute_table_missing_args(client):
+    """缺表名：错误 DataHeader"""
+    for action in ("add", "get", "meta", "delete", "set"):
+        header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+            source="table", action=action)))
+        assert header.code != 0
+        assert ("需要表名" in header.message
+                or "--all" in header.message
+                or "--key" in header.message)
+
+
+# ---------- 请求日志 ----------
+
+def test_grpc_request_logging(client, caplog):
+    """INFO 日志列出收到的请求（含 source/action/args/peer）与处理完成耗时"""
+    caplog.set_level(logging.INFO)
+    _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="version", action="get", args=["--foo"])))
+
+    exec_recv = [r for r in caplog.records if "接收请求 Execute" in r.message]
+    exec_done = [r for r in caplog.records if "完成 Execute" in r.message]
+    assert len(exec_recv) == 1
+    assert "source=version" in exec_recv[0].message
+    assert "action=get" in exec_recv[0].message
+    assert "args=['--foo']" in exec_recv[0].message
+    assert "peer=" in exec_recv[0].message
+    assert len(exec_done) == 1
+    assert "code=0" in exec_done[0].message
+    assert "耗时" in exec_done[0].message
 
 
 # ---------- SubmitTask / SubscribeTask ----------

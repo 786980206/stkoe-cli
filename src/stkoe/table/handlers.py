@@ -93,6 +93,19 @@ class TableMetaHandler(TaskHandler):
         return TaskResult(data=dumps_str(meta.to_dict()))
 
 
+class TableSetHandler(TaskHandler):
+    async def run(self, ctx) -> TaskResult:
+        pos = _positional(ctx.args)
+        if not pos:
+            raise ValueError("table set 需要表名")
+        flags = parse_flags(ctx.args)
+        if not flags:
+            raise ValueError("table set 需要至少一个 --key value")
+        ctl = _controller(ctx)
+        meta = await ctl.set(pos[0], **flags)
+        return TaskResult(data=dumps_str(meta.to_dict()))
+
+
 def register(registry) -> None:
     registry.register("table", "add", TableAddHandler())
     registry.register("table", "get", TableGetHandler())
@@ -101,3 +114,4 @@ def register(registry) -> None:
     registry.register("table", "list", TableListHandler())
     registry.register("table", "", TableListHandler())
     registry.register("table", "meta", TableMetaHandler())
+    registry.register("table", "set", TableSetHandler())

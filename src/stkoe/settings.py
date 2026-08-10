@@ -1,7 +1,7 @@
 """stkoe.json 配置：查找 / 加载 / 保存
 
 约定：
-- 查找优先级：``STKOE_CONFIG`` 环境变量 > ``./stkoe.json``（若存在）> ``~/.stkoe.json``
+- 查找优先级：``STKOE_CONFIG`` 环境变量 > ``./stkoe.json``（若存在）> ``~/.stkoe/stkoe.json``
 - 写入位置：``STKOE_CONFIG``（若设置）> ``./stkoe.json``
 - 文件内键名保持用户输入形态（含连字符，如 ``grpc-host``），不做任何转换
 - 内存对象为 ``StkoeConfig`` dataclass：已知键映射为类型化字段，任意自定义键进 ``extra``
@@ -51,14 +51,14 @@ class StkoeConfig:
 
 
 def config_path() -> Path:
-    """读取用配置路径（查找优先级：env > 本地 > home）"""
+    """读取用配置路径（查找优先级：env > 本地 > ~/.stkoe/stkoe.json）"""
     env = os.environ.get("STKOE_CONFIG")
     if env:
         return Path(env)
     local = Path.cwd() / "stkoe.json"
     if local.exists():
         return local
-    return Path.home() / ".stkoe.json"
+    return Path.home() / ".stkoe" / "stkoe.json"
 
 
 def save_path() -> Path:

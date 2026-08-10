@@ -47,6 +47,14 @@ def test_config_path_env_priority(tmp_path, monkeypatch):
     assert settings.save_path() == tmp_path / "x.json"
 
 
+def test_config_path_home_fallback(tmp_path, monkeypatch):
+    """无 env 且无本地配置时，回退 ~/.stkoe/stkoe.json"""
+    monkeypatch.delenv("STKOE_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)  # 隔离 cwd，避免命中本地 stkoe.json
+    assert settings.config_path() == Path.home() / ".stkoe" / "stkoe.json"
+    assert settings.save_path() == tmp_path / "stkoe.json"  # 写入仍优先本地
+
+
 def test_corrupt_config_raises(cfg_env):
     cfg_env.write_text("{bad json", encoding="utf-8")
     with pytest.raises(settings.ConfigError):

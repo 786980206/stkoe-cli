@@ -16,7 +16,7 @@ uv run stkoe serve      # 前台运行 gRPC 服务（默认 127.0.0.1:9569）
 
 ## 配置（stkoe.json）
 
-- 查找优先级：`STKOE_CONFIG` 环境变量 > `./stkoe.json`（若存在）> `~/.stkoe.json`
+- 查找优先级：`STKOE_CONFIG` 环境变量 > `./stkoe.json`（若存在）> `~/.stkoe/stkoe.json`
 - 写入位置：`STKOE_CONFIG`（若设置）> `./stkoe.json`
 - 键名保持输入形态（含连字符），支持任意字段
 

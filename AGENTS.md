@@ -121,6 +121,18 @@ src/stkoe/
 
 ## 近期变更记录
 
+### 2026-08 table col + list --candidate + CLI table 子命令 + dataset 规划
+
+- **`table col` 列元数据更新**（参照 v1.0 table.py）：`table col <name> <column> --display_name/
+  --description/--unit/--formula/--tags <v>`，只改 catalog 列说明不改数据文件，版本递增；
+  表未注册/列不存在报错；`ColumnMeta.from_dict` 规范化 tags 为 tuple。三条路径同时注册：
+  Execute（`e:table col ...`）、任务版（`s:table col ...`）、CLI
+- **`table list --candidate`**：返回未登记但含 parquet 的表目录（「新建本地表」候选），
+  对照 v1.0 `candidates()`；Execute/任务版/CLI 三处对齐，返回 JSON `["cand", ...]`
+- **CLI 通用分发**：`stkoe table <action> <args...>` 走 Execute 同步分发（`cli._cmd_dispatch`），
+  与 gRPC Execute 行为完全一致；`--help` 补充说明
+- 测试：新增 col/list --candidate 的 controller / 任务版 / gRPC 全链路用例，全量 59 用例绿
+
 ### 2026-08 gRPC 日志 + table set + 任务竞态修复
 
 - **gRPC 请求日志**：新增 `logutil.py`（`LOG` + `setup_logging`）；`server.py` 每个 RPC

@@ -78,7 +78,11 @@ class TableDeleteHandler(TaskHandler):
 
 class TableListHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
+        flags = parse_flags(ctx.args)
         ctl = _controller(ctx)
+        if flags.get("candidate"):
+            cands = await ctl.list(candidate=True)
+            return TaskResult(data=dumps_str(cands))
         metas = await ctl.list()
         return TaskResult(data=dumps_str([m.to_dict() for m in metas]))
 
@@ -106,6 +110,19 @@ class TableSetHandler(TaskHandler):
         return TaskResult(data=dumps_str(meta.to_dict()))
 
 
+class TableColHandler(TaskHandler):
+    async def run(self, ctx) -> TaskResult:
+        pos = _positional(ctx.args)
+        if len(pos) < 2:
+            raise ValueError("table col 需要表名和列名")
+        flags = parse_flags(ctx.args)
+        if not flags:
+            raise ValueError("table col 需要至少一个 --key value")
+        ctl = _controller(ctx)
+        meta = await ctl.col(pos[0], pos[1], **flags)
+        return TaskResult(data=dumps_str(meta.to_dict()))
+
+
 def register(registry) -> None:
     registry.register("table", "add", TableAddHandler())
     registry.register("table", "get", TableGetHandler())
@@ -115,3 +132,4 @@ def register(registry) -> None:
     registry.register("table", "", TableListHandler())
     registry.register("table", "meta", TableMetaHandler())
     registry.register("table", "set", TableSetHandler())
+    registry.register("table", "col", TableColHandler())

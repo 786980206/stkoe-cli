@@ -29,6 +29,27 @@ uv run stkoe config set --grpc-port 9000
 `stkoe serve` 缺省 host/port 取 `grpc-host` / `grpc-port`；`--host` / `--port` 显式覆盖。
 配置同样可通过 gRPC `Execute(source="config", action="show"|"set", args=["--key", "value"])` 读写。
 
+## CLI 命令
+
+```bash
+uv run stkoe serve                                # 前台运行 gRPC 服务
+uv run stkoe config show | set                    # 配置读写
+uv run stkoe table <action> <args...>             # table 命令（走 Execute 同步分发）
+```
+
+`table` 子命令与 gRPC `Execute` 行为完全一致（同一分发实现）：
+
+```bash
+uv run stkoe table list --candidate               # 未登记但含 parquet 的表目录（「新建本地表」候选）
+uv run stkoe table list                           # 已注册表
+uv run stkoe table meta demo                      # 表元数据
+uv run stkoe table add demo                       # 注册表
+uv run stkoe table set demo --display_name 演示表  # 更新表元数据
+uv run stkoe table col demo sym --display_name 代码 --unit 元   # 更新列元数据
+uv run stkoe table get demo                       # 读表（返回 IPC 元信息）
+uv run stkoe table delete demo                    # 删除表注册（数据文件保留）
+```
+
 ## gRPC 协议
 
 协议定义见 `src/stkoe/grpc/stkoe.proto`：
@@ -42,6 +63,15 @@ uv run stkoe config set --grpc-port 9000
 
 请求统一为 `<source> <action> <args...>` 位置参数形态（`args` 等价于
 `stkoe <source> <action> <args...>`）。
+
+已注册的 `(source, action)`：
+
+| source | action | 说明 |
+|---|---|---|
+| `version` | `""` / `get` | 服务版本 |
+| `config` | `show` / `""` | 生效配置 |
+| `config` | `set` | 写配置（`--key value`） |
+| `table` | `add` / `get` / `delete`(del) / `list` / `meta` / `set` / `col` | 表资产全套动词 |
 
 ### Execute 流式约定
 
@@ -101,7 +131,7 @@ src/stkoe/
 │   ├── util.py        # parquet 指纹/布局识别/footer/差异对比
 │   ├── catalog.py     # SQLite catalog（stkoe_objects/stkoe_data_files/stkoe_file_stats）
 │   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
-│   ├── controller.py  # TableController：async add/get/delete/list/meta
+│   ├── controller.py  # TableController：async add/get/delete/list/meta/set/col
 │   └── handlers.py    # 任务框架接入（source="table"）
 └── task/              # 任务框架
     ├── model.py       # Task / TaskEvent / TaskResult / TaskContext

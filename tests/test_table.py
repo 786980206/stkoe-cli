@@ -65,6 +65,19 @@ def test_add_all_batch_discovers(ctl, tmp_path):
     assert _names(ctl) == ["t1", "t2"]
 
 
+def test_list_candidates(ctl, tmp_path):
+    """table list --candidate：未登记但含 parquet 的目录（已登记/空目录排除）"""
+    root = tmp_path / "data"
+    _write_single(root, "reg", {"sym": ["a"], "price": [1.0]})
+    _add(ctl, "reg")
+    _write_single(root, "cand", {"sym": ["b"], "price": [2.0]})
+    (root / "tables" / "empty").mkdir(parents=True)
+
+    assert _run(ctl.list(candidate=True)) == ["cand"]
+    # 默认仍输出已注册表
+    assert _names(ctl) == ["reg"]
+
+
 def test_add_errors(ctl, tmp_path):
     with pytest.raises(TableNotFoundError):
         _add(ctl, "missing")
@@ -165,6 +178,40 @@ def test_set_updates_metadata(ctl, tmp_path):
         _set(ctl, "nope", display_name="x")
 
 
+def test_col_updates_column_metadata(ctl, tmp_path):
+    """table col：更新列元数据（display_name/description/unit/formula/tags），版本递增"""
+    _write_single(tmp_path / "data", "demo", {"sym": ["a"], "price": [1.0]})
+    _add(ctl, "demo")
+    assert _meta(ctl, "demo").version == 1
+
+    m = _col(ctl, "demo", "sym", display_name="代码", description="证券代码",
+             unit="元", formula="x*2", tags="a, b, c")
+    assert m.version == 2
+    sym = next(c for c in m.columns if c.name == "sym")
+    assert sym.display_name == "代码"
+    assert sym.description == "证券代码"
+    assert sym.unit == "元"
+    assert sym.formula == "x*2"
+    assert sym.tags == ("a", "b", "c")
+    # 其余列不受影响
+    price = next(c for c in m.columns if c.name == "price")
+    assert price.display_name == "price"
+    assert price.unit is None
+
+    # 再次 col 只更新传入字段
+    m2 = _col(ctl, "demo", "sym", display_name="改名")
+    sym2 = next(c for c in m2.columns if c.name == "sym")
+    assert sym2.display_name == "改名"
+    assert sym2.description == "证券代码"
+
+    with pytest.raises(TableNotFoundError):
+        _col(ctl, "nope", "sym", display_name="x")
+    with pytest.raises(TableNotFoundError):
+        _col(ctl, "demo", "nope", display_name="x")
+    with pytest.raises(ValueError):
+        _col(ctl, "demo", "sym", bogus="x")
+
+
 def test_delete_removes_registration_keeps_data(ctl, tmp_path):
     _write_single(tmp_path / "data", "demo", {"sym": ["a"], "price": [1.0]})
     _add(ctl, "demo")
@@ -231,6 +278,13 @@ def test_task_framework_table_handlers(mgr):
     assert set_res["display_name"] == "D表"
     assert set_res["description"] == ""
 
+    t_col = mgr.submit("table", "col", ["demo", "sym", "--display_name=代码", "--unit=元"])
+    _await(mgr, t_col)
+    col_res = _mgr_result(mgr, t_col)
+    sym = next(c for c in col_res["columns"] if c["name"] == "sym")
+    assert sym["display_name"] == "代码"
+    assert sym["unit"] == "元"
+
     meta_check = _meta(TableController(data_dir=mgr.data_dir), "demo")
     assert meta_check.display_name == "D表"
 
@@ -265,6 +319,10 @@ def _meta(ctl, name):
 
 def _set(ctl, name, **kw):
     return _run(ctl.set(name, **kw))
+
+
+def _col(ctl, name, column, **kw):
+    return _run(ctl.col(name, column, **kw))
 
 
 def _delete(ctl, name, **kw):

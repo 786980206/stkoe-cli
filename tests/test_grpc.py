@@ -145,6 +145,17 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     assert set_meta["description"] == "测试"
     assert set_meta["source"] == "local"
 
+    # col：更新列元数据
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="col",
+        args=["demo", "a", "--display_name=数值", "--unit=元", "--tags=x, y"])))
+    assert header.code == 0
+    col_meta = _json(datas, "table")
+    col_a = next(c for c in col_meta["columns"] if c["name"] == "a")
+    assert col_a["display_name"] == "数值"
+    assert col_a["unit"] == "元"
+    assert col_a["tags"] == ["x", "y"]
+
     # get：json 元信息 + ArrowTable 数据
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="table", action="get", args=["demo"])))
@@ -189,6 +200,44 @@ def test_execute_table_missing_args(client):
         assert ("需要表名" in header.message
                 or "--all" in header.message
                 or "--key" in header.message)
+
+
+def test_execute_table_list_candidate(client, srv, tmp_path):
+    """table list --candidate：返回未登记但含 parquet 的目录"""
+    import polars as pl
+
+    root = Path(srv.data_dir) / "tables"
+    (root / "reg").mkdir(parents=True)
+    pl.DataFrame({"a": [1]}).write_parquet(root / "reg" / "p.parquet")
+    header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="add", args=["reg"])))
+    assert header.code == 0
+
+    (root / "cand").mkdir(parents=True)
+    pl.DataFrame({"b": [2]}).write_parquet(root / "cand" / "p.parquet")
+    (root / "empty").mkdir(parents=True)
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="list", args=["--candidate"])))
+    assert header.code == 0
+    cands = next((json.loads(d.json.data) for d in datas
+                  if d.WhichOneof("type") == "json"
+                  and d.json.name == "candidates"), None)
+    assert cands == ["cand"]
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="list")))
+    assert header.code == 0
+    names = _json_names(datas)
+    assert names == ["reg"]
+
+
+def _json_names(datas):
+    import json
+    for d in datas:
+        if d.WhichOneof("type") == "json":
+            return [t["name"] for t in json.loads(d.json.data)]
+    return []
 
 
 # ---------- 请求日志 ----------

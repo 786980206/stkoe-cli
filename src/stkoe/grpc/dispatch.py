@@ -184,6 +184,10 @@ def _table_delete(args: list[str], data_dir=None) -> list[Result]:
 @handler("table", "")
 def _table_list(args: list[str], data_dir=None) -> list[Result]:
     ctl = _controller(data_dir)
+    flags = parse_flags(args)
+    if flags.get("candidate"):
+        cands = asyncio.run(ctl.list(candidate=True))
+        return [Result.json("candidates", cands)]
     metas = asyncio.run(ctl.list())
     return [Result.json("tables", [m.to_dict() for m in metas])]
 
@@ -195,6 +199,19 @@ def _table_meta(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("table meta 需要表名")
     ctl = _controller(data_dir)
     meta = asyncio.run(ctl.meta(pos[0]))
+    return [Result.json("table", meta.to_dict())]
+
+
+@handler("table", "col")
+def _table_col(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if len(pos) < 2:
+        raise CommandError("table col 需要表名和列名")
+    flags = parse_flags(args)
+    if not flags:
+        raise CommandError("table col 需要至少一个 --key value")
+    ctl = _controller(data_dir)
+    meta = asyncio.run(ctl.col(pos[0], pos[1], **flags))
     return [Result.json("table", meta.to_dict())]
 
 

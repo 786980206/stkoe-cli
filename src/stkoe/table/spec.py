@@ -41,7 +41,10 @@ class ColumnMeta:
     @classmethod
     def from_dict(cls, d: dict) -> "ColumnMeta":
         names = {f.name for f in _fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in names})
+        kw = {k: v for k, v in d.items() if k in names}
+        if "tags" in kw and not isinstance(kw["tags"], tuple):
+            kw["tags"] = tuple(kw["tags"] or ())
+        return cls(**kw)
 
     def patch(self, **kw) -> "ColumnMeta":
         """返回浅拷贝修改版（frozen dataclass 更新元数据字段用）"""

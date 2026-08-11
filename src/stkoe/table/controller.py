@@ -52,6 +52,9 @@ DEFAULT_IGNORE_COLS = ("optime",)
 #: ``table set`` 可编辑的标准元数据字段（其余任意键进 extra）
 META_FIELDS = ("display_name", "description", "source")
 
+#: ``table col`` 可编辑的列元数据字段
+COL_META_FIELDS = ("display_name", "description", "unit", "formula", "tags")
+
 
 class TableNotFoundError(FileNotFoundError):
     pass
@@ -250,16 +253,59 @@ class TableController:
         finally:
             conn.close()
 
-    async def list(self) -> list[TableMeta]:
-        """已注册表列表"""
-        return await asyncio.to_thread(self._list_sync)
+    async def list(self, *, candidate: bool = False) -> list[TableMeta] | list[str]:
+        """表列表：``candidate=True`` 返回未登记但含 parquet 的表目录（「新建本地表」候选）"""
+        return await asyncio.to_thread(self._list_sync, candidate)
 
-    def _list_sync(self) -> list[TableMeta]:
+    def _list_sync(self, candidate: bool = False) -> list[TableMeta] | list[str]:
         conn = self.catalog.new_conn()
         try:
+            if candidate:
+                if not self.root.exists():
+                    return []
+                out = []
+                for d in sorted(x for x in self.root.iterdir() if x.is_dir()):
+                    if self._object(conn, d.name) is None and any(d.rglob("*.parquet")):
+                        out.append(d.name)
+                return out
             rows = conn.execute("SELECT * FROM stkoe_objects WHERE type='table' "
                                 "ORDER BY name").fetchall()
             return [self._to_meta(conn, r) for r in rows]
+        finally:
+            conn.close()
+
+    # ---------- col（列元数据） ----------
+
+    async def col(self, name: str, column: str, **kw) -> TableMeta:
+        """更新列元数据：display_name/description/unit/formula/tags（tags 逗号分隔），
+        版本递增，返回更新后的 TableMeta。只改 catalog 列说明，不改数据文件；
+        表未注册 / 列不存在报错，不做隐式注册"""
+        return await asyncio.to_thread(self._col_sync, name, column, kw)
+
+    def _col_sync(self, name: str, column: str, kw: dict) -> TableMeta:
+        conn = self.catalog.new_conn()
+        try:
+            obj = self._object(conn, name)
+            if obj is None:
+                raise TableNotFoundError(f"table not registered: {name}")
+            meta = dict(meta_of(obj))
+            cols = list(meta.get("columns", []))
+            idx = next((i for i, c in enumerate(cols) if c.get("name") == column), None)
+            if idx is None:
+                raise TableNotFoundError(f"column not found: {name}.{column}")
+            c = dict(cols[idx])
+            for key, value in kw.items():
+                if key not in COL_META_FIELDS:
+                    raise ValueError(f"未知列元数据字段: {key}")
+                if key == "tags":
+                    c[key] = [t.strip() for t in str(value).split(",") if t.strip()]
+                else:
+                    c[key] = str(value)
+            cols[idx] = c
+            meta["columns"] = cols
+            update_object_meta(conn, obj["id"], meta, now_str=now(), bump=True)
+            conn.commit()
+            return self._to_meta(conn, self._object(conn, name))
         finally:
             conn.close()
 

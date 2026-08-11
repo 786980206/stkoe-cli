@@ -49,12 +49,39 @@ def _cmd_config(raw: list[str]) -> int:
     return 1
 
 
+def _cmd_dispatch(source: str, raw: list[str]) -> int:
+    """通用子命令：``stkoe <source> <action> <args...>``，走 Execute 同步分发"""
+    from .grpc.dispatch import CommandError, dispatch
+
+    action = raw[0] if raw and not raw[0].startswith("--") else ""
+    args = raw[1:] if action else raw
+    try:
+        results = dispatch(source, action, args)
+    except CommandError as e:
+        print(e.message)
+        return e.code
+    except Exception as e:
+        print(str(e))
+        return 2
+    for r in results:
+        if r.kind == "table":
+            print(f"<table {r.name}: {len(r.data)} 字节 IPC>")
+        else:
+            print(r.data)
+    return 0
+
+
+def _cmd_table(raw: list[str]) -> int:
+    return _cmd_dispatch("table", raw)
+
+
 def _help() -> str:
     return (
         "用法: stkoe <command>\n"
         "  serve [--host H] [--port P]     运行 gRPC 服务（缺省取 stkoe.json 配置）\n"
         "  config show                     查看生效配置\n"
-        "  config set --<key> <value> ...  设置任意配置项（写入 stkoe.json）"
+        "  config set --<key> <value> ...  设置任意配置项（写入 stkoe.json）\n"
+        "  table <action> <args...>        table 命令（list/meta/add/set/get/delete，与 Execute 对齐）"
     )
 
 
@@ -71,5 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_serve(args[1:])
     if cmd == "config":
         return _cmd_config(args[1:])
+    if cmd == "table":
+        return _cmd_table(args[1:])
     print(f"未知命令: {cmd}\n{_help()}")
     return 1

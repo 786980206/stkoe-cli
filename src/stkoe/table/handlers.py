@@ -16,7 +16,18 @@ from ..task.registry import TaskHandler
 
 
 def _positional(args: list[str]) -> list[str]:
-    return [a for a in args if not a.startswith("--")]
+    out = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--"):
+            key = a[2:]
+            if "=" not in key and i + 1 < len(args) and not args[i + 1].startswith("--"):
+                i += 1
+        else:
+            out.append(a)
+        i += 1
+    return out
 
 
 def _controller(ctx):

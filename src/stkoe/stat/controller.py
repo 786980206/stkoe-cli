@@ -1,0 +1,221 @@
+"""STAT 模块：dataset / table 目标的统计资产（StatController，async 接口）
+
+定位：
+- 统计是独立资产：与数据解耦（目标只管数据，统计归统计），产物写 ``stats/`` 目录
+- 目标：table 或 dataset；产物目录 ``stats/<target_type>/<target_name>/<kind>/``
+- 分组文件：``all.parquet``（全量统计）+ 按目标索引分组逐分区文件
+  （dataset 索引 = 主键 keys；table = 非工具列），命名 ``<partition>.parquet``
+- ``stat scan`` 生成/更新分组产物（幂等，重算覆盖）；``stat get`` 读文件
+"""
+from __future__ import annotations
+
+import asyncio
+import shutil
+from pathlib import Path
+
+import polars as pl
+
+from ..table.controller import DEFAULT_IGNORE_COLS
+from ..table.util import now
+from .calc import calc_stats
+from .spec import StatFile, StatMeta, StatScanReport
+
+
+class StatNotFoundError(FileNotFoundError):
+    pass
+
+
+class StatTargetError(ValueError):
+    pass
+
+
+def _parquet_rows(p: Path) -> int:
+    try:
+        return pl.scan_parquet(p).select(pl.len()).collect().item()
+    except Exception:
+        return 0
+
+
+def _ordered(files: tuple[StatFile, ...]) -> tuple[StatFile, ...]:
+    """排序：all 分组恒在首，其余按分区名排序"""
+    return tuple(sorted(files, key=lambda f: (f.partition != "all", f.partition)))
+
+
+class StatController:
+    """统计控制面：围绕目标（table/dataset）生成/读取分组统计
+
+    复用一个 DatasetController 访问目标数据（dataset 实时 join 视图或物化数据）。
+    """
+
+    def __init__(self, data_dir: Path | str | None = None,
+                 ignore_cols: tuple[str, ...] = DEFAULT_IGNORE_COLS):
+        from ..dataset.controller import DatasetController
+
+        self._dc = DatasetController(data_dir=data_dir, ignore_cols=ignore_cols)
+        self.data_dir = self._dc.data_dir
+        self.catalog = self._dc.catalog
+        self.root = self.data_dir / "stats"
+        self.ignore_cols = set(ignore_cols)
+
+    # ---------- 路径 / 分组解析 ----------
+
+    def _kind_dir(self, target_type: str, target_name: str, kind: str) -> Path:
+        return self.root / target_type / target_name / kind
+
+    def _index_cols(self, target_type: str, target_name: str) -> list[str]:
+        """目标索引列：dataset 用主键 keys；table 用非工具列"""
+        if target_type == "table":
+            m = self._dc._tc._meta_sync(target_name)
+            return [c.name for c in m.columns if not c.is_tool]
+        if target_type == "dataset":
+            dm = self._dc._describe_sync(target_name)
+            return list(dm.keys)
+        raise StatTargetError(f"unsupported stat target: {target_type}")
+
+    def _partitions(self, target_type: str, target_name: str) -> list[str]:
+        return ["all", *self._index_cols(target_type, target_name)]
+
+    def _select_lf(self, target_type: str, target_name: str) -> pl.LazyFrame:
+        """目标数据（lazy）：dataset 走实时 join/物化视图，table 剔除工具列"""
+        if target_type == "table":
+            return self._dc._tc._get_lazy(target_name, exclude_tool=True)
+        if target_type == "dataset":
+            return self._dc._get_lazy_sync(target_name)
+        raise StatTargetError(f"unsupported stat target: {target_type}")
+
+    # ---------- scan ----------
+
+    def _scan_sync(self, target_type: str, target_name: str, kind: str = "coverage"
+                   ) -> StatScanReport:
+        """计算全量 + 逐索引分组统计并写 ``stats/<type>/<name>/<kind>/<part>.parquet``"""
+        parts = self._partitions(target_type, target_name)
+        lf = self._select_lf(target_type, target_name)
+        out_dir = self._kind_dir(target_type, target_name, kind)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        files: list[StatFile] = []
+        for p in parts:
+            df = calc_stats(lf, group_col=None if p == "all" else p).collect()
+            f = out_dir / f"{p}.parquet"
+            df.write_parquet(f)
+            files.append(StatFile(partition=p, rel_path=f.relative_to(self.root),
+                                  rows=df.height, size=f.stat().st_size))
+        files = list(_ordered(tuple(files)))
+        return StatScanReport(target_type=target_type, target_name=target_name,
+                              kind=kind, partitions=tuple(f.partition for f in files),
+                              files=tuple(files))
+
+    # ---------- get ----------
+
+    def _get_sync(self, target_type: str, target_name: str, kind: str = "coverage",
+                  partition_by: str | None = None
+                  ) -> pl.DataFrame | dict[str, pl.DataFrame]:
+        """读取统计文件：不指定 partition_by → 返回全部 ``{分区: DataFrame}``；
+        指定 → 返回单个分区 DataFrame"""
+        out_dir = self._kind_dir(target_type, target_name, kind)
+        if partition_by is not None:
+            f = out_dir / f"{partition_by}.parquet"
+            if not f.exists():
+                raise StatNotFoundError(f"stat 分区文件不存在: {f.relative_to(self.root)}")
+            return pl.read_parquet(f)
+        if not out_dir.exists():
+            raise StatNotFoundError(f"stat 目录不存在: {out_dir.relative_to(self.root)}")
+        files = _ordered(tuple(
+            StatFile(partition=f.stem, rel_path=f.relative_to(self.root),
+                     rows=0, size=f.stat().st_size)
+            for f in out_dir.glob("*.parquet")
+        ))
+        out: dict[str, pl.DataFrame] = {}
+        for f in files:
+            p = out_dir / f"{f.partition}.parquet"
+            out[f.partition] = pl.read_parquet(p)
+        return out
+
+    # ---------- meta / list / delete ----------
+
+    def _meta_sync(self, target_type: str, target_name: str, kind: str = "coverage"
+                   ) -> StatMeta:
+        out_dir = self._kind_dir(target_type, target_name, kind)
+        if not out_dir.exists():
+            raise StatNotFoundError(f"stat 目录不存在: {out_dir.relative_to(self.root)}")
+        paths = sorted(out_dir.glob("*.parquet")) if out_dir.exists() else []
+        files = tuple(
+            StatFile(partition=p.stem, rel_path=p.relative_to(self.root),
+                     rows=_parquet_rows(p), size=p.stat().st_size)
+            for p in paths
+        )
+        ts = now()
+        files = tuple(
+            StatFile(partition=p.stem, rel_path=p.relative_to(self.root),
+                     rows=_parquet_rows(p), size=p.stat().st_size)
+            for p in paths
+        )
+        files = _ordered(files)
+        return StatMeta(target_type=target_type, target_name=target_name, kind=kind,
+                        partitions=tuple(f.partition for f in files), files=files,
+                        created_at=ts if files else "", updated_at=ts if files else "")
+
+    def _list_sync(self) -> list[StatMeta]:
+        """全部已生成统计（按 target_type/target_name/kind）"""
+        out: list[StatMeta] = []
+        if not self.root.exists():
+            return out
+        for tdir in sorted(x for x in self.root.iterdir() if x.is_dir()):
+            for ndir in sorted(x for x in tdir.iterdir() if x.is_dir()):
+                for kdir in sorted(x for x in ndir.iterdir() if x.is_dir()):
+                    paths = sorted(kdir.glob("*.parquet"))
+                    if not paths:
+                        continue
+                    ts = now()
+                    files = _ordered(tuple(
+                        StatFile(partition=p.stem, rel_path=p.relative_to(self.root),
+                                 rows=_parquet_rows(p), size=p.stat().st_size)
+                        for p in paths
+                    ))
+                    out.append(StatMeta(target_type=tdir.name, target_name=ndir.name,
+                                        kind=kdir.name,
+                                        partitions=tuple(f.partition for f in files),
+                                        files=files, created_at=ts, updated_at=ts))
+        return out
+
+    def _delete_sync(self, target_type: str, target_name: str,
+                     kind: str | None = None) -> dict:
+        """删除统计产物目录（kind 缺省删除该目标全部统计）"""
+        base = self.root / target_type / target_name
+        if not base.exists():
+            raise StatNotFoundError(f"stat 目标不存在: {base.relative_to(self.root)}")
+        target = base if kind is None else base / kind
+        if not target.exists():
+            raise StatNotFoundError(f"stat 目录不存在: {target.relative_to(self.root)}")
+        shutil.rmtree(target)
+        return {"deleted": f"{target_type}/{target_name}" + (f"/{kind}" if kind else "")}
+
+    # ---------- async 接口 ----------
+
+    async def scan(self, target_type: str, target_name: str,
+                   kind: str = "coverage") -> StatScanReport:
+        """生成/更新统计分组产物（幂等）"""
+        return await asyncio.to_thread(self._scan_sync, target_type, target_name, kind)
+
+    async def get(self, target_type: str, target_name: str,
+                  kind: str = "coverage", partition_by: str | None = None
+                  ) -> pl.DataFrame | dict[str, pl.DataFrame]:
+        """读统计；不指定 partition_by 返回全部 ``{分区: DataFrame}``"""
+        return await asyncio.to_thread(self._get_sync, target_type, target_name,
+                                       kind, partition_by)
+
+    async def meta(self, target_type: str, target_name: str,
+                   kind: str = "coverage") -> StatMeta:
+        """统计元数据（目标/kind/分组文件清单）"""
+        return await asyncio.to_thread(self._meta_sync, target_type, target_name, kind)
+
+    async def list(self) -> list[StatMeta]:
+        """已生成统计列表"""
+        return await asyncio.to_thread(self._list_sync)
+
+    async def delete(self, target_type: str, target_name: str,
+                     kind: str | None = None) -> dict:
+        """删除统计产物（kind 缺省删除该目标全部）"""
+        return await asyncio.to_thread(self._delete_sync, target_type, target_name, kind)
+
+
+__all__ = ["StatController", "StatNotFoundError", "StatTargetError"]

@@ -122,7 +122,18 @@ def _config_set(args: list[str], data_dir=None) -> list[Result]:
 # ---------------------------------------------------------------------------
 
 def _positional(args: list[str]) -> list[str]:
-    return [a for a in args if not a.startswith("--")]
+    out = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--"):
+            key = a[2:]
+            if "=" not in key and i + 1 < len(args) and not args[i + 1].startswith("--"):
+                i += 1
+        else:
+            out.append(a)
+        i += 1
+    return out
 
 
 def _controller(data_dir=None):
@@ -226,3 +237,190 @@ def _table_set(args: list[str], data_dir=None) -> list[Result]:
     ctl = _controller(data_dir)
     meta = asyncio.run(ctl.set(pos[0], **flags))
     return [Result.json("table", meta.to_dict())]
+
+
+# ---------------------------------------------------------------------------
+# stat 同步处理器（Execute 路径；SubmitTask 后台任务版在 stat/handlers.py）
+# ---------------------------------------------------------------------------
+
+def _stat_controller(data_dir=None):
+    from ..stat.controller import StatController
+
+    return StatController(data_dir=data_dir)
+
+
+@handler("stat", "scan")
+def _stat_scan(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if len(pos) < 2:
+        raise CommandError("stat scan 需要 target 类型和名字（如 dataset <name>）")
+    flags = parse_flags(args)
+    ctl = _stat_controller(data_dir)
+    report = asyncio.run(ctl.scan(pos[0], pos[1], kind=flags.get("kind") or "coverage"))
+    return [Result.json("stat", report.to_dict())]
+
+
+@handler("stat", "get")
+def _stat_get(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if len(pos) < 2:
+        raise CommandError("stat get 需要 target 类型和名字（如 dataset <name>）")
+    flags = parse_flags(args)
+    ctl = _stat_controller(data_dir)
+    partition_by = flags.get("partition_by") or flags.get("partition-by")
+    out = asyncio.run(ctl.get(pos[0], pos[1],
+                              kind=flags.get("kind") or "coverage",
+                              partition_by=partition_by))
+    if isinstance(out, dict):
+        results: list[Result] = []
+        for partition, df in out.items():
+            buf = io.BytesIO()
+            df.write_ipc(buf)
+            results.append(Result.json(f"stat/{partition}",
+                                       {"partition": partition, "rows": df.height,
+                                        "columns": df.columns}))
+            results.append(Result.table(f"stat/{partition}", buf.getvalue()))
+        return results
+    buf = io.BytesIO()
+    out.write_ipc(buf)
+    return [
+        Result.json(pos[1], {"partition": partition_by, "rows": out.height,
+                             "columns": out.columns}),
+        Result.table(pos[1], buf.getvalue()),
+    ]
+
+
+@handler("stat", "meta")
+def _stat_meta(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if len(pos) < 2:
+        raise CommandError("stat meta 需要 target 类型和名字（如 dataset <name>）")
+    flags = parse_flags(args)
+    ctl = _stat_controller(data_dir)
+    meta = asyncio.run(ctl.meta(pos[0], pos[1], kind=flags.get("kind") or "coverage"))
+    return [Result.json("stat", meta.to_dict())]
+
+
+@handler("stat", "list")
+def _stat_list(args: list[str], data_dir=None) -> list[Result]:
+    ctl = _stat_controller(data_dir)
+    metas = asyncio.run(ctl.list())
+    return [Result.json("stats", [m.to_dict() for m in metas])]
+
+
+@handler("stat", "delete")
+@handler("stat", "del")
+def _stat_delete(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if len(pos) < 2:
+        raise CommandError("stat delete 需要 target 类型和名字（如 dataset <name>）")
+    flags = parse_flags(args)
+    ctl = _stat_controller(data_dir)
+    out = asyncio.run(ctl.delete(pos[0], pos[1], kind=flags.get("kind")))
+    return [Result.json("stat", out)]
+
+
+# ---------------------------------------------------------------------------
+# dataset 同步处理器（Execute 路径；SubmitTask 后台任务版在 dataset/handlers.py）
+# ---------------------------------------------------------------------------
+
+def _dataset_controller(data_dir=None):
+    from ..dataset.controller import DatasetController
+
+    return DatasetController(data_dir=data_dir)
+
+
+@handler("dataset", "add")
+def _dataset_add(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if len(pos) < 3:
+        raise CommandError("dataset add 需要 dataset 名、index 表与至少一个成员表")
+    flags = parse_flags(args)
+    ctl = _dataset_controller(data_dir)
+    keys = None
+    if flags.get("keys"):
+        keys = [k.strip() for k in flags["keys"].split(",") if k.strip()]
+    dm = asyncio.run(ctl.add(pos[0], pos[1], *pos[2:], keys=keys,
+                             materialize=bool(flags.get("materialize"))))
+    return [Result.json("dataset", dm.to_dict())]
+
+
+@handler("dataset", "get")
+def _dataset_get(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("dataset get 需要 dataset 名")
+    flags = parse_flags(args)
+    ctl = _dataset_controller(data_dir)
+    columns = flags.get("columns") or None
+    df = asyncio.run(ctl.get(
+        pos[0],
+        columns=columns.split(",") if columns else None,
+        where=flags.get("where"),
+        partition=flags.get("partition"),
+        limit=int(flags["limit"]) if flags.get("limit") else None,
+    ))
+    buf = io.BytesIO()
+    if df.height:
+        df.write_ipc(buf)
+    return [
+        Result.json(pos[0], {"rows": df.height, "columns": df.columns}),
+        Result.table(pos[0], buf.getvalue()),
+    ]
+
+
+@handler("dataset", "delete")
+@handler("dataset", "del")
+def _dataset_delete(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("dataset delete 需要 dataset 名")
+    flags = parse_flags(args)
+    ctl = _dataset_controller(data_dir)
+    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
+    return [Result.json("dataset", out)]
+
+
+@handler("dataset", "list")
+@handler("dataset", "")
+def _dataset_list(args: list[str], data_dir=None) -> list[Result]:
+    ctl = _dataset_controller(data_dir)
+    dms = asyncio.run(ctl.list())
+    return [Result.json("datasets", [dm.to_dict() for dm in dms])]
+
+
+@handler("dataset", "meta")
+def _dataset_meta(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("dataset meta 需要 dataset 名")
+    ctl = _dataset_controller(data_dir)
+    dm = asyncio.run(ctl.meta(pos[0]))
+    return [Result.json("dataset", dm.to_dict())]
+
+
+@handler("dataset", "set")
+def _dataset_set(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    if not pos:
+        raise CommandError("dataset set 需要 dataset 名")
+    if not flags:
+        raise CommandError("dataset set 需要至少一个 --key value")
+    ctl = _dataset_controller(data_dir)
+    dm = asyncio.run(ctl.set(pos[0], **flags))
+    return [Result.json("dataset", dm.to_dict())]
+
+
+@handler("dataset", "scan")
+def _dataset_scan(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    ctl = _dataset_controller(data_dir)
+    if flags.get("all"):
+        reports = asyncio.run(ctl.scan(all=True, resync=bool(flags.get("resync"))))
+        return [Result.json("datasets", [r.to_dict() for r in reports])]
+    if not pos:
+        raise CommandError("dataset scan 需要 dataset 名（或 --all）")
+    report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
+    return [Result.json("dataset", report.to_dict())]

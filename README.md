@@ -1,6 +1,6 @@
 # stkoe
 
-stkoe 数据服务（重构版）。当前阶段：gRPC 服务器骨架，实现 `stkoe.proto` 协议。
+stkoe 数据服务（重构版）。当前阶段：gRPC 服务端 + 表/数据集/统计三类数据资产。
 
 ## 环境要求
 
@@ -35,9 +35,11 @@ uv run stkoe config set --grpc-port 9000
 uv run stkoe serve                                # 前台运行 gRPC 服务
 uv run stkoe config show | set                    # 配置读写
 uv run stkoe table <action> <args...>             # table 命令（走 Execute 同步分发）
+uv run stkoe dataset <action> <args...>           # dataset 命令（走 Execute 同步分发）
+uv run stkoe stat <action> <args...>              # stat 命令（走 Execute 同步分发）
 ```
 
-`table` 子命令与 gRPC `Execute` 行为完全一致（同一分发实现）：
+`table` / `dataset` / `stat` 子命令与 gRPC `Execute` 行为完全一致（同一分发实现）：
 
 ```bash
 uv run stkoe table list --candidate               # 未登记但含 parquet 的表目录（「新建本地表」候选）
@@ -48,6 +50,20 @@ uv run stkoe table set demo --display_name 演示表  # 更新表元数据
 uv run stkoe table col demo sym --display_name 代码 --unit 元   # 更新列元数据
 uv run stkoe table get demo                       # 读表（返回 IPC 元信息）
 uv run stkoe table delete demo                    # 删除表注册（数据文件保留）
+
+uv run stkoe dataset add ds1 index m1 --keys sym,date    # 注册数据集（不物化）
+uv run stkoe dataset scan ds1                     # 物化数据集（新增/覆盖表也行）
+uv run stkoe dataset get ds1                      # 读数据集（curated 读 parquet，否则实时 join）
+uv run stkoe dataset meta ds1                     # 数据集元数据
+uv run stkoe dataset set ds1 --display_name 演示数据集
+uv run stkoe dataset delete ds1                   # 删除数据集注册
+
+uv run stkoe stat scan dataset ds1                # 扫描覆盖率统计（stats/dataset/ds1/coverage/）
+uv run stkoe stat scan table demo --kind coverage
+uv run stkoe stat get dataset ds1 --partition_by all   # 读指定分区
+uv run stkoe stat get dataset ds1                 # 读全部分区
+uv run stkoe stat meta dataset ds1                # 统计元数据（已扫描的分区列表）
+uv run stkoe stat delete dataset ds1              # 删除统计产物（数据文件保留）
 ```
 
 ## gRPC 协议
@@ -72,6 +88,8 @@ uv run stkoe table delete demo                    # 删除表注册（数据文�
 | `config` | `show` / `""` | 生效配置 |
 | `config` | `set` | 写配置（`--key value`） |
 | `table` | `add` / `get` / `delete`(del) / `list` / `meta` / `set` / `col` | 表资产全套动词 |
+| `dataset` | `add` / `get` / `meta` / `list` / `set` / `scan` / `delete`(del) | 逻辑数据集（add 只注册、scan 才物化） |
+| `stat` | `scan` / `get` / `meta` / `list` / `delete`(del) | 数据统计（coverage 覆盖率） |
 
 ### Execute 流式约定
 
@@ -133,6 +151,15 @@ src/stkoe/
 │   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
 │   ├── controller.py  # TableController：async add/get/delete/list/meta/set/col
 │   └── handlers.py    # 任务框架接入（source="table"）
+├── dataset/           # 逻辑数据集（DatasetController）
+│   ├── spec.py        # DatasetMeta/DatasetScanReport dataclass
+│   ├── controller.py  # async add/get/meta/list/set/scan/delete（add 只注册，物化走 scan）
+│   └── handlers.py    # 任务框架接入（source="dataset"）
+├── stat/              # 数据统计资产（StatController）
+│   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
+│   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
+│   ├── controller.py  # async scan/get/meta/list/delete（cov 写入 stats/ 目录，不进 catalog）
+│   └── handlers.py    # 任务框架接入（source="stat"）
 └── task/              # 任务框架
     ├── model.py       # Task / TaskEvent / TaskResult / TaskContext
     ├── registry.py    # TaskHandler + TaskRegistry

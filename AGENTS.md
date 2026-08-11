@@ -47,8 +47,17 @@ src/stkoe/
 │   ├── util.py        # parquet 指纹/布局识别/footer/差异/signature
 │   ├── catalog.py     # SQLite catalog（stkoe_objects/stkoe_data_files/stkoe_file_stats）
 │   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
-│   ├── controller.py  # async add/get/delete/list/meta/set（阻塞 IO 走 asyncio.to_thread）
+│   ├── controller.py  # async add/get/delete/list/meta/set/col/scan/data_key（阻塞 IO 走 asyncio.to_thread）
 │   └── handlers.py    # 任务版 Handler（source="table"，注册进 TaskRegistry）
+├── dataset/           # 逻辑数据集（DatasetController，async 接口）
+│   ├── spec.py        # DatasetMeta/DatasetScanReport dataclass
+│   ├── controller.py  # async add/get/meta/list/set/scan/delete（add 只注册，物化走 scan）
+│   └── handlers.py    # 任务版 Handler（source="dataset"，注册进 TaskRegistry）
+├── stat/              # 数据统计资产（StatController，async 接口）
+│   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
+│   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
+│   ├── controller.py  # async scan/get/meta/list/delete（cov 写入 stats/ 目录，不进 catalog）
+│   └── handlers.py    # 任务版 Handler（source="stat"，注册进 TaskRegistry）
 └── task/              # 任务框架
     ├── model.py       # Task / TaskEvent / TaskResult / TaskContext
     ├── manager.py     # TaskManager 编排核心（cancel/subscribe 语义见下）
@@ -120,6 +129,35 @@ src/stkoe/
 - 全量 56 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
 ## 近期变更记录
+
+### 2026-08 stat 数据统计资产（coverage 覆盖率）+ CLI stat 子命令
+
+- **新增 `stat` 模块**：`stkoe stat scan <target_type> <name> [--kind coverage]` 扫描
+  `table` 或 `dataset` 目标，写 `stats/<target_type>/<name>/<kind>/` 目录下 parquet 文件：
+  分区 = `["all", *索引列]`（dataset 取 keys，table 取非 tool 列），每分区一个文件；
+  `stat get <...> [--partition_by <p>]` 读取全部或指定分区
+- **覆盖率统计**（calc.py 按 dtype 分桶）：`group | field | data_type | count | null_count |
+  nunique | min | q25 | q50 | q75 | max | mean | min_date | max_date`，分桶后 unpivot 重排回
+  源列序；`ALL_COLS` 常量输出
+- **stat 资产不进 catalog**：扫描结果纯文件系统产物（文件夹存在即已扫描），
+  `meta`/`list` 读目录；目录缺失抛 `StatNotFoundError`
+- 文件排序 `_ordered`：`all` 恒首位，其余按名字母序（scan/get/meta 三处一致）
+- 三条路径同时注册（Execute `e:stat ...` / 任务版 `s:stat ...` / CLI `stkoe stat ...`）；
+  任务版 get 每分区 `put_result`（IPC）；测试 `tests/test_stat.py` 全链路，全量 81 用例绿
+
+### 2026-08 dataset 物化解耦：add 只注册、scan 才物化 + 列元数据继承
+
+- **`dataset add` 不再自动物化**：默认只注册（`materialize=False`），物化统一走显式
+  `dataset scan`；`--materialize` 可显式要求在 add 时物化（Execute/任务版/CLI 三处对齐）
+- **`dataset get` 不隐式物化**：物化完成且与源一致（curated）读 parquet，否则返回
+  实时 join 视图（`_view_lf`），数据一致性靠显式 scan 保证
+- **dataset 列元数据继承源表**：`scan_spec` 构造 dataset 列时继承源列的
+  display_name/description/unit/formula/tags（`_inherit_col_meta`）；源表 `table col`
+  改动经 `dataset scan` 的 `_sync_source_meta` 自动覆盖 dataset 列说明
+  （`_cols_equal` 签名含全部列元数据）；dataset 列不支持直接修改（无 `dataset col`，
+  `dataset set` 只改 dataset 级 display_name/description/source/tags）
+- 测试：新增 dataset 物化解耦 / 列元数据继承 / scan 覆盖 / set 不动列 等用例，
+  全量 72 用例绿
 
 ### 2026-08 table col + list --candidate + CLI table 子命令 + dataset 规划
 

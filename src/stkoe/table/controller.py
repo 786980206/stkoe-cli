@@ -354,7 +354,32 @@ class TableController:
         if obj is None or disk_sig != (obj["signature"] or ""):
             self._scan_impl(name, cascade=False)
 
+    def data_key(self, name: str) -> str:
+        """当前数据标识：读前快检后返回 catalog 签名（未登记则 ''）"""
+        self._ensure_fresh(name)
+        root = self._root(name)
+        if not root.exists():
+            return ""
+        obj = self._object(self.catalog.new_conn(), name)
+        return obj["signature"] if obj is not None else signature(disk_files(root))
+
     # ---------- scan 扫描更新 ----------
+
+    async def scan(self, name: str, *, all: bool = False,
+                   resync: bool = False) -> TableScanReport | list[TableScanReport]:
+        """扫描更新表登记（幂等）：无差异不 bump version。``all=True`` 批量重扫全部已注册表"""
+        if all:
+            return await asyncio.to_thread(self._scan_all_sync, resync)
+        return await asyncio.to_thread(self._scan_impl, name)
+
+    def _scan_all_sync(self, resync: bool = False) -> list[TableScanReport]:
+        conn = self.catalog.new_conn()
+        try:
+            rows = conn.execute("SELECT name FROM stkoe_objects WHERE type='table' "
+                                "ORDER BY name").fetchall()
+        finally:
+            conn.close()
+        return [self._scan_impl(r["name"]) for r in rows]
 
     def _scan_impl(self, name: str, *, cascade: bool = True) -> TableScanReport:
         """核心：列目录 → 对账 → 有差异才扫 footer → 更新 catalog（幂等）"""

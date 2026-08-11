@@ -75,13 +75,23 @@ def _cmd_table(raw: list[str]) -> int:
     return _cmd_dispatch("table", raw)
 
 
+def _cmd_dataset(raw: list[str]) -> int:
+    return _cmd_dispatch("dataset", raw)
+
+
+def _cmd_stat(raw: list[str]) -> int:
+    return _cmd_dispatch("stat", raw)
+
+
 def _help() -> str:
     return (
         "用法: stkoe <command>\n"
         "  serve [--host H] [--port P]     运行 gRPC 服务（缺省取 stkoe.json 配置）\n"
         "  config show                     查看生效配置\n"
         "  config set --<key> <value> ...  设置任意配置项（写入 stkoe.json）\n"
-        "  table <action> <args...>        table 命令（list/meta/add/set/get/delete，与 Execute 对齐）"
+        "  table <action> <args...>        table 命令（list/meta/add/set/get/delete，与 Execute 对齐）\n"
+        "  dataset <action> <args...>      dataset 命令（add/get/meta/list/set/scan/delete）\n"
+        "  stat <action> <args...>         stat 命令（scan/get/meta/list/delete）"
     )
 
 
@@ -100,5 +110,9 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_config(args[1:])
     if cmd == "table":
         return _cmd_table(args[1:])
+    if cmd == "dataset":
+        return _cmd_dataset(args[1:])
+    if cmd == "stat":
+        return _cmd_stat(args[1:])
     print(f"未知命令: {cmd}\n{_help()}")
     return 1

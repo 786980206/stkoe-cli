@@ -24,6 +24,8 @@ class ColumnMeta:
     tags: tuple[str, ...] = ()
     as_index: bool = False
     is_tool: bool = False  # 工具字段（处理数据时忽略）
+    source_table: str | None = None  # dataset 列来源表
+    source_field: str | None = None  # dataset 列来源字段
 
     def to_dict(self) -> dict:
         return {
@@ -36,6 +38,8 @@ class ColumnMeta:
             "tags": list(self.tags),
             "as_index": self.as_index,
             "is_tool": self.is_tool,
+            "source_table": self.source_table,
+            "source_field": self.source_field,
         }
 
     @classmethod

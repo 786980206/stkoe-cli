@@ -47,6 +47,16 @@ CREATE TABLE IF NOT EXISTS stkoe_file_stats (
     UNIQUE (data_file_id, col)
 );
 CREATE INDEX IF NOT EXISTS idx_stkoe_file_stats_col ON stkoe_file_stats(col);
+CREATE TABLE IF NOT EXISTS stkoe_depends (
+    id       INTEGER PRIMARY KEY,
+    obj_type TEXT NOT NULL,
+    obj_name TEXT NOT NULL,
+    dep_type TEXT NOT NULL,
+    dep_name TEXT NOT NULL,
+    detail   TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (obj_type, obj_name, dep_type, dep_name)
+);
+CREATE INDEX IF NOT EXISTS idx_stkoe_depends_dep ON stkoe_depends(dep_type, dep_name);
 """
 
 
@@ -165,5 +175,52 @@ def meta_of(obj) -> dict:
     return loads(obj["meta"] or "{}")
 
 
+# ---------- stkoe_depends 依赖图 ----------
+
+def set_deps(conn, obj_type: str, obj_name: str, deps: list[tuple]):
+    """整表替换依赖：deps = [(dep_type, dep_name, detail_dict)]"""
+    conn.execute("DELETE FROM stkoe_depends WHERE obj_type=? AND obj_name=?",
+                 (obj_type, obj_name))
+    for dep_type, dep_name, detail in deps:
+        conn.execute(
+            "INSERT OR REPLACE INTO stkoe_depends (obj_type, obj_name, dep_type, dep_name, detail) "
+            "VALUES (?,?,?,?,?)",
+            (obj_type, obj_name, dep_type, dep_name, dumps_str(detail or {})),
+        )
+
+
+def clear_deps(conn, obj_type: str, obj_name: str) -> None:
+    """清除对象的出边"""
+    conn.execute("DELETE FROM stkoe_depends WHERE obj_type=? AND obj_name=?",
+                 (obj_type, obj_name))
+
+
+def deps_of(conn, obj_type: str, obj_name: str) -> list[dict]:
+    """出边：对象 → 依赖的上游"""
+    rows = conn.execute(
+        "SELECT dep_type, dep_name, detail FROM stkoe_depends "
+        "WHERE obj_type=? AND obj_name=? ORDER BY dep_type, dep_name",
+        (obj_type, obj_name)).fetchall()
+    return [{"obj_type": r["dep_type"], "obj_name": r["dep_name"],
+             "detail": loads(r["detail"] or "{}")} for r in rows]
+
+
+def dependents(conn, obj_type: str, name: str) -> list[dict]:
+    """入边：依赖该对象（type,name）的下游"""
+    rows = conn.execute(
+        "SELECT obj_type, obj_name FROM stkoe_depends WHERE dep_type=? AND dep_name=? "
+        "ORDER BY obj_type, obj_name",
+        (obj_type, name)).fetchall()
+    return [{"obj_type": r["obj_type"], "obj_name": r["obj_name"]} for r in rows]
+
+
+def rename_dep(conn, obj_type: str, old: str, new: str) -> None:
+    """对象改名：迁移既有依赖边的被依赖端 name"""
+    conn.execute(
+        "UPDATE stkoe_depends SET dep_name=? WHERE dep_type=? AND dep_name=?",
+        (new, obj_type, old))
+
+
 __all__ = ["Catalog", "get_object", "insert_object", "update_object_meta",
-           "get_data_files", "get_stats", "replace_data_files", "meta_of"]
+           "get_data_files", "get_stats", "replace_data_files", "meta_of",
+           "set_deps", "clear_deps", "deps_of", "dependents", "rename_dep"]

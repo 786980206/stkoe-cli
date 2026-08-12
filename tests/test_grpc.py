@@ -162,9 +162,18 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     assert header.code == 0
     meta = _json(datas, "demo")
     assert meta["rows"] == 3
+    assert meta["total"] == 3
     tables = [d for d in datas if d.WhichOneof("type") == "table"]
     assert len(tables) == 1
     assert tables[0].table.name == "demo"
+
+    # get --limit：rows 为当前页行数，total 为未分页总行数
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="get", args=["demo", "--limit", "2"])))
+    assert header.code == 0
+    meta = _json(datas, "demo")
+    assert meta["rows"] == 2
+    assert meta["total"] == 3
 
     # ArrowTable 数据必须是 IPC Stream 格式，客户端 open_stream 可直接解析
     import pyarrow as pa

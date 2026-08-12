@@ -558,11 +558,18 @@ class DatasetController:
     def _get_sync(self, name: str, *, columns: list[str] | None = None,
                   where: pl.Expr | str | None = None,
                   partition: str | None = None,
-                  limit: int | None = None) -> pl.DataFrame:
+                  limit: int | None = None,
+                  count_total: bool = False) -> pl.DataFrame | tuple[pl.DataFrame, int]:
         lf = self._get_lazy_sync(name, columns=columns, where=where, partition=partition)
+        total = None
+        if count_total and limit is not None:
+            total = lf.select(pl.len()).collect().item()
         if limit is not None:
             lf = lf.limit(limit)
-        return lf.collect()
+        df = lf.collect()
+        if count_total:
+            return df, (total if total is not None else df.height)
+        return df
 
     def _lock(self, name: str) -> threading.Lock:
         with _MAT_LOCK:
@@ -706,12 +713,13 @@ class DatasetController:
     async def get(self, name: str, *, columns: list[str] | None = None,
                   where: pl.Expr | str | None = None,
                   partition: str | None = None,
-                  limit: int | None = None) -> pl.DataFrame:
+                  limit: int | None = None,
+                  count_total: bool = False) -> pl.DataFrame | tuple[pl.DataFrame, int]:
         """读 dataset（collect）。物化完成读物化数据，否则实时 join 视图；
-        不隐式物化（物化走显式 scan）"""
+        不隐式物化（物化走显式 scan）。``count_total=True`` 返回 ``(df, total)``"""
         return await asyncio.to_thread(
             self._get_sync, name, columns=columns, where=where,
-            partition=partition, limit=limit)
+            partition=partition, limit=limit, count_total=count_total)
 
     async def meta(self, name: str) -> DatasetMeta:
         """dataset 元数据（describe 别名，接口统一）"""

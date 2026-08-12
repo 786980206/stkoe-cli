@@ -214,6 +214,10 @@ def test_add_registers_without_materialize(ctl, tmp_path, tctl):
     assert df.height == 3  # 实时 join 视图，行数 == index
     assert _meta(ctl, "ds1").materialized is False  # 读取不触发物化
 
+    # count_total：limit 时 total=未分页总行数
+    df, total = _get(ctl, "ds1", limit=2, count_total=True)
+    assert df.height == 2 and total == 3
+
     # 显式 scan 才物化
     report = _scan(ctl, "ds1")
     assert report.materialized is True

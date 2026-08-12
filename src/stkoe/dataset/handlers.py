@@ -59,19 +59,20 @@ class DatasetGetHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         ctl = _controller(ctx)
         columns = flags.get("columns") or None
-        df: pl.DataFrame = await ctl.get(
+        df, total = await ctl.get(
             pos[0],
             columns=columns.split(",") if columns else None,
             where=flags.get("where"),
             partition=flags.get("partition"),
             limit=int(flags["limit"]) if flags.get("limit") else None,
+            count_total=True,
         )
         buf = io.BytesIO()
         if df.height:
             df.write_ipc_stream(buf)
         ref = ctx.put_result("data.arrow", buf.getvalue())
         return TaskResult(
-            data=dumps_str({"name": pos[0], "rows": df.height,
+            data=dumps_str({"name": pos[0], "rows": df.height, "total": total,
                             "columns": df.columns, "result_ref": ref}),
             result_ref=ref,
         )

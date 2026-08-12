@@ -163,18 +163,19 @@ def _table_get(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("table get 需要表名")
     flags = parse_flags(args)
     ctl = _controller(data_dir)
-    df = asyncio.run(ctl.get(
+    df, total = asyncio.run(ctl.get(
         pos[0],
         columns=flags.get("columns").split(",") if flags.get("columns") else None,
         where=flags.get("where"),
         partition=flags.get("partition"),
         exclude_tool=bool(flags.get("exclude-tool")),
         limit=int(flags["limit"]) if flags.get("limit") else None,
+        count_total=True,
     ))
     buf = io.BytesIO()
     df.write_ipc_stream(buf)
     return [
-        Result.json(pos[0], {"rows": df.height, "columns": df.columns}),
+        Result.json(pos[0], {"rows": df.height, "total": total, "columns": df.columns}),
         Result.table(pos[0], buf.getvalue()),
     ]
 
@@ -353,18 +354,19 @@ def _dataset_get(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     ctl = _dataset_controller(data_dir)
     columns = flags.get("columns") or None
-    df = asyncio.run(ctl.get(
+    df, total = asyncio.run(ctl.get(
         pos[0],
         columns=columns.split(",") if columns else None,
         where=flags.get("where"),
         partition=flags.get("partition"),
         limit=int(flags["limit"]) if flags.get("limit") else None,
+        count_total=True,
     ))
     buf = io.BytesIO()
     if df.height:
         df.write_ipc_stream(buf)
     return [
-        Result.json(pos[0], {"rows": df.height, "columns": df.columns}),
+        Result.json(pos[0], {"rows": df.height, "total": total, "columns": df.columns}),
         Result.table(pos[0], buf.getvalue()),
     ]
 

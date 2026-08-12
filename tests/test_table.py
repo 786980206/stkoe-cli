@@ -109,6 +109,14 @@ def test_get_returns_data(ctl, tmp_path):
     lim = _get(ctl, "demo", limit=2)
     assert lim.height == 2
 
+    # count_total：limit 时 total=过滤后未分页总行数；无 limit 时 total==rows
+    df, total = _get(ctl, "demo", limit=2, count_total=True)
+    assert df.height == 2 and total == 3
+    df, total = _get(ctl, "demo", where="price>=2", limit=1, count_total=True)
+    assert df.height == 1 and total == 2
+    df, total = _get(ctl, "demo", count_total=True)
+    assert df.height == 3 and total == 3
+
 
 def test_get_reads_partitioned_hive(ctl, tmp_path):
     root = tmp_path / "data"

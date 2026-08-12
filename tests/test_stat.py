@@ -176,6 +176,38 @@ def test_task_framework_stat_handlers(mgr):
     assert [p["partition"] for p in all_res["partitions"]] == ["all", "date", "sym"]
 
 
+def test_task_scan_reports_index_progress(mgr):
+    """s:stat scan 计算各索引 coverage 分组：ctx.update 逐分组上报进度"""
+    from stkoe.dataset import DatasetController
+    from stkoe.table import TableController
+
+    tctl = TableController(data_dir=mgr.data_dir)
+    root = mgr.data_dir
+    _write(root, "index", pl.DataFrame({
+        "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
+        "price": [1.0, 2.0], "optime": ["2024-01-01 08:00:00"] * 2}))
+    _write(root, "m1", pl.DataFrame({
+        "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
+        "name": ["AA", "BB"], "industry": ["金融", "科技"]}))
+    for t in ("index", "m1"):
+        _run(tctl.add(t))
+    dc = DatasetController(data_dir=root)
+    _run(dc.add("ds1", "index", "m1", keys=["sym", "date"]))
+
+    t_scan = mgr.submit("stat", "scan", ["dataset", "ds1"])
+    _await(mgr, t_scan)
+    assert _mgr_result(mgr, t_scan)["partitions"] == ["all", "date", "sym"]
+
+    evs = mgr.events.list_by_task(t_scan.task_id)
+    prog = [(e.progress, e.message) for e in evs if e.message.startswith("dataset/ds1:")]
+    assert len(prog) == 3  # all + 每个索引各一条（按 _partitions 计算顺序）
+    assert prog[0] == (pytest.approx(1 / 3), "dataset/ds1: all（1/3）")
+    assert prog[1] == (pytest.approx(2 / 3), "dataset/ds1: sym（2/3）")
+    assert prog[2] == (pytest.approx(1.0), "dataset/ds1: date（3/3）")
+    assert evs[-1].state == "succeeded"
+    assert evs[-1].progress == 1.0
+
+
 # ---------- async 助手 ----------
 
 def _run(awaitable):

@@ -85,15 +85,20 @@ class StatController:
 
     # ---------- scan ----------
 
-    def _scan_sync(self, target_type: str, target_name: str, kind: str = "coverage"
-                   ) -> StatScanReport:
-        """计算全量 + 逐索引分组统计并写 ``stats/<type>/<name>/<kind>/<part>.parquet``"""
+    def _scan_sync(self, target_type: str, target_name: str, kind: str = "coverage",
+                   on_progress=None) -> StatScanReport:
+        """计算全量 + 逐索引分组统计并写 ``stats/<type>/<name>/<kind>/<part>.parquet``
+
+        ``on_progress(i, total, msg)`` 可选进度回调（worker 线程同步调用，逐分组）。
+        """
         parts = self._partitions(target_type, target_name)
         lf = self._select_lf(target_type, target_name)
         out_dir = self._kind_dir(target_type, target_name, kind)
         out_dir.mkdir(parents=True, exist_ok=True)
         files: list[StatFile] = []
-        for p in parts:
+        for i, p in enumerate(parts, start=1):
+            if on_progress is not None:
+                on_progress(i, len(parts), f"{target_type}/{target_name}: {p}")
             df = calc_stats(lf, group_col=None if p == "all" else p).collect()
             f = out_dir / f"{p}.parquet"
             df.write_parquet(f)
@@ -192,9 +197,10 @@ class StatController:
     # ---------- async 接口 ----------
 
     async def scan(self, target_type: str, target_name: str,
-                   kind: str = "coverage") -> StatScanReport:
-        """生成/更新统计分组产物（幂等）"""
-        return await asyncio.to_thread(self._scan_sync, target_type, target_name, kind)
+                   kind: str = "coverage", on_progress=None) -> StatScanReport:
+        """生成/更新统计分组产物（幂等）；``on_progress`` 逐分组进度回调"""
+        return await asyncio.to_thread(self._scan_sync, target_type, target_name,
+                                       kind, on_progress)
 
     async def get(self, target_type: str, target_name: str,
                   kind: str = "coverage", partition_by: str | None = None

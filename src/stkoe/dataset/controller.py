@@ -384,7 +384,7 @@ class DatasetController:
                 new_deps: dict[str, str] = {}
                 for i, value in enumerate(buckets):
                     if on_progress is not None:
-                        on_progress(i + 1, len(buckets), f"part={value}")
+                        on_progress(i + 1, len(buckets), f"{dm.name}: part={value}")
                     if gran == "identity":
                         ids: dict[str, set[int]] = {}
                         for t in tabs:
@@ -734,9 +734,14 @@ class DatasetController:
         return await asyncio.to_thread(self._set_sync, name, kw)
 
     async def scan(self, name: str | None = None, *, all: bool = False,
-                   resync: bool = False) -> DatasetScanReport | list[DatasetScanReport]:
-        """检查依赖 → 增量重物化（幂等）；``all=True`` 全部已注册 dataset"""
-        return await asyncio.to_thread(self._scan_sync, name, all=all, resync=resync)
+                   resync: bool = False,
+                   on_progress=None) -> DatasetScanReport | list[DatasetScanReport]:
+        """检查依赖 → 增量重物化（幂等）；``all=True`` 全部已注册 dataset
+
+        ``on_progress(i, total, msg)`` 可选进度回调（worker 线程同步调用，逐分区）。
+        """
+        return await asyncio.to_thread(self._scan_sync, name, all=all, resync=resync,
+                                       on_progress=on_progress)
 
     async def delete(self, name: str, *, force: bool = False,
                      with_data: bool = True) -> dict:

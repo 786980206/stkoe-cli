@@ -1,6 +1,7 @@
 """stat TaskHandler：把 StatController 接进任务框架（source="stat"）"""
 from __future__ import annotations
 
+import asyncio
 import io
 
 import polars as pl
@@ -8,6 +9,7 @@ import polars as pl
 from ..args import parse_flags
 from ..jsonutil import dumps_str
 from ..task.model import TaskResult
+from ..task.progress import worker_on_progress
 from ..task.registry import TaskHandler
 
 
@@ -52,7 +54,9 @@ class StatScanHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         kind = flags.get("kind") or "coverage"
         ctl = _controller(ctx)
-        report = await ctl.scan(target_type, target_name, kind=kind)
+        loop = asyncio.get_running_loop()
+        report = await ctl.scan(target_type, target_name, kind=kind,
+                                on_progress=worker_on_progress(ctx, loop))
         return TaskResult(data=dumps_str(report.to_dict()))
 
 

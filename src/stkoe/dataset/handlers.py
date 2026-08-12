@@ -5,6 +5,7 @@ async 方法，结果以 JSON 返回。
 """
 from __future__ import annotations
 
+import asyncio
 import io
 
 import polars as pl
@@ -12,6 +13,7 @@ import polars as pl
 from ..args import parse_flags
 from ..jsonutil import dumps_str
 from ..task.model import TaskResult
+from ..task.progress import worker_on_progress
 from ..task.registry import TaskHandler
 
 
@@ -113,12 +115,17 @@ class DatasetScanHandler(TaskHandler):
         pos = _positional(ctx.args)
         flags = parse_flags(ctx.args)
         ctl = _controller(ctx)
+        loop = asyncio.get_running_loop()
+        on_progress = worker_on_progress(ctx, loop)
+
         if flags.get("all"):
-            reports = await ctl.scan(all=True, resync=bool(flags.get("resync")))
+            reports = await ctl.scan(all=True, resync=bool(flags.get("resync")),
+                                     on_progress=on_progress)
             return TaskResult(data=dumps_str([r.to_dict() for r in reports]))
         if not pos:
             raise ValueError("dataset scan 需要 dataset 名（或 --all）")
-        report = await ctl.scan(pos[0], resync=bool(flags.get("resync")))
+        report = await ctl.scan(pos[0], resync=bool(flags.get("resync")),
+                                on_progress=on_progress)
         return TaskResult(data=dumps_str(report.to_dict()))
 
 

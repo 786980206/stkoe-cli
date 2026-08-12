@@ -47,6 +47,25 @@ class Task:
     def is_terminal(self) -> bool:
         return self.state in TERMINAL_STATES
 
+    def to_dict(self) -> dict:
+        """任务概要（``task list`` 输出）：只含元信息，不含大结果"""
+        def iso(dt: datetime | None) -> str | None:
+            return dt.isoformat() if dt is not None else None
+
+        return {
+            "task_id": self.task_id,
+            "source": self.source,
+            "action": self.action,
+            "args": list(self.args),
+            "state": self.state,
+            "progress": round(self.progress, 4),
+            "created_at": iso(self.created_at),
+            "started_at": iso(self.started_at),
+            "finished_at": iso(self.finished_at),
+            "error": self.error,
+            "result_ref": self.result_ref,
+        }
+
 
 @dataclass(frozen=True)
 class TaskEvent:

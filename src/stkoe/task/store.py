@@ -110,8 +110,22 @@ class TaskStore:
     def get(self, task_id: str) -> Task | None:
         row = self._db.execute(
             "SELECT * FROM task WHERE task_id=?", (task_id,)).fetchone()
-        if row is None:
-            return None
+        return self._from_row(row) if row is not None else None
+
+    def list(self, state: str | None = None, limit: int = 200) -> list[Task]:
+        """任务列表：按创建时间倒序（最新在前）；``state`` 可选按状态过滤"""
+        if state:
+            rows = self._db.execute(
+                "SELECT * FROM task WHERE state=? ORDER BY created_at DESC LIMIT ?",
+                (state, limit)).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT * FROM task ORDER BY created_at DESC LIMIT ?",
+                (limit,)).fetchall()
+        return [self._from_row(r) for r in rows]
+
+    @staticmethod
+    def _from_row(row) -> Task:
         return Task(
             task_id=row["task_id"], source=row["source"], action=row["action"],
             args=loads(row["args"]), state=row["state"], progress=row["progress"],

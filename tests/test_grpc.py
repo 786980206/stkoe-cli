@@ -285,6 +285,30 @@ def test_grpc_request_logging(client, caplog):
 
 # ---------- SubmitTask / SubscribeTask ----------
 
+def test_execute_task_list(client, srv):
+    """e:task list：任务列表 JSON（最新在前），--state 过滤"""
+    resp = client.SubmitTask(stkoe_pb2.SubmitTaskRequest(source="mock", action=""))
+    assert resp.header.code == 0
+    task_id = resp.task_id
+    list(client.SubscribeTask(stkoe_pb2.SubscribeTaskRequest(task_id=task_id, replay=True)))
+
+    header, datas = _collect(client.Execute(
+        stkoe_pb2.ExecuteRequest(source="task", action="list")))
+    assert header.code == 0
+    tasks = json.loads(datas[0].json.data)
+    assert tasks[0]["task_id"] == task_id  # 最新在前
+    assert tasks[0]["source"] == "mock"
+    assert tasks[0]["state"] == "succeeded"
+
+    header, datas = _collect(client.Execute(
+        stkoe_pb2.ExecuteRequest(source="task", action="list",
+                                 args=["--state", "succeeded"])))
+    assert header.code == 0
+    tasks = json.loads(datas[0].json.data)
+    assert all(t["state"] == "succeeded" for t in tasks)
+    assert tasks[0]["task_id"] == task_id
+
+
 def test_submit_and_subscribe_replay(client):
     resp = client.SubmitTask(stkoe_pb2.SubmitTaskRequest(
         source="version", action="get"))

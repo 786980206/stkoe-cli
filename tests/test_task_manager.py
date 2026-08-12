@@ -69,6 +69,25 @@ def test_mock_writes_log_and_result(mgr, tmp_path):
     assert json.loads(result_file.read_bytes()) == {"steps": 5}
 
 
+def test_task_list_ordered_and_filtered(mgr):
+    """task list：按创建时间倒序（最新在前），--state 过滤"""
+    t1 = mgr.submit("mock", "", [])
+    _collect(mgr, t1.task_id)
+    t2 = mgr.submit("version", "get", [])
+    _collect(mgr, t2.task_id)
+
+    tasks = mgr.tasks.list()
+    assert len(tasks) == 2
+    assert [t.task_id for t in tasks] == [t2.task_id, t1.task_id]
+    assert tasks[0].to_dict()["state"] == "succeeded"
+    assert tasks[0].to_dict()["action"] == "get"
+
+    done = mgr.tasks.list(state="succeeded")
+    assert len(done) == 2
+    assert all(t.state == "succeeded" for t in done)
+    assert mgr.tasks.list(state="running") == []
+
+
 def test_task_persisted_across_manager_reload(tmp_path):
     """任务与事件持久化到 SQLite：新 TaskManager 用同一 data_dir 可读回"""
     m1 = TaskManager(data_dir=tmp_path / "data")

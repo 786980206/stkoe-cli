@@ -118,6 +118,25 @@ def _config_set(args: list[str], data_dir=None) -> list[Result]:
 
 
 # ---------------------------------------------------------------------------
+# task 同步处理器（Execute 路径；task 为任务框架元操作，仅此一处注册）
+# ---------------------------------------------------------------------------
+
+@handler("task", "list")
+@handler("task", "")
+def _task_list(args: list[str], data_dir=None) -> list[Result]:
+    """任务列表：按创建时间倒序；``--state <state>`` 按状态过滤"""
+    from pathlib import Path
+
+    from ..task.manager import default_data_dir
+    from ..task.store import TaskStore, _DB
+
+    flags = parse_flags(args)
+    d = Path(data_dir).expanduser() if data_dir else default_data_dir()
+    tasks = TaskStore(_DB(d / "tasks.db")).list(state=flags.get("state"))
+    return [Result.json("tasks", [t.to_dict() for t in tasks])]
+
+
+# ---------------------------------------------------------------------------
 # table 同步处理器（Execute 路径；SubmitTask 后台任务版在 task/handlers.py）
 # ---------------------------------------------------------------------------
 

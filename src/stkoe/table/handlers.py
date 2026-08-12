@@ -67,7 +67,7 @@ class TableGetHandler(TaskHandler):
             limit=int(flags["limit"]) if flags.get("limit") else None,
         )
         buf = io.BytesIO()
-        df.write_ipc(buf)
+        df.write_ipc_stream(buf)
         ref = ctx.put_result("data.arrow", buf.getvalue())
         return TaskResult(
             data=dumps_str({"name": pos[0], "rows": df.height,

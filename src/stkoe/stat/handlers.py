@@ -42,7 +42,7 @@ def _target(ctx) -> tuple[str, str]:
 def _write_ipc(df: pl.DataFrame, ctx, name: str) -> str:
     buf = io.BytesIO()
     if df.height:
-        df.write_ipc(buf)
+        df.write_ipc_stream(buf)
     return ctx.put_result(name, buf.getvalue())
 
 

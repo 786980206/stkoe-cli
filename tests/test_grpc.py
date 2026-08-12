@@ -166,6 +166,12 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     assert len(tables) == 1
     assert tables[0].table.name == "demo"
 
+    # ArrowTable 数据必须是 IPC Stream 格式，客户端 open_stream 可直接解析
+    import pyarrow as pa
+    got = pa.ipc.open_stream(pa.BufferReader(pa.py_buffer(tables[0].table.data))).read_all()
+    assert got.num_rows == 3
+    assert got.num_columns == 2
+
     # delete
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="table", action="delete", args=["demo"])))

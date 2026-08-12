@@ -172,7 +172,7 @@ def _table_get(args: list[str], data_dir=None) -> list[Result]:
         limit=int(flags["limit"]) if flags.get("limit") else None,
     ))
     buf = io.BytesIO()
-    df.write_ipc(buf)
+    df.write_ipc_stream(buf)
     return [
         Result.json(pos[0], {"rows": df.height, "columns": df.columns}),
         Result.table(pos[0], buf.getvalue()),
@@ -275,14 +275,14 @@ def _stat_get(args: list[str], data_dir=None) -> list[Result]:
         results: list[Result] = []
         for partition, df in out.items():
             buf = io.BytesIO()
-            df.write_ipc(buf)
+            df.write_ipc_stream(buf)
             results.append(Result.json(f"stat/{partition}",
                                        {"partition": partition, "rows": df.height,
                                         "columns": df.columns}))
             results.append(Result.table(f"stat/{partition}", buf.getvalue()))
         return results
     buf = io.BytesIO()
-    out.write_ipc(buf)
+    out.write_ipc_stream(buf)
     return [
         Result.json(pos[1], {"partition": partition_by, "rows": out.height,
                              "columns": out.columns}),
@@ -362,7 +362,7 @@ def _dataset_get(args: list[str], data_dir=None) -> list[Result]:
     ))
     buf = io.BytesIO()
     if df.height:
-        df.write_ipc(buf)
+        df.write_ipc_stream(buf)
     return [
         Result.json(pos[0], {"rows": df.height, "columns": df.columns}),
         Result.table(pos[0], buf.getvalue()),

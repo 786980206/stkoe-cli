@@ -89,8 +89,13 @@ src/stkoe/
 | `s:<source> <action>`（SubmitTask，后台任务） | `TaskManager.registry` | `async run(ctx) -> TaskResult`，`TaskHandler` 子类 | 模块 `register(registry)` |
 
 - `dispatch` 的 table 处理器直接调 `TableController`（内部 `asyncio.run` 收敛，gRPC 线程无事件循环）
-- Execute 的 `e:table get` 返回 `[JsonData(行数/列数), ArrowTable(IPC)]` 两条消息
+- Execute 的 `e:table get` 返回单条 `ArrowTable(IPC)`，元数据（rows/total/columns 列说明）并入 `ArrowTable.meta`
 - `Result.kind`: json → `JsonData`，table → `ArrowTable`；`Result.json/Result.table` 工厂方法
+
+### API 文档同步
+
+仓库根 `api.md` 是对外 API 全量文档（gRPC 协议 / Execute / SubmitTask / CLI / 配置 / 存储布局）。
+**新增/修改任何对外接口（动词、参数、返回字段、配置键）时，必须同步更新 `api.md`。**
 
 ### data_dir 透传
 

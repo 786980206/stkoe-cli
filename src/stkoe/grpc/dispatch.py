@@ -127,11 +127,11 @@ def _task_list(args: list[str], data_dir=None) -> list[Result]:
     """任务列表：按创建时间倒序；``--state <state>`` 按状态过滤"""
     from pathlib import Path
 
-    from ..task.manager import default_data_dir
+    from ..settings import load_config
     from ..task.store import TaskStore, _DB
 
     flags = parse_flags(args)
-    d = Path(data_dir).expanduser() if data_dir else default_data_dir()
+    d = Path(data_dir).expanduser() if data_dir else Path(load_config().data_dir).expanduser()
     tasks = TaskStore(_DB(d / "tasks.db")).list(state=flags.get("state"))
     return [Result.json("tasks", [t.to_dict() for t in tasks])]
 

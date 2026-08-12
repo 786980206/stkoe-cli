@@ -214,6 +214,9 @@ class TaskManager:
     def _finalize(self, task: Task, state: str, *, message: str,
                   data: str = "", result_ref: str | None = None) -> None:
         with task.lock:
+            if task.is_terminal():
+                return  # 幂等：stop 与正常完成竞态下只 finalize 一次
+            task.state = state
             task.state = state
             task.finished_at = datetime.now(timezone.utc)
             if result_ref is not None:
@@ -285,7 +288,12 @@ class TaskManager:
         self.scheduler.start()
 
     def stop(self) -> None:
-        """停止：取消未完成任务、停调度线程、关 SQLite"""
+        """停止：先在跑任务统一收尾 cancelled → 取消未完成任务、停调度线程、关 SQLite"""
+        with self._lock:
+            live = list(self._live.values())
+        for task in live:
+            if not task.is_terminal():
+                self._finalize(task, "cancelled", message="任务已取消（服务停止）")
         with self._lock:
             for fut in self._futures.values():
                 fut.cancel()

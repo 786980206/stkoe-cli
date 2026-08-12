@@ -69,6 +69,32 @@ def test_mock_writes_log_and_result(mgr, tmp_path):
     assert json.loads(result_file.read_bytes()) == {"steps": 5}
 
 
+def test_stop_finalizes_running_task_to_cancelled(tmp_path):
+    """stop 前把在跑任务统一收尾 cancelled：DB 不遗留 running/pending 孤儿"""
+    m = TaskManager(data_dir=tmp_path / "data")
+    m.start()
+    task = m.submit("mock", "", [])
+    # 等进入 running 且未跑完
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        cur = m.get(task.task_id)
+        if cur.state == "running" and cur.progress < 0.9:
+            break
+        time.sleep(0.01)
+    m.stop()
+
+    m2 = TaskManager(data_dir=tmp_path / "data")
+    try:
+        done = m2.get(task.task_id)
+        assert done is not None
+        assert done.state == "cancelled"
+        assert done.finished_at is not None
+        events = list(m2.events.list_by_task(task.task_id))
+        assert events[-1].state == "cancelled"
+    finally:
+        m2.stop()
+
+
 def test_task_list_ordered_and_filtered(mgr):
     """task list：按创建时间倒序（最新在前），--state 过滤"""
     t1 = mgr.submit("mock", "", [])

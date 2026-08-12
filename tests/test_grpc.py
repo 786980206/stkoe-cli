@@ -141,6 +141,21 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     assert header.code == 0
     assert _json(datas, "table")["name"] == "demo"
 
+    # add 携带元数据：e:table add demo2 --display_name --tags
+    root2 = Path(srv.data_dir) / "tables" / "demo2"
+    root2.mkdir(parents=True)
+    pl.DataFrame({"a": [1]}).write_parquet(root2 / "p.parquet")
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="add",
+        args=["demo2", "--display_name=E表", "--tags=x, y"])))
+    assert header.code == 0
+    add_meta = _json(datas, "table")
+    assert add_meta["name"] == "demo2"
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="meta", args=["demo2"])))
+    assert _json(datas, "table")["display_name"] == "E表"
+    assert _json(datas, "table")["tags"] == ["x", "y"]
+
     # set：更新元数据
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="table", action="set",

@@ -79,7 +79,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | config | （空）/ `show` | — | — | JsonData `{"config_file", "grpc-host", "grpc-port", "data-dir", ...extra}` |
 | config | `set` | — | `--<key> <value> ...`（任意键） | JsonData `{"written", "set"}` |
 | task | （空）/ `list` | — | `--state <state>` | JsonData `{"tasks": [...]}`（按创建时间倒序） |
-| table | `add` | `<name>` | `--all` | JsonData（TableScanReport） |
+| table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（TableScanReport） |
 | table | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | table | `scan` | `<name>` | `--all` `--resync` | JsonData（TableScanReport 或 []） |
 | table | `list` | — | `--candidate` | JsonData（TableMeta[] 或 候选名[]） |
@@ -102,6 +102,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 
 > `table scan` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
+> `table add` 单表可携带初始元数据（键语义与 `table set` 一致，仅首次注册生效；`--all` 时不适用）。
 
 ### 3.2 `table get` / `dataset get` 的 ArrowTable.meta
 

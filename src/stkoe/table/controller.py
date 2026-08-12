@@ -127,15 +127,19 @@ class TableController:
 
     # ---------- add ----------
 
-    async def add(self, name: str, *, all: bool = False) -> TableScanReport | list[TableScanReport]:
+    async def add(self, name: str, *, all: bool = False,
+                  meta: dict | None = None) -> TableScanReport | list[TableScanReport]:
         """注册表：按目录内容生成登记 + 立即扫描同步。``all=True`` 批量发现注册。
+
+        ``meta`` 注册时即写入的元数据（键语义与 ``set`` 一致：display_name/description/
+        source/tags 为标准字段，其余任意键进 extra）；仅单表注册生效。
 
         - 目录不存在 → 报错（add 是"发现资产"语义，不空注册）
         - 已注册 → TableExistsError（更新数据内容请用 scan）
         """
-        return await asyncio.to_thread(self._add_sync, name, all)
+        return await asyncio.to_thread(self._add_sync, name, all, meta)
 
-    def _add_sync(self, name: str, all: bool) -> TableScanReport | list[TableScanReport]:
+    def _add_sync(self, name: str, all: bool, meta: dict | None) -> TableScanReport | list[TableScanReport]:
         if all:
             if not self.root.exists():
                 return []
@@ -152,7 +156,7 @@ class TableController:
         with self.catalog.txn() as conn:
             if self._object(conn, name) is not None:
                 raise TableExistsError(f"table already registered: {name} (use scan to refresh)")
-        return self._scan_impl(name)
+        return self._scan_impl(name, meta=meta)
 
     # ---------- set（元数据更新） ----------
 
@@ -167,21 +171,27 @@ class TableController:
             obj = self._object(conn, name)
             if obj is None:
                 raise TableNotFoundError(f"table not registered: {name}")
-            meta = dict(meta_of(obj))
-            for key, value in kw.items():
-                if key == "tags":
-                    meta["tags"] = [t.strip() for t in str(value).split(",") if t.strip()]
-                elif key in META_FIELDS:
-                    meta[key] = str(value)
-                else:
-                    extra = dict(meta.get("extra") or {})
-                    extra[key] = value
-                    meta["extra"] = extra
+            meta = self._apply_meta_fields(dict(meta_of(obj)), kw)
             update_object_meta(conn, obj["id"], meta, now_str=now(), bump=True)
             conn.commit()
             return self._to_meta(conn, self._object(conn, name))
         finally:
             conn.close()
+
+    @staticmethod
+    def _apply_meta_fields(meta: dict, kw: dict) -> dict:
+        """规范化元数据键值并合并进 meta：display_name/description/source/tags 为标准
+        字段（tags 逗号分隔），其余任意键进 extra（``set`` 与 ``add`` 共用）"""
+        for key, value in kw.items():
+            if key == "tags":
+                meta["tags"] = [t.strip() for t in str(value).split(",") if t.strip()]
+            elif key in META_FIELDS:
+                meta[key] = str(value)
+            else:
+                extra = dict(meta.get("extra") or {})
+                extra[key] = value
+                meta["extra"] = extra
+        return meta
 
     # ---------- get / meta / list ----------
 
@@ -393,8 +403,12 @@ class TableController:
             conn.close()
         return [self._scan_impl(r["name"]) for r in rows]
 
-    def _scan_impl(self, name: str, *, cascade: bool = True) -> TableScanReport:
-        """核心：列目录 → 对账 → 有差异才扫 footer → 更新 catalog（幂等）"""
+    def _scan_impl(self, name: str, *, cascade: bool = True,
+                   meta: dict | None = None) -> TableScanReport:
+        """核心：列目录 → 对账 → 有差异才扫 footer → 更新 catalog（幂等）
+
+        ``meta`` 仅首次（隐式注册）生效：add 时写入的初始元数据，语义与 ``set`` 一致。
+        """
         root = self._root(name)
         if not root.exists():
             raise TableNotFoundError(f"table dir not found: {root}")
@@ -440,13 +454,14 @@ class TableController:
                     prev = dict(old_cols.get(c.name, {}))
                     prev.update({k: v for k, v in c.to_dict().items() if v is not None or k == "is_tool"})
                     new_cols.append(prev)
-                meta = meta_of(obj) | {
+                base = self._apply_meta_fields(dict(meta_of(obj)), meta or {}) if implicit else {}
+                meta_out = dict(meta_of(obj)) | base | {
                     "layout": layout.value,
                     "partition_by": pkeys,
                     "columns": new_cols,
                 }
                 version_after = obj["version"] if implicit else version_before + 1
-                update_object_meta(conn, obj["id"], meta, signature=signature(disk),
+                update_object_meta(conn, obj["id"], meta_out, signature=signature(disk),
                                    now_str=now(), bump=not implicit)
                 partition_count = len({p for _, _, p in payload}) if disk else 0
 

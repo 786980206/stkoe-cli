@@ -87,6 +87,23 @@ def test_add_errors(ctl, tmp_path):
         _add(ctl, "demo")
 
 
+def test_add_with_meta(ctl, tmp_path):
+    """table add 可携带元数据：标准字段 + tags 逗号分隔 + 任意键进 extra"""
+    root = tmp_path / "data"
+    _write_single(root, "demo", {"sym": ["a"], "price": [1.0]})
+    report = _run(ctl.add("demo", meta={
+        "display_name": "D表", "description": "说明", "source": "daily",
+        "tags": "x,y", "custom": 1,
+    }))
+    assert report.name == "demo"
+    m = _meta(ctl, "demo")
+    assert m.display_name == "D表"
+    assert m.description == "说明"
+    assert m.source == "daily"
+    assert m.tags == ("x", "y")
+    assert m.extra == {"custom": 1}
+
+
 def test_get_returns_data(ctl, tmp_path):
     src = pl.DataFrame({"sym": ["a", "b", "c"], "optime": ["2024-01-01"] * 3,
                         "price": [1.0, 2.0, 3.0]})
@@ -294,6 +311,7 @@ def test_re_register_after_delete(ctl, tmp_path):
 def test_task_framework_table_handlers(mgr):
     """table handlers 注册进任务框架：add→meta→get 全链路"""
     _write_single(mgr.data_dir, "demo", {"sym": ["a", "b"], "price": [1.0, 2.0]})
+    _write_single(mgr.data_dir, "demo2", {"sym": ["a"], "price": [1.0]})
 
     t_add = mgr.submit("table", "add", ["demo"])
     _await(mgr, t_add)
@@ -303,6 +321,14 @@ def test_task_framework_table_handlers(mgr):
     _await(mgr, t_meta)
     assert _mgr_result(mgr, t_meta)["layout"] == "single"
 
+    # add 携带元数据
+    t_add2 = mgr.submit("table", "add",
+                        ["demo2", "--display_name=E表", "--tags=a,b"])
+    _await(mgr, t_add2)
+    meta2 = _mgr_result(mgr, t_add2)
+    assert meta2["name"] == "demo2"
+    assert _meta(TableController(data_dir=mgr.data_dir), "demo2").tags == ("a", "b")
+
     t_get = mgr.submit("table", "get", ["demo", "--where=price>=2"])
     _await(mgr, t_get)
     res = _mgr_result(mgr, t_get)
@@ -310,7 +336,7 @@ def test_task_framework_table_handlers(mgr):
 
     t_list = mgr.submit("table", "list", [])
     _await(mgr, t_list)
-    assert [m["name"] for m in _mgr_result(mgr, t_list)] == ["demo"]
+    assert [m["name"] for m in _mgr_result(mgr, t_list)] == ["demo", "demo2"]
 
     t_set = mgr.submit("table", "set", ["demo", "--display_name=D表", "--source=local"])
     _await(mgr, t_set)

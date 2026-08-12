@@ -46,7 +46,8 @@ class TableAddHandler(TaskHandler):
             return TaskResult(data=dumps_str([r.to_dict() for r in reports]))
         if not pos:
             raise ValueError("table add 需要表名（或 --all）")
-        report = await ctl.add(pos[0])
+        meta = {k: v for k, v in flags.items() if k != "all"}
+        report = await ctl.add(pos[0], meta=meta or None)
         return TaskResult(data=dumps_str(report.to_dict()))
 
 

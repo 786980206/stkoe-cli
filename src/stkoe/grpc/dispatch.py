@@ -184,7 +184,8 @@ def _table_add(args: list[str], data_dir=None) -> list[Result]:
         return [Result.json("tables", [r.to_dict() for r in reports])]
     if not pos:
         raise CommandError("table add 需要表名（或 --all）")
-    report = asyncio.run(ctl.add(pos[0]))
+    meta = {k: v for k, v in flags.items() if k != "all"}
+    report = asyncio.run(ctl.add(pos[0], meta=meta or None))
     return [Result.json("table", report.to_dict())]
 
 

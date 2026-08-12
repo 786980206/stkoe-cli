@@ -142,6 +142,68 @@ def test_table_target_scan(ctl, tmp_path, tctl):
     assert "sym" in parts and "date" in parts and "price" in parts
 
 
+def _write_hive(root, name, parts, row_cnt=1):
+    """写 hive 分区表：parts=[（key, value), ...] → tables/<name>/k1=v1/.../data.parquet"""
+    tdir = root / "tables" / name
+    sizes = {}
+    for i, (k, v) in enumerate(parts):
+        d = tdir / f"{k}={v}"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"part{i}.parquet"
+        pl.DataFrame({"v": list(range(row_cnt))}).write_parquet(p)
+        sizes[(k, v)] = sizes.get((k, v), 0) + p.stat().st_size
+    return sizes
+
+
+def test_storage_scan_hive_table(ctl, tmp_path, tctl):
+    """storage（table）：按 hive 分区键/值聚合存储占用与文件数"""
+    root = _setup_sources(tmp_path, tctl)
+    parts = [("year", "2024"), ("year", "2024"), ("year", "2025")]
+    sizes = _write_hive(root, "sales", parts)
+    _run(tctl.add("sales"))
+
+    report = _scan(ctl, "table", "sales", kind="storage")
+    assert report.kind == "storage"
+    assert report.partitions == ("all", "year")
+
+    all_df = _get(ctl, "table", "sales", kind="storage", partition_by="all")
+    assert all_df.columns == ["partition_by", "partition_value", "storage_size", "file_no"]
+    row = all_df.row(0)
+    assert row[0] == "__all__" and row[1] == "__all__"
+    assert row[2] == sum(sizes.values())
+    assert row[3] == 3  # 3 个文件
+
+    year_df = _get(ctl, "table", "sales", kind="storage", partition_by="year")
+    yrows = {r["partition_value"]: (r["storage_size"], r["file_no"]) for r in year_df.iter_rows(named=True)}
+    assert set(yrows) == {"2024", "2025"}
+    assert yrows["2024"] == (sizes[("year", "2024")], 2)
+    assert yrows["2025"] == (sizes[("year", "2025")], 1)
+
+
+def test_storage_scan_flat_table(ctl, tmp_path, tctl):
+    """storage（table 无分区）：只有 all 行，partition_by/partition_value=__all__"""
+    _setup_sources(tmp_path, tctl)
+    report = _scan(ctl, "table", "index", kind="storage")
+    assert report.partitions == ("all",)
+    df = _get(ctl, "table", "index", kind="storage", partition_by="all")
+    assert df.height == 1
+    row = df.row(0)
+    assert row[0] == "__all__" and row[1] == "__all__"
+    assert row[3] == 1  # index 表单个 data.parquet
+
+
+def test_storage_scan_get_all(ctl, tmp_path, tctl):
+    """storage get 不带 partition_by：返回全部分区文件"""
+    root = _setup_sources(tmp_path, tctl)
+    _write_hive(root, "sales", [("year", "2024")])
+    _run(tctl.add("sales"))
+    _scan(ctl, "table", "sales", kind="storage")
+    out = _get(ctl, "table", "sales", kind="storage")
+    assert isinstance(out, dict)
+    assert set(out) == {"all", "year"}
+    assert out["all"].columns == ["partition_by", "partition_value", "storage_size", "file_no"]
+
+
 def test_task_framework_stat_handlers(mgr):
     """stat handlers 注册进任务框架：scan→get 全链路"""
     from stkoe.dataset import DatasetController

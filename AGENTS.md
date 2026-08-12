@@ -135,6 +135,30 @@ src/stkoe/
 
 ## 近期变更记录
 
+### 2026-08 fieldset 衍生指标集模块（公式引擎 + 指标生命周期 + 物化）
+
+- **新增 `fieldset` 模块**：基于已注册 **dataset** 创建衍生指标集，注册于 catalog
+  （type='fieldset'）；**指标（field）** 用 polars 表达式公式在源 dataset 列上逐行
+  计算，add/set 后 `validated=False`，`check`（结果行数==源行数）通过才参与物化
+- **公式引擎插件制**（engine.py）：`CalcEngine` 接口 + `register_engine`/`get_engine` 注册表，
+  当前仅 `polars`（列作用域 eval）；`fieldset test --formula` 即时求值
+- **物化** `fieldset scan`：落盘 `fieldsets/<name>/`，keys + 已校验指标，布局镜像源
+  dataset 分区；幂等（依赖签名不变跳过）；读取 curated 读物化 parquet，否则实时计算
+- **依赖登记**：fieldset → dataset（stkoe_depends），删除源 dataset 需 `--force`
+- **多路径注册**：Execute（dispatch.py）/ SubmitTask（handlers.py）/ CLI（cli.py）三处对齐；
+  `api.md` §3.1/§3.8/§3.7/§8 同步
+- 测试：`tests/test_fieldset.py` 全链路（CRUD/check/scan 幂等/依赖阻断/任务版），
+  全量 106 用例绿（gRPC 用例需 unset 系统 proxy 环境变量）
+
+### 2026-08 stat `--kind storage` 存续统计（表文件存储占用/文件数）
+
+- **`stat scan table <name> --kind storage`**：只对表磁盘 parquet 做 stat 聚合（不读数据页），
+  输出列 `partition_by | partition_value | storage_size | file_no`；`all` 分区为
+  `__all__/__all__` 全表总量，其余分区文件按表 hive 分区键逐值一行；`get` 可 `--partition_by`
+  读取单分区。`calc_storage`（calc.py）+ `_scan_storage_sync`（controller.py）实现，
+  调度/任务版/CLI 三处经 `kind` 透传自动对齐；`api.md` §3.6/§8.2 同步
+- 测试：`tests/test_stat.py` 新增 hive/flat/全部区 storage 用例，全量 92 用例绿
+
 ### 2026-08 stat 数据统计资产（coverage 覆盖率）+ CLI stat 子命令
 
 - **新增 `stat` 模块**：`stkoe stat scan <target_type> <name> [--kind coverage]` 扫描

@@ -7,7 +7,7 @@
 
 所有业务命令统一为 `<source> <action> <args...>` 位置参数形态，等价于 `stkoe <source> <action> <args...>`。
 
-- **source**：`version` / `config` / `table` / `dataset` / `stat` / `task` / `mock`
+- **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `stat` / `task` / `mock`
 - **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `scan` / `delete`（`del` 别名）/ `show`
 - **args**：action 之后的位置参数 + `--key value` flag
 
@@ -94,11 +94,24 @@ HealthRequest {}                                   HealthResponse { status, vers
 | dataset | `set` | `<name>` | `--display_name/--description/--tags <v>` + 任意键 | JsonData（DatasetMeta） |
 | dataset | `scan` | `<name>` | `--all` `--resync` | JsonData（DatasetScanReport 或 []） |
 | dataset | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| stat | `scan` | `<table\|dataset> <name>` | `--kind <kind>`（默认 coverage） | JsonData（StatScanReport） |
+| stat | `scan` | `<table\|dataset> <name>` | `--kind <kind>`（`coverage` 默认 / `storage`） | JsonData（StatScanReport） |
 | stat | `get` | `<table\|dataset> <name>` | `--partition_by <p>` `--kind <kind>` | JsonData + ArrowTable（§3.6） |
 | stat | `meta` | `<table\|dataset> <name>` | `--kind <kind>` | JsonData（StatMeta） |
 | stat | `list` | — | — | JsonData（StatMeta[]） |
 | stat | `delete`/`del` | `<table\|dataset> <name>` | `--kind <kind>` | JsonData `{"deleted"}` |
+| fieldset | `add` | `<name>` | `--dataset <d>`（必选） `--engine <e>`（默认 polars） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
+| fieldset | `add` | `<name> <field>` | `--formula <表达式>`（必选） `--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta，指标 validated=False） |
+| fieldset | `set` | `<name>` | `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
+| fieldset | `set` | `<name> <field>` | `--formula/--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta；改公式 → validated 复位 False） |
+| fieldset | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
+| fieldset | `meta` | `<name>` | — | JsonData（FieldsetMeta） |
+| fieldset | `meta` | `<name> <field>` | — | JsonData（FieldMeta） |
+| fieldset | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
+| fieldset | `delete`/`del` | `<name> <field>` | — | JsonData（FieldsetMeta） |
+| fieldset | `list` | — | — | JsonData（FieldsetMeta[]） |
+| fieldset | `scan` | `<name>` | `--all` `--resync` | JsonData（FieldsetScanReport 或 []） |
+| fieldset | `check` | `<name> <field>` | `--all` | JsonData（FieldsetCheckResult[]） |
+| fieldset | `test` | `<name>` | `--formula <表达式>`（必选） | JsonData `{"ok",...}` + ArrowTable（成功时） |
 
 > `table scan` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
@@ -153,6 +166,9 @@ date >= 2024-01-01            开区间（> / >=）
 - **不指定 `--partition_by`**：每个分区一对消息 —— `JsonData{name="stat/<p>", data={"partition","rows","columns"}}` + `ArrowTable`
 - **指定 `--partition_by <p>`**：一对 —— `JsonData{name=<target>, data={"partition","rows","columns"}}` + `ArrowTable`
 - 分区名：`all`（全量）+ 每个索引列（dataset 取 keys；table 取非工具列）
+- **`--kind storage`（存续统计）**：`stat scan table <name>` 只对表磁盘 parquet 做 stat 聚合，
+  输出列 `partition_by | partition_value | storage_size | file_no`；`all` 分区为
+  `__all__/__all__` 全表总量，其余分区（如 `year`）文件按表 hive 分区键逐值一行
 
 ### 3.7 返回数据模型字段
 
@@ -162,6 +178,25 @@ date >= 2024-01-01            开区间（> / >=）
 - **DatasetScanReport**：`name, version_before, version_after, materialized, changed, incremental, partition_by, rebuilt_partitions, triggered`
 - **StatMeta / StatScanReport**：`target_type, target_name, kind, partitions[], files[{partition, rel_path, rows, size}], created_at, updated_at`
 - **ColumnMeta**：`name, display_name, description, data_type, unit, formula, tags[], as_index, is_tool, source_table, source_field`
+- **FieldsetMeta**：`name, version, dataset, engine, keys[], fields[FieldMeta], partition_by, partition_gran, materialized, materialized_at, curated, columns[ColumnMeta]（源 dataset 列）, extra, display_name, description, tags[], source, created_at, updated_at`
+- **FieldMeta**：`name, formula, display_name, description, unit, tags[], validated（是否已 check）`
+- **FieldsetScanReport**：`name, version_before, version_after, materialized, changed, fields_count, partition_by, rebuilt_partitions[]`
+- **FieldsetCheckResult**：`fieldset, field, ok, message`
+
+### 3.8 fieldset 衍生指标集（公式引擎）
+
+- **指标集** 基于一个已注册 **dataset** 创建（`--dataset`），keys 继承源 dataset 主键；
+  指标（field）用公式表达式在源数据集列上逐行计算
+- **公式语言**：运行在列作用域里的 polars 表达式（如 `x*2`、`pl.col("x")*2`、`date.dt.year()`），
+  用当前引擎 eval；引擎插件注册制（`register_engine`），当前仅 `polars`
+- **校验**：`check` 基于源 dataset 视图求值，**结果行数 == 源行数** 才算通过 →
+  指标 `validated=True`；公式编译/执行失败或行数不一致 → 校验失败（保持未校验）
+- **物化**：`scan` 只落盘 `keys + 已校验指标`（跳过未校验指标），幂等（依赖签名不变则跳过）；
+  物化目录 `fieldsets/<name>/`，布局镜像源 dataset（源已分区则按同分区键/粒度 `part=<v>/`，否则单文件）
+- **读取**：物化完成且与源+公式一致（`curated`）读物化 parquet；否则实时基于源 dataset
+  视图计算，不隐式物化（显式 `scan` 触发）
+- **生命周期**：指标 add/set 后 `validated=False`；`set --formula` 会复位校验位；
+  `fieldset test --formula` 即时求值返回成功/失败 + 结果数据
 
 ---
 
@@ -234,6 +269,7 @@ pending → running → succeeded
 | `stkoe table <action> <args...>` | table 命令（走 Execute 同步分发，行为与 `e:table ...` 一致） |
 | `stkoe dataset <action> <args...>` | dataset 命令 |
 | `stkoe stat <action> <args...>` | stat 命令 |
+| `stkoe fieldset <action> <args...>` | fieldset 命令（add/get/meta/list/set/scan/delete/check/test） |
 | `stkoe task list [--state <state>]` | 任务列表 |
 
 CLI 的 `table/dataset/stat` 表格结果以 ` <table <name>: N 字节 IPC> ` 形式占位打印。
@@ -295,6 +331,7 @@ t:<task_id>
 ├── tasks/<task_id>/           # 任务日志 task.log + 结果文件（ResultStore）
 ├── tables/<name>/             # 用户 parquet（只读，绝不写/删）
 ├── datasets/<name>/           # dataset 物化产物（data.parquet 或 part=<v>/data.parquet）
+├── fieldsets/<name>/          # fieldset 物化产物（keys + 已校验指标；布局镜像源 dataset）
 └── stats/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 catalog）
 ```
 
@@ -305,6 +342,10 @@ t:<task_id>
 ### 8.1 覆盖率统计输出列（ALL_COLS）
 
 `group | field | data_type | count | null_count | nunique | min | q25 | q50 | q75 | max | mean | min_date | max_date`
+
+### 8.2 存续统计输出列（STORAGE_COLS，`--kind storage`）
+
+`partition_by | partition_value | storage_size | file_no`
 
 ---
 
@@ -318,10 +359,16 @@ stkoe dataset add ds1 index m1 --keys sym,date
 stkoe dataset scan ds1
 # 统计覆盖率（all + 每个索引列一个分组文件）
 stkoe stat scan dataset ds1
+# 衍生指标集（基于 ds 计算新字段，check 通过后物化）
+stkoe fieldset add fs1 --dataset ds1
+stkoe fieldset add fs1 ma5 --formula "price.rolling_mean(5)"
+stkoe fieldset check fs1 ma5
+stkoe fieldset scan fs1
 # gRPC 读取
 gclient> e:dataset get ds1 --where "date >= 2024-01-01" --limit 100
+gclient> e:fieldset get fs1 --columns k,ma5 --limit 100
 gclient> e:stat get dataset ds1 --partition_by all
 # 后台物化 + 订阅进度
-gclient> s:dataset scan ds1
+gclient> s:fieldset scan fs1
 gclient> t:<task_id>
 ```

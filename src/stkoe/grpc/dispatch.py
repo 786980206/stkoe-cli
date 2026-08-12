@@ -473,3 +473,173 @@ def _dataset_scan(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("dataset scan 需要 dataset 名（或 --all）")
     report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
     return [Result.json("dataset", report.to_dict())]
+
+
+# ---------------------------------------------------------------------------
+# fieldset 同步处理器（Execute 路径；SubmitTask 后台任务版在 fieldset/handlers.py）
+# ---------------------------------------------------------------------------
+
+def _fieldset_controller(data_dir=None):
+    from ..fieldset.controller import FieldsetController
+
+    return FieldsetController(data_dir=data_dir)
+
+
+def _fieldset_arrow_meta(name: str, df, total: int, fm) -> str:
+    """ArrowTable.meta JSON：rows/total + keys 列元数据（源 dataset）+ 指标列"""
+    cols = []
+    pkeys = set(fm.keys)
+    for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
+        meta = {"name": cn, "data_type": dt}
+        if cn in pkeys:
+            src = next((c for c in fm.columns if c.name == cn), None)
+            if src is not None:
+                meta = {**src.to_dict(), "data_type": dt}
+        else:
+            f = next((fp for fp in fm.fields if fp.name == cn), None)
+            if f is not None:
+                meta = {**f.to_dict(), "data_type": dt}
+        cols.append(meta)
+    return dumps_str({"name": name, "rows": df.height, "total": total,
+                      "columns": cols})
+
+
+@handler("fieldset", "add")
+def _fieldset_add(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("fieldset add 需要指标集名")
+    flags = parse_flags(args)
+    ctl = _fieldset_controller(data_dir)
+    if len(pos) == 1:
+        fm = asyncio.run(ctl.add(pos[0], dataset=flags.get("dataset"),
+                                 engine=flags.get("engine") or "polars", **{
+                                     k: v for k, v in flags.items()
+                                     if k not in ("dataset", "engine")}))
+        return [Result.json("fieldset", fm.to_dict())]
+    fm = asyncio.run(ctl.add_field(pos[0], pos[1], **flags))
+    return [Result.json("fieldset", fm.to_dict())]
+
+
+@handler("fieldset", "get")
+def _fieldset_get(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("fieldset get 需要指标集名")
+    flags = parse_flags(args)
+    ctl = _fieldset_controller(data_dir)
+    df, total = asyncio.run(ctl.get(
+        pos[0],
+        columns=flags.get("columns").split(",") if flags.get("columns") else None,
+        where=flags.get("where"),
+        partition=flags.get("partition"),
+        exclude_tool=bool(flags.get("exclude-tool")),
+        limit=int(flags["limit"]) if flags.get("limit") else None,
+        offset=int(flags["offset"]) if flags.get("offset") else None,
+        count_total=True,
+    ))
+    fm = asyncio.run(ctl.meta(pos[0]))
+    buf = io.BytesIO()
+    if df.height:
+        df.write_ipc_stream(buf)
+    return [Result.table(pos[0], buf.getvalue(),
+                         meta=_fieldset_arrow_meta(pos[0], df, total, fm))]
+
+
+@handler("fieldset", "meta")
+def _fieldset_meta(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("fieldset meta 需要指标集名")
+    ctl = _fieldset_controller(data_dir)
+    if len(pos) == 1:
+        fm = asyncio.run(ctl.meta(pos[0]))
+        return [Result.json("fieldset", fm.to_dict())]
+    field = asyncio.run(ctl.field_meta(pos[0], pos[1]))
+    return [Result.json("field", field.to_dict())]
+
+
+@handler("fieldset", "list")
+@handler("fieldset", "")
+def _fieldset_list(args: list[str], data_dir=None) -> list[Result]:
+    ctl = _fieldset_controller(data_dir)
+    fms = asyncio.run(ctl.list())
+    return [Result.json("fieldsets", [fm.to_dict() for fm in fms])]
+
+
+@handler("fieldset", "set")
+def _fieldset_set(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    if not pos:
+        raise CommandError("fieldset set 需要指标集名")
+    if not flags:
+        raise CommandError("fieldset set 需要至少一个 --key value")
+    ctl = _fieldset_controller(data_dir)
+    if len(pos) == 1:
+        fm = asyncio.run(ctl.set(pos[0], **flags))
+        return [Result.json("fieldset", fm.to_dict())]
+    fm = asyncio.run(ctl.set_field(pos[0], pos[1], **flags))
+    return [Result.json("fieldset", fm.to_dict())]
+
+
+@handler("fieldset", "del")
+@handler("fieldset", "delete")
+def _fieldset_delete(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("fieldset delete 需要指标集名")
+    flags = parse_flags(args)
+    ctl = _fieldset_controller(data_dir)
+    if len(pos) > 1:
+        fm = asyncio.run(ctl.delete_field(pos[0], pos[1]))
+        return [Result.json("fieldset", fm.to_dict())]
+    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
+    return [Result.json("fieldset", out)]
+
+
+@handler("fieldset", "check")
+def _fieldset_check(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("fieldset check 需要指标集名")
+    flags = parse_flags(args)
+    ctl = _fieldset_controller(data_dir)
+    field = pos[1] if len(pos) > 1 else None
+    results = asyncio.run(ctl.check(pos[0], field, all_fields=bool(flags.get("all"))))
+    return [Result.json("fieldset", [r.to_dict() for r in results])]
+
+
+@handler("fieldset", "test")
+def _fieldset_test(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("fieldset test 需要指标集名")
+    flags = parse_flags(args)
+    if not flags.get("formula"):
+        raise CommandError("fieldset test 需要 --formula <表达式>")
+    ctl = _fieldset_controller(data_dir)
+    try:
+        df = asyncio.run(ctl.test(pos[0], flags["formula"]))
+    except Exception as e:
+        return [Result.json("fieldset", {"ok": False, "error": str(e)})]
+    buf = io.BytesIO()
+    if df.height:
+        df.write_ipc_stream(buf)
+    return [Result.json("fieldset", {"ok": True, "rows": df.height,
+                                     "columns": df.columns}),
+            Result.table(f"test/{pos[0]}", buf.getvalue())]
+
+
+@handler("fieldset", "scan")
+def _fieldset_scan(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    ctl = _fieldset_controller(data_dir)
+    if flags.get("all"):
+        reports = asyncio.run(ctl.scan(all=True, resync=bool(flags.get("resync"))))
+        return [Result.json("fieldsets", [r.to_dict() for r in reports])]
+    if not pos:
+        raise CommandError("fieldset scan 需要指标集名（或 --all）")
+    report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
+    return [Result.json("fieldset", report.to_dict())]

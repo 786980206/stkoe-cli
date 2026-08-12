@@ -17,7 +17,7 @@ import polars as pl
 
 from ..table.controller import DEFAULT_IGNORE_COLS
 from ..table.util import now
-from .calc import calc_stats
+from .calc import calc_stats, calc_storage
 from .spec import StatFile, StatMeta, StatScanReport
 
 
@@ -90,7 +90,10 @@ class StatController:
         """计算全量 + 逐索引分组统计并写 ``stats/<type>/<name>/<kind>/<part>.parquet``
 
         ``on_progress(i, total, msg)`` 可选进度回调（worker 线程同步调用，逐分组）。
+        kind=storage 走存续统计分支（见 _scan_storage_sync）。
         """
+        if kind == "storage":
+            return self._scan_storage_sync(target_type, target_name, on_progress)
         parts = self._partitions(target_type, target_name)
         lf = self._select_lf(target_type, target_name)
         out_dir = self._kind_dir(target_type, target_name, kind)
@@ -108,6 +111,46 @@ class StatController:
         return StatScanReport(target_type=target_type, target_name=target_name,
                               kind=kind, partitions=tuple(f.partition for f in files),
                               files=tuple(files))
+
+    def _scan_storage_sync(self, target_type: str, target_name: str,
+                           on_progress=None) -> StatScanReport:
+        """存续统计（kind=storage）：按 hive 分区键/值聚合原始文件存储占用
+
+        只对目标磁盘 parquet 做 stat（不读数据页），产出
+        ``stats/<type>/<name>/storage/<part>.parquet``：
+        ``all.parquet`` = ``partition_by=__all__ / partition_value=__all__`` 全表总量；
+        每个分区键一个文件，按该键目录值各一行
+        ``partition_by=<key> / partition_value=<value>``。
+        """
+        from ..table.util import detect_layout, disk_files
+
+        if target_type == "table":
+            root = self._dc._tc._root(target_name)
+        elif target_type == "dataset":
+            root = self.data_dir / "datasets" / target_name
+        else:
+            raise StatTargetError(f"unsupported stat target: {target_type}")
+        if not root.exists():
+            raise StatNotFoundError(f"{target_type} 目录不存在: {root}")
+
+        files = disk_files(root)
+        parts = ["all", *detect_layout([f.rel_path for f in files])[1]]
+        out_dir = self._kind_dir(target_type, target_name, "storage")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_files: list[StatFile] = []
+        items = [(f.rel_path, f.size) for f in files]
+        for i, p in enumerate(parts, start=1):
+            if on_progress is not None:
+                on_progress(i, len(parts), f"{target_type}/{target_name}: {p}")
+            df = calc_storage(items, group_key=None if p == "all" else p)
+            f = out_dir / f"{p}.parquet"
+            df.write_parquet(f)
+            out_files.append(StatFile(partition=p, rel_path=f.relative_to(self.root),
+                                      rows=df.height, size=f.stat().st_size))
+        out_files = list(_ordered(tuple(out_files)))
+        return StatScanReport(target_type=target_type, target_name=target_name,
+                              kind="storage", partitions=tuple(f.partition for f in out_files),
+                              files=tuple(out_files))
 
     # ---------- get ----------
 

@@ -1,15 +1,51 @@
-"""统计计算：calc_stats（分组/非分组列统计），要素对齐 v1.0 stat 模块
+"""统计计算：calc_stats（分组/非分组列统计）+ calc_storage（表文件存续信息）
 
-输出列（ALL_COLS）：
+- calc_stats（要素对齐 v1.0 stat 模块），输出列（ALL_COLS）：
     group | field | data_type | count | null_count | nunique |
     min | q25 | q50 | q75 | max | mean | min_date | max_date
+- calc_storage（``stat scan --kind storage``），输出列（STORAGE_COLS）：
+    partition_by | partition_value | storage_size | file_no
 """
 from __future__ import annotations
+
+from pathlib import PurePosixPath
 
 import polars as pl
 
 ALL_COLS = ["group", "field", "data_type", "count", "null_count", "nunique",
             "min", "q25", "q50", "q75", "max", "mean", "min_date", "max_date"]
+
+STORAGE_COLS = ["partition_by", "partition_value", "storage_size", "file_no"]
+
+
+def _hive_value(rel: str, key: str) -> str:
+    """从相对路径提取 hive 分区值（``year=2024/month=1/data.parquet`` + key=year → ``2024``）"""
+    for part in PurePosixPath(rel).parts[:-1]:
+        if part.startswith(key + "="):
+            return part.split("=", 1)[1]
+    return ""
+
+
+def calc_storage(files: list[tuple[str, int]], group_key: str | None = None) -> pl.DataFrame:
+    """表文件存续信息（按 hive 分区键/值聚合存储占用与文件数）
+
+    ``files``：``[(rel_path, size)]``（相对表根）；``group_key`` 为 None 时输出
+    全表一行 ``partition_by=__all__ / partition_value=__all__``；否则按该分区键的目录值
+    各一行（值取 hive 目录 ``key=value`` 的 value）。输出列见 STORAGE_COLS。
+    """
+    rows: list[tuple[str, str, int, int]] = []
+    if group_key is None:
+        rows.append(("__all__", "__all__", sum(s for _, s in files), len(files)))
+    else:
+        by: dict[str, list[int]] = {}
+        for rel, size in files:
+            by.setdefault(_hive_value(rel, group_key), []).append(size)
+        for val in sorted(by):
+            sizes = by[val]
+            rows.append((group_key, val, sum(sizes), len(sizes)))
+    df = pl.DataFrame(rows, schema=STORAGE_COLS, orient="row")
+    return df.with_columns(pl.col("storage_size").cast(pl.Int64),
+                           pl.col("file_no").cast(pl.Int64))
 
 
 def calc_stats(data: pl.LazyFrame | pl.DataFrame, group_col: str | None = None) -> pl.LazyFrame:

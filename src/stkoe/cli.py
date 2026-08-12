@@ -83,6 +83,10 @@ def _cmd_stat(raw: list[str]) -> int:
     return _cmd_dispatch("stat", raw)
 
 
+def _cmd_fieldset(raw: list[str]) -> int:
+    return _cmd_dispatch("fieldset", raw)
+
+
 def _cmd_task(raw: list[str]) -> int:
     return _cmd_dispatch("task", raw)
 
@@ -96,6 +100,7 @@ def _help() -> str:
         "  table <action> <args...>        table 命令（list/meta/add/set/get/delete，与 Execute 对齐）\n"
         "  dataset <action> <args...>      dataset 命令（add/get/meta/list/set/scan/delete）\n"
         "  stat <action> <args...>         stat 命令（scan/get/meta/list/delete）\n"
+        "  fieldset <action> <args...>     fieldset 命令（add/get/meta/list/set/scan/delete/check/test）\n"
         "  task list [--state <state>]     任务列表（按创建时间倒序）"
     )
 
@@ -119,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_dataset(args[1:])
     if cmd == "stat":
         return _cmd_stat(args[1:])
+    if cmd == "fieldset":
+        return _cmd_fieldset(args[1:])
     if cmd == "task":
         return _cmd_task(args[1:])
     print(f"未知命令: {cmd}\n{_help()}")

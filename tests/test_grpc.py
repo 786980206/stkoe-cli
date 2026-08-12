@@ -41,6 +41,12 @@ def _collect(responses):
     return header, datas
 
 
+def _json(payloads, name):
+    """取 Execute 结果中指定 name 的 JsonData.data（JSON 解析）"""
+    return next(json.loads(d.json.data) for d in payloads
+                if d.WhichOneof("type") == "json" and d.json.name == name)
+
+
 # ---------- Health ----------
 
 def test_health(client):
@@ -183,6 +189,15 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     assert meta["rows"] == 2
     assert meta["total"] == 3
 
+    # get --offset：跳过起始行；rows 为当前页行数，total 仍为过滤后全量
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="get", args=["demo", "--offset", "1", "--limit", "2"])))
+    assert header.code == 0
+    meta = json.loads(next(d for d in datas
+                           if d.WhichOneof("type") == "table").table.meta)
+    assert meta["rows"] == 2
+    assert meta["total"] == 3
+
     # ArrowTable 数据必须是 IPC Stream 格式，客户端 open_stream 可直接解析
     import pyarrow as pa
     got = pa.ipc.open_stream(pa.BufferReader(pa.py_buffer(tables[0].table.data))).read_all()
@@ -216,13 +231,41 @@ def test_execute_table_add_duplicate_error(client, srv, tmp_path):
 
 def test_execute_table_missing_args(client):
     """缺表名：错误 DataHeader"""
-    for action in ("add", "get", "meta", "delete", "set"):
+    for action in ("add", "get", "meta", "delete", "set", "scan"):
         header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
             source="table", action=action)))
         assert header.code != 0
         assert ("需要表名" in header.message
                 or "--all" in header.message
                 or "--key" in header.message)
+
+
+def test_execute_table_scan(client, srv, tmp_path):
+    """e:table scan：显式重扫对账（无差异 changed=False；追加文件后 changed=True + 版本递增）"""
+    import polars as pl
+
+    root = Path(srv.data_dir) / "tables" / "demo"
+    root.mkdir(parents=True)
+    pl.DataFrame({"sym": ["a", "b"], "price": [1.0, 2.0]}).write_parquet(root / "data.parquet")
+    header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="add", args=["demo"])))
+    assert header.code == 0
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="scan", args=["demo"])))
+    assert header.code == 0
+    report = _json(datas, "table")
+    assert report["name"] == "demo"
+    assert report["changed"] is False
+    assert report["version_after"] == 1  # 无差异不 bump
+
+    pl.DataFrame({"sym": ["c"], "price": [3.0]}).write_parquet(root / "more.parquet")
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="table", action="scan", args=["demo"])))
+    assert header.code == 0
+    report = _json(datas, "table")
+    assert report["changed"] is True
+    assert report["version_after"] == 2
 
 
 def test_execute_table_list_candidate(client, srv, tmp_path):

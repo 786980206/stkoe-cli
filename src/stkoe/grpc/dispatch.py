@@ -202,6 +202,7 @@ def _table_get(args: list[str], data_dir=None) -> list[Result]:
         partition=flags.get("partition"),
         exclude_tool=bool(flags.get("exclude-tool")),
         limit=int(flags["limit"]) if flags.get("limit") else None,
+        offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
     ))
     meta = asyncio.run(ctl.meta(pos[0]))
@@ -221,6 +222,20 @@ def _table_delete(args: list[str], data_dir=None) -> list[Result]:
     ctl = _controller(data_dir)
     out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
     return [Result.json("table", out)]
+
+
+@handler("table", "scan")
+def _table_scan(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    ctl = _controller(data_dir)
+    if flags.get("all"):
+        reports = asyncio.run(ctl.scan("", all=True, resync=bool(flags.get("resync"))))
+        return [Result.json("tables", [r.to_dict() for r in reports])]
+    if not pos:
+        raise CommandError("table scan 需要表名（或 --all）")
+    report = asyncio.run(ctl.scan(pos[0]))
+    return [Result.json("table", report.to_dict())]
 
 
 @handler("table", "list")
@@ -391,6 +406,7 @@ def _dataset_get(args: list[str], data_dir=None) -> list[Result]:
         where=flags.get("where"),
         partition=flags.get("partition"),
         limit=int(flags["limit"]) if flags.get("limit") else None,
+        offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
     ))
     dm = asyncio.run(ctl.meta(pos[0]))

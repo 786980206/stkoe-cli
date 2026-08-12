@@ -219,6 +219,10 @@ def test_add_registers_without_materialize(ctl, tmp_path, tctl):
     # count_total：limit 时 total=未分页总行数
     df, total = _get(ctl, "ds1", limit=2, count_total=True)
     assert df.height == 2 and total == 3
+    # offset：跳过起始行；total 仍为过滤后全量
+    df, total = _get(ctl, "ds1", offset=1, limit=1, count_total=True)
+    assert df.height == 1 and total == 3
+    assert df["sym"].to_list() == ["b"]
 
     # 显式 scan 才物化
     report = _scan(ctl, "ds1")

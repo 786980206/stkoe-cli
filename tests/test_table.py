@@ -117,6 +117,38 @@ def test_get_returns_data(ctl, tmp_path):
     df, total = _get(ctl, "demo", count_total=True)
     assert df.height == 3 and total == 3
 
+    # offset：跳过起始行（可与 limit/where 组合）；total 仍为过滤后全量
+    df, total = _get(ctl, "demo", offset=1, limit=2, count_total=True)
+    assert df.height == 2 and total == 3
+    assert df["price"].to_list() == [2.0, 3.0]
+    df, total = _get(ctl, "demo", where="price>=2", offset=1, limit=1, count_total=True)
+    assert df.height == 1 and total == 2
+    assert df["price"].to_list() == [3.0]
+    df, total = _get(ctl, "demo", offset=2, count_total=True)
+    assert df.height == 1 and total == 3
+
+
+def test_scan_refresh_updates_catalog(ctl, tmp_path):
+    """table scan：显式扫描对账；无差异不 bump，新增文件 → changed 且版本递增"""
+    root = tmp_path / "data"
+    _write_single(root, "demo", {"sym": ["a", "b"], "price": [1.0, 2.0]})
+    _add(ctl, "demo")
+    assert _meta(ctl, "demo").version == 1
+
+    r = _run(ctl.scan("demo"))
+    assert r.changed is False
+    assert r.version_after == 1  # 无差异不 bump
+
+    pl.DataFrame({"sym": ["c"], "price": [3.0]}).write_parquet(
+        root / "tables" / "demo" / "more.parquet")
+    r = _run(ctl.scan("demo"))
+    assert r.changed is True
+    assert r.version_after == 2
+    assert {f.rel_path for f in _meta(ctl, "demo").files} == {"data.parquet", "more.parquet"}
+
+    r = _run(ctl.scan("", all=True))
+    assert {x.name for x in r} == {"demo"}  # --all 批量重扫
+
 
 def test_get_reads_partitioned_hive(ctl, tmp_path):
     root = tmp_path / "data"
@@ -295,6 +327,16 @@ def test_task_framework_table_handlers(mgr):
 
     meta_check = _meta(TableController(data_dir=mgr.data_dir), "demo")
     assert meta_check.display_name == "D表"
+
+    # 追加数据 → s:table scan 显式重扫：changed=True，版本递增
+    pl.DataFrame({"sym": ["c"], "price": [3.0]}).write_parquet(
+        mgr.data_dir / "tables" / "demo" / "more.parquet")
+    t_scan = mgr.submit("table", "scan", ["demo"])
+    _await(mgr, t_scan)
+    scan_res = _mgr_result(mgr, t_scan)
+    assert scan_res["changed"] is True
+    assert scan_res["version_after"] > 1  # 经 set/col 已递增，追加数据后再 +1
+    assert _get(TableController(data_dir=mgr.data_dir), "demo").height == 3
 
     t_del = mgr.submit("table", "delete", ["demo"])
     _await(mgr, t_del)

@@ -190,30 +190,32 @@ class TableController:
                   partition: str | list[str] | None = None,
                   exclude_tool: bool = False,
                   limit: int | None = None,
+                  offset: int | None = None,
                   count_total: bool = False) -> pl.DataFrame | tuple[pl.DataFrame, int]:
         """读表数据：读前自动同步（快检）→ catalog 文件裁剪 → 读取。
 
-        返回 collect 后的 DataFrame；``limit`` 限制返回行数；
-        ``count_total=True`` 返回 ``(df, total)``，total 为过滤后（未加 limit）的总行数。
+        返回 collect 后的 DataFrame；``limit`` 限制返回行数、``offset`` 跳过起始行；
+        ``count_total=True`` 返回 ``(df, total)``，total 为过滤后（未加 limit/offset）的总行数。
         """
         return await asyncio.to_thread(
             self._get_sync, name, columns=columns, where=where,
             partition=partition, exclude_tool=exclude_tool, limit=limit,
-            count_total=count_total)
+            offset=offset, count_total=count_total)
 
     def _get_sync(self, name: str, *, columns: list[str] | None = None,
                   where: pl.Expr | str | None = None,
                   partition: str | list[str] | None = None,
                   exclude_tool: bool = False,
                   limit: int | None = None,
+                  offset: int | None = None,
                   count_total: bool = False) -> pl.DataFrame | tuple[pl.DataFrame, int]:
         lf = self._get_lazy(name, columns=columns, where=where,
                             partition=partition, exclude_tool=exclude_tool)
         total = None
-        if count_total and limit is not None:
+        if count_total and (limit is not None or offset is not None):
             total = lf.select(pl.len()).collect().item()
-        if limit is not None:
-            lf = lf.limit(limit)
+        if limit is not None or offset is not None:
+            lf = lf.slice(offset if offset is not None else 0, limit)
         df = lf.collect()
         if count_total:
             return df, (total if total is not None else df.height)

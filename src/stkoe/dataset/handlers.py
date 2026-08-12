@@ -67,6 +67,7 @@ class DatasetGetHandler(TaskHandler):
             where=flags.get("where"),
             partition=flags.get("partition"),
             limit=int(flags["limit"]) if flags.get("limit") else None,
+            offset=int(flags["offset"]) if flags.get("offset") else None,
             count_total=True,
         )
         buf = io.BytesIO()

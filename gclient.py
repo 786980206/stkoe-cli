@@ -75,6 +75,8 @@ def do_execute(stub, words: list[str]) -> None:
             print(f"  json[{r.json.name}]: {r.json.data}")
         elif kind == "table":
             print(f"  table[{r.table.name}]:")
+            if r.table.meta:
+                print(f"    meta: {r.table.meta}")
             _print_table(r.table.data)
         else:
             print(f"  unknown message: {r}")

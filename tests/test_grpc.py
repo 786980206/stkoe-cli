@@ -156,22 +156,30 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     assert col_a["unit"] == "元"
     assert col_a["tags"] == ["x", "y"]
 
-    # get：json 元信息 + ArrowTable 数据
+    # get：元信息并入 ArrowTable.meta（不再返回 JsonData），含完整列元数据
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="table", action="get", args=["demo"])))
     assert header.code == 0
-    meta = _json(datas, "demo")
-    assert meta["rows"] == 3
-    assert meta["total"] == 3
+    jsons = [d for d in datas if d.WhichOneof("type") == "json"]
+    assert jsons == []  # get 不返回 JsonData
     tables = [d for d in datas if d.WhichOneof("type") == "table"]
     assert len(tables) == 1
     assert tables[0].table.name == "demo"
+    meta = json.loads(tables[0].table.meta)
+    assert meta["rows"] == 3
+    assert meta["total"] == 3
+    assert [c["name"] for c in meta["columns"]] == ["a", "b"]
+    col_a = next(c for c in meta["columns"] if c["name"] == "a")
+    assert col_a["display_name"] == "数值"
+    assert col_a["unit"] == "元"
+    assert col_a["tags"] == ["x", "y"]
 
     # get --limit：rows 为当前页行数，total 为未分页总行数
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="table", action="get", args=["demo", "--limit", "2"])))
     assert header.code == 0
-    meta = _json(datas, "demo")
+    meta = json.loads(next(d for d in datas
+                           if d.WhichOneof("type") == "table").table.meta)
     assert meta["rows"] == 2
     assert meta["total"] == 3
 

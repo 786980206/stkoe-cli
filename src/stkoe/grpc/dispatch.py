@@ -142,6 +142,19 @@ def _controller(data_dir=None):
     return TableController(data_dir=data_dir)
 
 
+def _arrow_meta(name: str, df, total: int, col_metas) -> str:
+    """ArrowTable.meta JSON：rows/total + 返回列的完整列元数据（display_name/unit/formula 等）"""
+    known = {c.name: c.to_dict() for c in col_metas}
+    cols = []
+    for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
+        col = known.get(cn)
+        if col is None:
+            col = {"name": cn, "data_type": dt}
+        cols.append(col)
+    return dumps_str({"name": name, "rows": df.height, "total": total,
+                      "columns": cols})
+
+
 @handler("table", "add")
 def _table_add(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
@@ -172,12 +185,11 @@ def _table_get(args: list[str], data_dir=None) -> list[Result]:
         limit=int(flags["limit"]) if flags.get("limit") else None,
         count_total=True,
     ))
+    meta = asyncio.run(ctl.meta(pos[0]))
     buf = io.BytesIO()
     df.write_ipc_stream(buf)
-    return [
-        Result.json(pos[0], {"rows": df.height, "total": total, "columns": df.columns}),
-        Result.table(pos[0], buf.getvalue()),
-    ]
+    return [Result.table(pos[0], buf.getvalue(),
+                         meta=_arrow_meta(pos[0], df, total, meta.columns))]
 
 
 @handler("table", "delete")
@@ -362,13 +374,12 @@ def _dataset_get(args: list[str], data_dir=None) -> list[Result]:
         limit=int(flags["limit"]) if flags.get("limit") else None,
         count_total=True,
     ))
+    dm = asyncio.run(ctl.meta(pos[0]))
     buf = io.BytesIO()
     if df.height:
         df.write_ipc_stream(buf)
-    return [
-        Result.json(pos[0], {"rows": df.height, "total": total, "columns": df.columns}),
-        Result.table(pos[0], buf.getvalue()),
-    ]
+    return [Result.table(pos[0], buf.getvalue(),
+                         meta=_arrow_meta(pos[0], df, total, dm.columns))]
 
 
 @handler("dataset", "delete")

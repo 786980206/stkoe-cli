@@ -107,6 +107,10 @@ def _cmd_task(raw: list[str]) -> int:
     return _cmd_dispatch("task", raw)
 
 
+def _cmd_mock(raw: list[str]) -> int:
+    return _cmd_dispatch("mock", raw)
+
+
 def _help() -> str:
     return (
         "用法: stkoe <command>\n"
@@ -121,6 +125,8 @@ def _help() -> str:
         "  feature <action> <args...>     feature 命令（add/set/meta/list/delete/test；纯定义，无物化）\n"
         "  factor <action> <args...>      factor 命令（add/get/meta/list/set/check/scan/delete；可物化）\n"
         "  test <action> <args...>        test 命令（add/get/meta/list/set/check/scan/delete；因子测试数据集）\n"
+        "  mock demo                      生成 example.md 演示源表 index + m1（写 tables/，需 table add 注册）\n"
+        "  mock gen <name> --kind <kind>  参数化生成单张表（tdcal/common/index/feature/klday/m1）\n"
         "  task list [--state <state>]     任务列表（按创建时间倒序）"
     )
 
@@ -156,5 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_test(args[1:])
     if cmd == "task":
         return _cmd_task(args[1:])
+    if cmd == "mock":
+        return _cmd_mock(args[1:])
     print(f"未知命令: {cmd}\n{_help()}")
     return 1

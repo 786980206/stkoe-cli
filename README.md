@@ -160,6 +160,9 @@ src/stkoe/
 │   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
 │   ├── controller.py  # async scan/get/meta/list/delete（cov 写入 stats/ 目录，不进 catalog）
 │   └── handlers.py    # 任务框架接入（source="stat"）
+├── mock/              # 演示数据生成（stkoe mock demo/gen，替代 scripts/gen_example_data.py）
+│   ├── gen.py         # 生成器（tdcal/common/index/feature/klday/m1 + demo）+ write（只写盘不注册）
+│   └── handlers.py    # 任务框架接入（source="mock"）
 └── task/              # 任务框架
     ├── model.py       # Task / TaskEvent / TaskResult / TaskContext
     ├── registry.py    # TaskHandler + TaskRegistry

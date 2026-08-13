@@ -84,6 +84,9 @@ src/stkoe/
 │   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
 │   ├── controller.py  # async scan/get/meta/list/delete（cov 写入 stats/ 目录，不进 catalog）
 │   └── handlers.py    # 任务版 Handler（source="stat"，注册进 TaskRegistry）
+├── mock/              # 演示数据生成（stkoe mock demo/gen，替代 scripts/gen_example_data.py）
+│   ├── gen.py         # 生成器（tdcal/common/index/feature/klday/m1 + demo）+ write（只写盘不注册）
+│   └── handlers.py    # 任务版 Handler（source="mock"，注册进 TaskRegistry）
 └── task/              # 任务框架
     ├── model.py       # Task / TaskEvent / TaskResult / TaskContext
     ├── manager.py     # TaskManager 编排核心（cancel/subscribe 语义见下）
@@ -160,6 +163,27 @@ src/stkoe/
 - 全量 198 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
 ## 近期变更记录
+
+### 2026-08 mock 改造为 stkoe mock 接口（替代 scripts/gen_example_data.py）
+
+- **新增 `mock` 模块**：把 `scripts/gen_example_data.py` 的造数能力内建为 `stkoe mock`
+  接口，参考 v1.0 `data/mock.py` 生成器设计（tdcal/common/index/feature/klday/m1 + write）
+- **`stkoe mock demo`**：生成 example.md 演示源表 index + m1（10 只 × 3 个交易日，30 行，
+  数据与 gen_example_data.py 对齐）到 `<data_dir>/tables/`；**只写盘不注册**，仍由
+  `table add` 发现登记（保持「发现资产」语义）
+- **`stkoe mock gen <name> --kind <kind>`**：参数化生成单张表（kind：
+  tdcal/common/index/feature/klday/m1，`--n-syms/--start/--end/--seed/--col` 可选）
+- **日期列用字符串形态**（如 `"2024-01-01"`）：sample/feature 公式过滤形如
+  `(date >= '2024-01-02')`，与 tests/test_sample.py 约定一致
+- **多路径注册**：Execute（dispatch.py `@handler("mock", demo/gen)`）/ SubmitTask
+  （mock/handlers.py）/ CLI（cli.py `_cmd_mock`）三处对齐；`s:mock`（空 action）仍是
+  task/handlers.py 的 MockProgressHandler 示例任务（框架联调用）
+- **删除 `scripts/gen_example_data.py`**；example.md §0.2 改用 `stkoe mock demo`、
+  §1 `table get --where` 日期加引号、§10 补任务版 `s:mock demo`/`gen`；api.md
+  §1/§3.1/§4.1/§4.6/§5/§9 同步
+- 测试：新增 `tests/test_mock.py`（demo/gen 全链路 + 任务版 + Execute）3 例补进
+  test_grpc.py，全量 218 用例绿（`test_task_list_ordered_and_filtered` 等时序敏感用例
+  偶发 flaky，与 mock 改动无关）
 
 ### 2026-08 整体审视修复 + 版本 0.5.0（tag v0.5.0）
 

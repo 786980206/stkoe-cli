@@ -87,6 +87,9 @@ class TaskManager:
         from ..factor_test.handlers import register as _register_factor_test_handlers
 
         _register_factor_test_handlers(self.registry)
+        from ..mock.handlers import register as _register_mock_handlers
+
+        _register_mock_handlers(self.registry)
 
     # ---------- 提交 / 查询 / 取消 ----------
 

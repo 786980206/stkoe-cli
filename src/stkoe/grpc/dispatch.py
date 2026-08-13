@@ -1149,3 +1149,36 @@ def _test_scan(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("test scan 需要测试集名（或 --all）")
     report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
     return [Result.json("test", report.to_dict())]
+
+
+# ---------------------------------------------------------------------------
+# mock 同步处理器（Execute 路径；SubmitTask 后台任务版在 mock/handlers.py）
+# ---------------------------------------------------------------------------
+
+@handler("mock", "demo")
+def _mock_demo(args: list[str], data_dir=None) -> list[Result]:
+    """生成 example.md 演示源表 index + m1 到 tables/"""
+    from ..mock.gen import demo
+
+    reports = demo(data_dir=data_dir)
+    return [Result.json("mock", reports)]
+
+
+@handler("mock", "gen")
+def _mock_gen(args: list[str], data_dir=None) -> list[Result]:
+    """参数化生成单张表：mock gen <name> --kind <kind> [--n-syms/--start/--end/--seed/--col]"""
+    from ..mock.gen import gen as _mock_gen_
+
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("mock gen 需要表名（如 mock gen mytable --kind index）")
+    flags = parse_flags(args)
+    report = _mock_gen_(
+        pos[0], flags.get("kind") or "index", data_dir=data_dir,
+        n_syms=int(flags["n_syms"]) if flags.get("n_syms") else 10,
+        start=flags.get("start") or "2024-01-01",
+        end=flags.get("end") or "2024-01-03",
+        seed=int(flags["seed"]) if flags.get("seed") else None,
+        col=flags.get("col"),
+    )
+    return [Result.json("mock", report)]

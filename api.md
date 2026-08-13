@@ -9,7 +9,7 @@
 
 - **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `sample` / `feature` / `factor` / `test` / `stat` / `task` / `mock`
 - **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `scan` / `check` / `test` / `delete`（`del` 别名）/ `show`
-- **单侧动词例外**：`mock` 仅 SubmitTask 可用（示例任务，见 §4.6）；`task` 仅 Execute 可用（任务元操作，见 §4.5）
+- **单侧动词例外**：`mock`（空 action）仅 SubmitTask 可用（示例任务，见 §4.6）；`mock demo`/`mock gen` 双路径可用（见 §3.1/§4.1）；`task` 仅 Execute 可用（任务元操作，见 §4.5）
 - **args**：action 之后的位置参数 + `--key value` flag
 
 同一业务命令有**双路径**，行为对齐：
@@ -80,6 +80,8 @@ HealthRequest {}                                   HealthResponse { status, vers
 | config | （空）/ `show` | — | — | JsonData `{"config_file", "grpc-host", "grpc-port", "data-dir", ...extra}` |
 | config | `set` | — | `--<key> <value> ...`（任意键） | JsonData `{"written", "set"}` |
 | task | （空）/ `list` | — | `--state <state>` | JsonData `{"tasks": [...]}`（按创建时间倒序） |
+| mock | `demo` | — | — | JsonData（写入清单：`[{name, path, rows, columns}]`，写 `tables/index` + `tables/m1`，不注册） |
+| mock | `gen` | `<name>` | `--kind <kind>`（默认 index；`tdcal/common/index/feature/klday/m1`） `--n-syms N` `--start S` `--end E` `--seed N` `--col C` | JsonData（单表写入清单） |
 | table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（TableScanReport） |
 | table | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | table | `scan` | `<name>` | `--all` | JsonData（TableScanReport 或 []） |
@@ -328,7 +330,7 @@ date >= 2024-01-01            开区间（> / >=）
 
 `SubmitTask(source, action, args)` 立即返回 `header + task_id`（`code=0` 成功）。任务在独立事件循环线程执行。
 
-支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/table/dataset/fieldset/sample/feature/factor/test/stat 全部动作；`mock` 仅任务版、`task` 仅 Execute，见 §1），结果放在**终态事件的 `data`**（JSON 字符串）。
+支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/table/dataset/fieldset/sample/feature/factor/test/stat 全部动作；`mock demo`/`mock gen` 与 Execute 对齐、`mock`（空 action）仅任务版、`task` 仅 Execute，见 §1），结果放在**终态事件的 `data`**（JSON 字符串）。
 
 ### 4.2 事件流（SubscribeTask）
 
@@ -375,9 +377,10 @@ pending → running → succeeded
 - **大结果落盘**：`table/dataset/fieldset/sample/stat/factor/test get` 用 `ctx.put_result` 写 `tasks/<task_id>/<name>`（Arrow IPC / parquet），任务项只存 `result_ref`；`s:... get` 的 `data` 含 `{"name","rows","total","columns","result_ref"}`
 - `stop`（服务停止）：先在跑任务统一收尾为 `cancelled`，DB 不遗留 orphan
 
-### 4.6 `mock` 示例任务
+### 4.6 `mock` 示例任务与造数
 
-`s:mock`：分 5 步推进进度（progress 0.2~1.0）+ 写日志 + 落盘结果 `{"steps":5}`；支持取消与暂停。可作为协议联调样例。
+- `s:mock`（空 action）：分 5 步推进进度（progress 0.2~1.0）+ 写日志 + 落盘结果 `{"steps":5}`；支持取消与暂停。可作为协议联调样例。
+- `s:mock demo` / `s:mock gen <name> --kind <kind>`：任务版 mock 造数，把 parquet 写到 `tables/`（与 Execute 行为一致，见 §3.1），不注册 catalog。
 
 ---
 
@@ -396,6 +399,8 @@ pending → running → succeeded
 | `stkoe feature <action> <args...>` | feature 命令（add/set/meta/list/delete/test；纯定义，无物化） |
 | `stkoe factor <action> <args...>` | factor 命令（add/get/meta/list/set/check/scan/delete；可物化） |
 | `stkoe test <action> <args...>` | test 命令（add/get/meta/list/set/check/scan/delete；因子测试数据集） |
+| `stkoe mock demo` | 生成演示源表 index + m1（写 `tables/`，需 `table add` 注册） |
+| `stkoe mock gen <name> --kind <kind>` | 参数化生成单张表（tdcal/common/index/feature/klday/m1） |
 | `stkoe task list [--state <state>]` | 任务列表 |
 
 CLI 的 `table/dataset/stat` 表格结果以 ` <table <name>: N 字节 IPC> ` 形式占位打印。
@@ -485,6 +490,8 @@ t:<task_id>
 ## 9. 典型工作流
 
 ```bash
+# mock 造数（生成演示 parquet 到 tables/，替代 scripts/gen_example_data.py）
+stkoe mock demo
 # 建表（发现资产）
 stkoe table add index
 # 建逻辑数据集（join index+m1 on keys），显式物化

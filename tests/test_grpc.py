@@ -95,6 +95,37 @@ def test_execute_config_set_then_show(client, tmp_path, monkeypatch):
     assert out["grpc-port"] == 9000
 
 
+def test_execute_mock_demo(client, srv):
+    """e:mock demo：写 tables/index + tables/m1 到服务数据目录（不注册）"""
+    header, datas = _collect(client.Execute(
+        stkoe_pb2.ExecuteRequest(source="mock", action="demo")))
+    assert header.code == 0
+    reports = json.loads(datas[0].json.data)
+    assert [r["name"] for r in reports] == ["index", "m1"]
+    assert reports[0]["rows"] == 30
+    root = Path(srv.data_dir)
+    assert (root / "tables" / "index" / "data.parquet").exists()
+    assert (root / "tables" / "m1" / "data.parquet").exists()
+
+
+def test_execute_mock_gen(client, srv):
+    """e:mock gen：参数化生成单张表到 tables/<name>/"""
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="mock", action="gen",
+        args=["g1", "--kind", "klday", "--n-syms", "4"])))
+    assert header.code == 0
+    rep = json.loads(datas[0].json.data)
+    assert rep["name"] == "g1"
+    assert (Path(srv.data_dir) / "tables" / "g1" / "data.parquet").exists()
+
+
+def test_execute_mock_gen_missing_name_error(client):
+    header, datas = _collect(client.Execute(
+        stkoe_pb2.ExecuteRequest(source="mock", action="gen")))
+    assert header.code != 0
+    assert "需要表名" in header.message
+
+
 def test_execute_unknown_command_error_header(client):
     """未注册命令：首条即错误 DataHeader，且无数据消息"""
     header, datas = _collect(client.Execute(

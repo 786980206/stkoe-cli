@@ -14,12 +14,15 @@
 export STKOE_CONFIG=./stkoe.example.json
 uv run -m stkoe config set --data-dir ./example-data
 
-# 0.2 mock 造数：生成两张 parquet 源表到 example-data/tables/
-uv run python scripts/gen_example_data.py ./example-data
+# 0.2 mock 造数：生成两张演示 parquet 源表到 example-data/tables/
+uv run -m stkoe mock demo
 ```
 
 > 说明：stkoe 只「发现」磁盘上的 parquet（`table add`），不会替你生成数据；
-> `scripts/gen_example_data.py` 用 polars 造了两张演示表（30 行 × 10 只股票 × 3 个交易日）。
+> `stkoe mock demo` 用 polars 造了两张演示表（30 行 × 10 只股票 × 3 个交易日）到
+> 配置数据目录的 `tables/`，可接着用 `table add` 登记。也可用
+> `uv run -m stkoe mock gen <name> --kind <kind>` 参数化生成单张表
+> （`--kind index/m1/tdcal/common/feature/klday`，`--n-syms/--start/--end/--seed` 可选）。
 
 ## 1. 发现表资产
 
@@ -28,7 +31,7 @@ uv run -m stkoe table add index        # 注册 index（发现 data.parquet，�
 uv run -m stkoe table add m1           # 注册 m1
 uv run -m stkoe table list             # 已注册表清单
 uv run -m stkoe table meta index       # 表元数据（含列信息）
-uv run -m stkoe table get index --where "date >= 2024-01-02" --limit 5   # 谓词裁剪读取
+uv run -m stkoe table get index --where "date >= '2024-01-02'" --limit 5   # 谓词裁剪读取
 ```
 
 ## 2. 逻辑数据集（add 只注册，scan 才物化）
@@ -114,9 +117,11 @@ CLI 子命令走 Execute（同步流式）；长任务（物化/统计）经 gRP
 # 起 gRPC 服务（另一个终端）
 uv run -m stkoe serve
 
-# 用单文件 REPL 客户端演示任务版：mock 示例任务 + 后台物化
+# 用单文件 REPL 客户端演示任务版：mock 造数 + 后台物化
 uv run -m python gclient.py
 stkoe> s:mock                        # 任务版示例：5 步进度 + 日志 + 落盘结果
+stkoe> s:mock demo                   # 任务版 mock 造数（写 tables/index + tables/m1）
+stkoe> s:mock gen mytable --kind klday --n-syms 20   # 任务版参数化生成
 stkoe> s:test scan t1                # 后台物化测试数据集（订阅到终态）
 stkoe> s:stat scan t1 --kind ic      # 后台跑 IC 测试器（单位置简写同样可用）
 stkoe> t:<task_id>                   # 回放订阅某任务事件流

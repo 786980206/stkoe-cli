@@ -9,3 +9,7 @@ dist/
 
 # 本地配置
 stkoe.json
+
+# example.md 演练产物
+example-data/
+stkoe.example.json

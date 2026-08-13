@@ -160,9 +160,34 @@ src/stkoe/
 - `tests/test_grpc.py`：`srv`/`client` fixture（StkoeServer 起真实 gRPC，port=0 自动分配）
 - `tests/test_table.py`：controller 直测 + 任务版链路（`_await`/`_mgr_result` 助手）
 - 流式断言用 `_collect`（先 DataHeader，再数据消息）
-- 全量 198 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
+- 全量 220 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
 ## 近期变更记录
+
+### 2026-08 版本 0.6.0（tag v0.6.0）：mock 接口 + 测试提速 + 依赖整理
+
+- **mock 接口 / demo 默认 300×500 / SQLite 提速**：见下两条记录
+- **numpy 升为直接依赖**：polars 已不再依赖 numpy，`mock/gen.py` 的 `import numpy`
+  在全新 `uv sync` 环境会缺失，故在 pyproject.toml 声明 `numpy>=2.5.2`
+- **镜像源进项目**：pyproject.toml 加 `[[tool.uv.index]]`（tsinghua 默认源），
+  不再依赖 `~/.config/uv/uv.toml`，uv.lock 统一镜像 URL
+- **`.gitignore` 补 `example-data/` + `stkoe.example.json`**（example.md 演练产物）
+
+### 2026-08 测试提速：SQLite catalog 减少 fsync（全量 220 用例 222s → 105s）
+
+慢文件系统（如本 Linux 环境）上，SQLite 每次 `commit`/`close` 的 fsync 高达 ~40-100ms，
+而 Windows NVMe 仅 ~1ms —— 这是全量测试比 Windows 慢数倍的主因（user 时间仅 ~7s，
+几乎全是 I/O 等待）。三处修复均在 `table/catalog.py` + `task/store.py`：
+
+- **`synchronous=NORMAL`**（WAL 模式下）取代默认 FULL：commit 不再逐条 fsync，
+  由 checkpoint 批量落盘；WAL 语义下该设置安全（进程崩溃最多丢 checkpoint 前已提交
+  的少量数据，库不损坏）
+- **DDL 每库只跑一次**：`new_conn()` 原本每次都 `executescript(_SCHEMA)`（8 条建表/建索引），
+  改为 `Catalog._schema_done` 按库路径缓存，后续连接只 connect + pragma
+- **anchor 常开连接**：close() 成为该库最后一个连接时会触发 WAL checkpoint（~100ms/次），
+  在 Catalog 实例上保持一条不读写的 anchor 连接，令短连接 close 不再触发 checkpoint
+
+- 测试：全量 220 用例绿，`test_dataset.py` 23.5s→11s，整包 222s→105s
 
 ### 2026-08 mock 改造为 stkoe mock 接口（替代 scripts/gen_example_data.py）
 

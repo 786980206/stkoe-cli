@@ -63,17 +63,42 @@ CREATE INDEX IF NOT EXISTS idx_stkoe_depends_dep ON stkoe_depends(dep_type, dep_
 class Catalog:
     """单文件 SQLite 目录：表对象、文件清单、列统计"""
 
+    _schema_done: dict[Path, bool] = {}
+
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._anchor: sqlite3.Connection | None = None
+
+    def _ensure_anchor(self) -> None:
+        """保持一条常开连接：避免短连接 close() 时成为最后一个连接而触发
+        WAL checkpoint（该 fsync 在慢文件系统上可达 ~100ms/次）。
+        anchor 本身不读写、不持锁，只阻止 checkpoint-on-last-close。"""
+        if self._anchor is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(self.path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._anchor = conn
 
     def new_conn(self) -> sqlite3.Connection:
-        """新建独立连接（SQLite WAL 支持多连接读写分离）"""
+        """新建独立连接（SQLite WAL 支持多连接读写分离）
+
+        建表/索引 DDL 每库只执行一次（其余连接复用现成 schema），
+        避免每次操作都重复解析 8 条 DDL 语句拖慢测试与高频读写。
+        """
+        self._ensure_anchor()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript(_SCHEMA)
+        if not Catalog._schema_done.get(self.path):
+            if not conn.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='stkoe_objects'"
+            ).fetchone()[0]:
+                conn.executescript(_SCHEMA)
+            Catalog._schema_done[self.path] = True
         conn.commit()
         return conn
 

@@ -95,6 +95,10 @@ def _cmd_feature(raw: list[str]) -> int:
     return _cmd_dispatch("feature", raw)
 
 
+def _cmd_factor(raw: list[str]) -> int:
+    return _cmd_dispatch("factor", raw)
+
+
 def _cmd_task(raw: list[str]) -> int:
     return _cmd_dispatch("task", raw)
 
@@ -111,6 +115,7 @@ def _help() -> str:
         "  fieldset <action> <args...>     fieldset 命令（add/get/meta/list/set/scan/delete/check/test）\n"
         "  sample <action> <args...>       sample 命令（add/get/meta/list/set/check/delete；无物化）\n"
         "  feature <action> <args...>     feature 命令（add/set/meta/list/delete/test；纯定义，无物化）\n"
+        "  factor <action> <args...>      factor 命令（add/get/meta/list/set/check/scan/delete；可物化）\n"
         "  task list [--state <state>]     任务列表（按创建时间倒序）"
     )
 
@@ -140,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_sample(args[1:])
     if cmd == "feature":
         return _cmd_feature(args[1:])
+    if cmd == "factor":
+        return _cmd_factor(args[1:])
     if cmd == "task":
         return _cmd_task(args[1:])
     print(f"未知命令: {cmd}\n{_help()}")

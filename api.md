@@ -7,7 +7,7 @@
 
 所有业务命令统一为 `<source> <action> <args...>` 位置参数形态，等价于 `stkoe <source> <action> <args...>`。
 
-- **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `sample` / `feature` / `stat` / `task` / `mock`
+- **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `sample` / `feature` / `factor` / `stat` / `task` / `mock`
 - **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `scan` / `delete`（`del` 别名）/ `show`
 - **args**：action 之后的位置参数 + `--key value` flag
 
@@ -123,8 +123,16 @@ HealthRequest {}                                   HealthResponse { status, vers
 | feature | `set` | `<name>` | `--engine/--formula/--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
 | feature | `meta` | `<name>` | — | JsonData（FeatureMeta） |
 | feature | `list` | — | — | JsonData（FeatureMeta[]） |
-| feature | `delete`/`del` | `<name>` | — | JsonData `{"deleted"}` |
+| feature | `delete`/`del` | `<name>` | `--force`（下游 factor/sample 依赖存在时） | JsonData `{"deleted"}` |
 | feature | `test` | `<name>` | `--sample <s>`（必选，样本池名） | JsonData（FeatureTestResult）+ ArrowTable（有结果时） |
+| factor | `add` | `<name>` | `--feature <f>`（必选，已注册因子公式） `--sample <s>`（必选，已注册样本池） `--engine <e>`（默认 polars） `--pipeline <算子链>`（默认 `nothing()`，`\|` 分隔） `--factor_col <列名>`（默认 = feature 名） + 元数据键 | JsonData（FactorMeta） |
+| factor | `get` | `<name>` | `--where <谓词>` `--partition <p>` `--limit N` `--offset N` | **ArrowTable**（§3.2 约定；列 = 样本索引 + 1 因子列） |
+| factor | `set` | `<name>` | `--feature/--sample/--engine/--pipeline/--factor_col + 元数据键`（改定义 → 物化失效） | JsonData（FactorMeta） |
+| factor | `meta` | `<name>` | — | JsonData（FactorMeta） |
+| factor | `list` | — | — | JsonData（FactorMeta[]） |
+| factor | `check` | `<name>` | — | JsonData（FactorCheckResult） |
+| factor | `scan` | `<name>` | `--all` `--resync` | JsonData（FactorScanReport 或 []） |
+| factor | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 
 > `table scan` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
@@ -199,6 +207,10 @@ date >= 2024-01-01            开区间（> / >=）
 - **SampleCheckResult**：`sample, ok, rows, columns[], message`
 - **FeatureMeta**：`name, version, engine, formula, display_name, description, unit, tags[], source, extra, created_at, updated_at`
 - **FeatureTestResult**：`feature, sample, ok, valid, rows, columns[], message`
+- **FactorMeta**：`name, version, feature, sample, pipeline, engine, factor_col, keys[]（样本索引）, partition_by, partition_gran(''/year/month/date/identity，镜像源 dataset）, materialized, materialized_at, curated, columns[ColumnMeta]（源 sample 视图列）, field（Factor 因子列 FieldMeta）, extra, display_name, description, tags[], source, created_at, updated_at`
+- **FieldMeta（factor）**：`name, formula（源 feature 公式）, display_name, description, unit, tags[]`
+- **FactorScanReport**：`name, version_before, version_after, materialized, changed, partition_by, rebuilt_partitions[]`
+- **FactorCheckResult**：`factor, ok, rows, columns[], message`（`ok` 条件：计算成功、含全部索引列、因子列恰好 1 列、行数 > 0）
 
 ### 3.8 fieldset 衍生指标集（公式引擎）
 
@@ -246,6 +258,25 @@ date >= 2024-01-01            开区间（> / >=）
 - **依赖**：feature 是**纯定义、不依赖任何资产**，删除源 dataset/sample 不影响 feature
 - 导入顺序与取值规则与 §3.8 一致：源列名可直接当表达式用（`x*2`）
 
+### 3.11 factor 最终因子（feature 公式 + sample 视图 + pipeline 算子链 + 物化）
+
+- **因子（factor）** = 在 **sample**（样本池的 `dataset_with_fieldset` + filter 动态视图）上
+  经 **feature**（命名公式）逐行算出因子列，再经 **pipeline**（算子链）变换后的**最终产物**；
+  输出结构恒为「样本索引列 + 一列因子列」（列名 = `--factor_col`，默认取 feature 名）
+- **pipeline 算子链**：`|` 分隔的算子调用（如 `nothing()|standardlize()`），每段为 `name()`；
+  算子注册制（`register_operator`，当前仅 `nothing()`，原样返回），后续算子按注册即可扩展
+- **物化**：`factor scan` 落盘到 `factors/<name>/`，**布局镜像源 sample 的 dataset**（源已分区则
+  按同分区键/粒度 `part=<v>/data.parquet`，否则单文件 `data.parquet`）；**幂等**——依赖签名
+  （sample 的 dataset data_key + feature formula + pipeline hash）不变则跳过；`--resync` 强制重建
+- **读取**：物化完成且与源+feature+pipeline 一致（`curated`）读物化 parquet；否则实时基于
+  sample 视图计算，不隐式物化（显式 `scan` 触发）
+- **校验**：`factor check` 实时计算——成功、含全部索引列、因子列恰好 1 列、行数 > 0 才算
+  `ok=True`；聚合公式（行数 != 样本行数）→ 校验失败
+- **依赖**：factor → feature、factor → sample（删除上游需 `--force`）；`set` 改定义键
+  （feature/sample/pipeline/factor_col）后物化失效（`materialized=False`、`curated=False`），
+  读取自动回退实时计算
+- **公式引擎**：与 §3.8/§3.10 一致（列作用域 polars eval，当前仅 `polars`）
+
 ---
 
 ## 4. 后台任务（`s:...`）
@@ -254,7 +285,7 @@ date >= 2024-01-01            开区间（> / >=）
 
 `SubmitTask(source, action, args)` 立即返回 `header + task_id`（`code=0` 成功）。任务在独立事件循环线程执行。
 
-支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/mock/table/dataset/fieldset/sample/feature/stat 全部动作），结果放在**终态事件的 `data`**（JSON 字符串）。
+支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/mock/table/dataset/fieldset/sample/feature/factor/stat 全部动作），结果放在**终态事件的 `data`**（JSON 字符串）。
 
 ### 4.2 事件流（SubscribeTask）
 
@@ -298,7 +329,7 @@ pending → running → succeeded
 ### 4.5 任务元操作
 
 - `e:task list`：按创建时间倒序，`--state` 过滤。任务项：`task_id, source, action, args, state, progress, created_at, started_at, finished_at, error, result_ref`
-- **大结果落盘**：`table/dataset/stat get` 用 `ctx.put_result` 写 `tasks/<task_id>/<name>`（Arrow IPC / parquet），任务项只存 `result_ref`；`s:table get` 的 `data` 含 `{"name","rows","total","columns","result_ref"}`
+- **大结果落盘**：`table/dataset/fieldset/sample/stat/factor get` 用 `ctx.put_result` 写 `tasks/<task_id>/<name>`（Arrow IPC / parquet），任务项只存 `result_ref`；`s:... get` 的 `data` 含 `{"name","rows","total","columns","result_ref"}`
 - `stop`（服务停止）：先在跑任务统一收尾为 `cancelled`，DB 不遗留 orphan
 
 ### 4.6 `mock` 示例任务
@@ -320,6 +351,7 @@ pending → running → succeeded
 | `stkoe fieldset <action> <args...>` | fieldset 命令（add/get/meta/list/set/scan/delete/check/test） |
 | `stkoe sample <action> <args...>` | sample 命令（add/get/meta/list/set/check/delete；无物化） |
 | `stkoe feature <action> <args...>` | feature 命令（add/set/meta/list/delete/test；纯定义，无物化） |
+| `stkoe factor <action> <args...>` | factor 命令（add/get/meta/list/set/check/scan/delete；可物化） |
 | `stkoe task list [--state <state>]` | 任务列表 |
 
 CLI 的 `table/dataset/stat` 表格结果以 ` <table <name>: N 字节 IPC> ` 形式占位打印。
@@ -382,6 +414,7 @@ t:<task_id>
 ├── tables/<name>/             # 用户 parquet（只读，绝不写/删）
 ├── datasets/<name>/           # dataset 物化产物（data.parquet 或 part=<v>/data.parquet）
 ├── fieldsets/<name>/          # fieldset 物化产物（keys + 已校验指标；布局镜像源 dataset）
+├── factors/<name>/            # factor 物化产物（样本索引 + 1 因子列；布局镜像源 dataset）
 └── stats/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 catalog）
 ```
 
@@ -390,6 +423,7 @@ t:<task_id>
 - **stat 资产不进 catalog**：文件夹存在即已扫描，`meta`/`list` 读目录
 - **sample 无物化产物**：只登记于 catalog（type='sample'），读取动态构造 dataset_with_fieldset
 - **feature 纯定义**：只登记于 catalog（type='feature'），无任何磁盘产物
+- **factor 物化产物**：`factors/<name>/`（仅索引列 + 因子列），布局镜像源 dataset；删除 factor 时一并清理
 
 ### 8.1 覆盖率统计输出列（ALL_COLS）
 
@@ -422,11 +456,16 @@ stkoe sample check sp1
 # 因子定义库（命名公式，test 在样本池视图上求值）
 stkoe feature add ma5 --formula "price.rolling_mean(5)" --unit "元"
 stkoe feature test ma5 --sample sp1
+# 最终因子（在样本池视图上算因子列 + pipeline 变换，可物化）
+stkoe factor add fac1 --feature ma5 --sample sp1 --pipeline "nothing()"
+stkoe factor check fac1
+stkoe factor scan fac1
 # gRPC 读取
 gclient> e:dataset get ds1 --where "date >= 2024-01-01" --limit 100
 gclient> e:fieldset get fs1 --columns k,ma5 --limit 100
 gclient> e:sample get sp1 --limit 100
 gclient> e:feature test ma5 --sample sp1
+gclient> e:factor get fac1 --limit 100
 gclient> e:stat get dataset ds1 --partition_by all
 # 后台物化 + 订阅进度
 gclient> s:fieldset scan fs1

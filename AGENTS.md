@@ -68,6 +68,11 @@ src/stkoe/
 │   ├── engine.py      # 公式引擎插件（复用 CalcEngine 注册表；仅 polars）
 │   ├── controller.py  # async add/set/meta/list/test/delete（test 在 sample 视图上求值）
 │   └── handlers.py    # 任务版 Handler（source="feature"，注册进 TaskRegistry）
+├── factor/            # 最终因子（FactorController，async 接口）
+│   ├── spec.py        # FactorMeta/FactorScanReport/FactorCheckResult/FieldMeta dataclass
+│   ├── engine.py      # 算子注册表（FactorOperator/NothingOperator）+ pipeline 解析 + 公式引擎
+│   ├── controller.py  # async add/get/meta/list/set/check/scan/delete（sample 视图算因子列→算子链→物化）
+│   └── handlers.py    # 任务版 Handler（source="factor"，注册进 TaskRegistry）
 ├── stat/              # 数据统计资产（StatController，async 接口）
 │   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
 │   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
@@ -146,9 +151,31 @@ src/stkoe/
 - `tests/test_grpc.py`：`srv`/`client` fixture（StkoeServer 起真实 gRPC，port=0 自动分配）
 - `tests/test_table.py`：controller 直测 + 任务版链路（`_await`/`_mgr_result` 助手）
 - 流式断言用 `_collect`（先 DataHeader，再数据消息）
-- 全量 137 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
+- 全量 162 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
 ## 近期变更记录
+
+### 2026-08 factor 最终因子模块（feature 公式 + sample 视图 + pipeline 算子链 + 物化）
+
+- **新增 `factor` 模块**：最终因子（factor）= 在 **sample** 视图上经 **feature** 公式逐行
+  算出因子列，再经 **pipeline** 算子链变换的产物；输出结构恒为「样本索引列 + 一列因子列」
+  （列名默认取 feature 名，`--factor_col` 可改）；注册于 catalog（type='factor'）
+- **算子注册表**（engine.py）：`FactorOperator` 接口 + `register_operator`/`get_operator`，
+  当前仅 `nothing()`（恒等）；pipeline 语法 `|` 分隔的 `name()`（如
+  `nothing()|standardlize()`），`parse_pipeline` 逐段解析，后续算子注册即可扩展
+- **物化** `factor scan`：落盘 `factors/<name>/`，**布局镜像源 dataset**（源已分区则按同
+  分区键/粒度 `part=<v>/data.parquet`，否则单文件）；**幂等**——依赖签名（sample 的 dataset
+  data_key + feature formula + pipeline）不变则跳过；`--resync` 强制重建
+- **读取**：物化且 curated 读物化 parquet（含 hive 分区列 `part`），否则实时基于 sample
+  视图计算，**不隐式物化**；`factor check` 校验计算成功 + 含全部索引列 + 因子列恰好 1 列 + 行数 > 0
+- **依赖登记**：factor → feature、factor → sample（stkoe_depends），删除上游需 `--force`；
+  `set` 改定义键（feature/sample/pipeline/factor_col）后物化失效，读取自动回退实时
+- **feature 删除增加依赖阻断**：FeatureController.delete 检查 `dependents`（factor 依赖存在时
+  需 `--force`，参照 sample/dataset），Execute/任务版/CLI 三处对齐
+- **多路径注册**：Execute（dispatch.py）/ SubmitTask（handlers.py）/ CLI（cli.py）三处对齐；
+  `api.md` §3.1/§3.7/§3.11/§4.1/§4.5/§5/§8/§9 同步
+- 测试：`tests/test_factor.py` 全链路（CRUD/实时计算/样本过滤/pipeline/check/scan 幂等与
+  resync/curated 失效/依赖阻断/任务版 24 例）+ `tests/test_grpc.py` Execute 链路，全量 162 用例绿
 
 ### 2026-08 feature 因子定义库模块（命名公式，纯定义无物化）
 

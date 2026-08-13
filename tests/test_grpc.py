@@ -437,6 +437,69 @@ def test_execute_feature_add_test_list_delete(client, srv):
     assert _json(datas, "feature") == {"deleted": "f1"}
 
 
+# ---------- Execute 版 factor ----------
+
+def test_execute_factor_add_get_check_scan_delete(client, srv):
+    """Execute 路径 factor add/get/check/scan/delete 全链路（与 s:factor 任务版对齐）"""
+    import asyncio
+    import polars as pl
+
+    from stkoe.dataset import DatasetController
+    from stkoe.feature import FeatureController
+    from stkoe.sample import SampleController
+    from stkoe.table import TableController
+
+    root = srv.data_dir
+    d = Path(root) / "tables" / "idx"
+    d.mkdir(parents=True)
+    pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0]}).write_parquet(d / "data.parquet")
+
+    def run(a):
+        return asyncio.run(a)
+
+    tctl = TableController(data_dir=root)
+    run(tctl.add("idx"))
+    dc = DatasetController(data_dir=root)
+    run(dc.add("ds", "idx", keys=["k"]))
+    sc = SampleController(data_dir=root)
+    run(sc.add("sp1", dataset="ds"))
+    fc = FeatureController(data_dir=root)
+    run(fc.add("f1", formula="x*2"))
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="factor", action="add", args=["fac1", "--feature", "f1",
+                                             "--sample", "sp1"])))
+    assert header.code == 0
+    assert _json(datas, "factor")["name"] == "fac1"
+    assert _json(datas, "factor")["keys"] == ["k"]
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="factor", action="get", args=["fac1"])))
+    assert header.code == 0
+    tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
+    assert len(tables) == 1
+    meta = json.loads(tables[0].table.meta)
+    assert meta["rows"] == 2
+    assert [c["name"] for c in meta["columns"]] == ["k", "f1"]
+    assert meta["total"] == 2
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="factor", action="check", args=["fac1"])))
+    assert header.code == 0
+    assert _json(datas, "factor")["ok"] is True
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="factor", action="scan", args=["fac1"])))
+    assert header.code == 0
+    assert _json(datas, "factor")["changed"] is True
+    assert (Path(root) / "factors" / "fac1" / "data.parquet").exists()
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="factor", action="delete", args=["fac1"])))
+    assert header.code == 0
+    assert _json(datas, "factor") == {"deleted": "fac1"}
+
+
 # ---------- 请求日志 ----------
 
 def test_grpc_request_logging(client, caplog):

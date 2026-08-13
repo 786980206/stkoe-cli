@@ -159,13 +159,22 @@ class FeatureController:
         finally:
             conn.close()
 
-    def _delete_sync(self, name: str) -> dict:
+    def _delete_sync(self, name: str, *, force: bool = False) -> dict:
+        from ..table.catalog import dependents
+
         conn = self.catalog.new_conn()
         try:
             obj = self._object(conn, name)
             if obj is None:
                 raise FeatureNotFoundError(f"feature not registered: {name}")
+            dependents_rows = dependents(conn, "feature", name)
+            if dependents_rows and not force:
+                from ..table.controller import DependencyError
+
+                raise DependencyError(dependents_rows)
             conn.execute("DELETE FROM stkoe_objects WHERE id=?", (obj["id"],))
+            conn.execute("DELETE FROM stkoe_depends WHERE obj_type='feature' AND obj_name=?",
+                         (name,))
             conn.commit()
         finally:
             conn.close()
@@ -203,9 +212,9 @@ class FeatureController:
         """更新因子定义（formula/engine/display_name/description/unit/tags；任意键进 extra）"""
         return await asyncio.to_thread(self._set_sync, name, kw)
 
-    async def delete(self, name: str) -> dict:
-        """删除因子定义（纯定义，无数据产物）"""
-        return await asyncio.to_thread(self._delete_sync, name)
+    async def delete(self, name: str, *, force: bool = False) -> dict:
+        """删除因子定义（纯定义，无数据产物）；下游依赖存在时需 --force"""
+        return await asyncio.to_thread(self._delete_sync, name, force=force)
 
     async def meta(self, name: str) -> FeatureMeta:
         return await asyncio.to_thread(self._describe_sync, name)

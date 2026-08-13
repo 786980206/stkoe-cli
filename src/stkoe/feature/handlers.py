@@ -66,8 +66,9 @@ class FeatureDeleteHandler(TaskHandler):
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("feature delete 需要因子名")
+        flags = parse_flags(ctx.args)
         ctl = _controller(ctx)
-        out = await ctl.delete(pos[0])
+        out = await ctl.delete(pos[0], force=bool(flags.get("force")))
         return TaskResult(data=dumps_str(out))
 
 

@@ -806,8 +806,9 @@ def _feature_delete(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("feature delete 需要因子名")
+    flags = parse_flags(args)
     ctl = _feature_controller(data_dir)
-    out = asyncio.run(ctl.delete(pos[0]))
+    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
     return [Result.json("feature", out)]
 
 
@@ -845,3 +846,128 @@ def _feature_test(args: list[str], data_dir=None) -> list[Result]:
         return [Result.json("feature", res.to_dict()),
                 Result.table(f"test/{pos[0]}", buf.getvalue())]
     return [Result.json("feature", res.to_dict())]
+
+
+# ---------------------------------------------------------------------------
+# factor 同步处理器（Execute 路径；SubmitTask 后台任务版在 factor/handlers.py）
+# ---------------------------------------------------------------------------
+
+def _factor_controller(data_dir=None):
+    from ..factor.controller import FactorController
+
+    return FactorController(data_dir=data_dir)
+
+
+def _factor_arrow_meta(name: str, df, total: int, fm) -> str:
+    """ArrowTable.meta JSON：rows/total + factor 列元数据（索引列 + 因子列说明）"""
+    keys = set(fm.keys)
+    cols = []
+    for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
+        if cn in keys:
+            cols.append({"name": cn, "data_type": dt, "as_index": True})
+        elif fm.field is not None and cn == fm.factor_col:
+            cols.append({**fm.field.to_dict(), "data_type": dt})
+        else:
+            cols.append({"name": cn, "data_type": dt})
+    return dumps_str({"name": name, "rows": df.height, "total": total,
+                      "columns": cols})
+
+
+@handler("factor", "add")
+def _factor_add(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("factor add 需要因子名")
+    flags = parse_flags(args)
+    ctl = _factor_controller(data_dir)
+    fm = asyncio.run(ctl.add(pos[0], **flags))
+    return [Result.json("factor", fm.to_dict())]
+
+
+@handler("factor", "get")
+def _factor_get(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("factor get 需要因子名")
+    flags = parse_flags(args)
+    ctl = _factor_controller(data_dir)
+    df, total = asyncio.run(ctl.get(
+        pos[0],
+        where=flags.get("where"),
+        partition=flags.get("partition"),
+        limit=int(flags["limit"]) if flags.get("limit") else None,
+        offset=int(flags["offset"]) if flags.get("offset") else None,
+        count_total=True,
+    ))
+    fm = asyncio.run(ctl.meta(pos[0]))
+    buf = io.BytesIO()
+    df.write_ipc_stream(buf)
+    return [Result.table(pos[0], buf.getvalue(),
+                         meta=_factor_arrow_meta(pos[0], df, total, fm))]
+
+
+@handler("factor", "set")
+def _factor_set(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    if not pos:
+        raise CommandError("factor set 需要因子名")
+    if not flags:
+        raise CommandError("factor set 需要至少一个 --key value")
+    ctl = _factor_controller(data_dir)
+    fm = asyncio.run(ctl.set(pos[0], **flags))
+    return [Result.json("factor", fm.to_dict())]
+
+
+@handler("factor", "del")
+@handler("factor", "delete")
+def _factor_delete(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("factor delete 需要因子名")
+    flags = parse_flags(args)
+    ctl = _factor_controller(data_dir)
+    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
+    return [Result.json("factor", out)]
+
+
+@handler("factor", "meta")
+def _factor_meta(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("factor meta 需要因子名")
+    ctl = _factor_controller(data_dir)
+    fm = asyncio.run(ctl.meta(pos[0]))
+    return [Result.json("factor", fm.to_dict())]
+
+
+@handler("factor", "list")
+@handler("factor", "")
+def _factor_list(args: list[str], data_dir=None) -> list[Result]:
+    ctl = _factor_controller(data_dir)
+    fms = asyncio.run(ctl.list())
+    return [Result.json("factors", [fm.to_dict() for fm in fms])]
+
+
+@handler("factor", "check")
+def _factor_check(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("factor check 需要因子名")
+    ctl = _factor_controller(data_dir)
+    res = asyncio.run(ctl.check(pos[0]))
+    return [Result.json("factor", res.to_dict())]
+
+
+@handler("factor", "scan")
+def _factor_scan(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    ctl = _factor_controller(data_dir)
+    if flags.get("all"):
+        reports = asyncio.run(ctl.scan(all=True, resync=bool(flags.get("resync"))))
+        return [Result.json("factors", [r.to_dict() for r in reports])]
+    if not pos:
+        raise CommandError("factor scan 需要因子名（或 --all）")
+    report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
+    return [Result.json("factor", report.to_dict())]

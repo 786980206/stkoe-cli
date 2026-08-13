@@ -78,6 +78,9 @@ class TaskManager:
         from ..sample.handlers import register as _register_sample_handlers
 
         _register_sample_handlers(self.registry)
+        from ..feature.handlers import register as _register_feature_handlers
+
+        _register_feature_handlers(self.registry)
 
     # ---------- 提交 / 查询 / 取消 ----------
 

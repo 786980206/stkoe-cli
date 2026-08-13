@@ -761,3 +761,87 @@ def _sample_delete(args: list[str], data_dir=None) -> list[Result]:
     ctl = _sample_controller(data_dir)
     out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
     return [Result.json("sample", out)]
+
+
+# ---------------------------------------------------------------------------
+# feature 同步处理器（Execute 路径；SubmitTask 后台任务版在 feature/handlers.py）
+# ---------------------------------------------------------------------------
+
+def _feature_controller(data_dir=None):
+    from ..feature.controller import FeatureController
+
+    return FeatureController(data_dir=data_dir)
+
+
+@handler("feature", "add")
+def _feature_add(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("feature add 需要因子名")
+    flags = parse_flags(args)
+    ctl = _feature_controller(data_dir)
+    ft = asyncio.run(ctl.add(pos[0], engine=flags.get("engine") or "polars",
+                             formula=flags.get("formula") or "", **{
+                                 k: v for k, v in flags.items()
+                                 if k not in ("engine", "formula")}))
+    return [Result.json("feature", ft.to_dict())]
+
+
+@handler("feature", "set")
+def _feature_set(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    if not pos:
+        raise CommandError("feature set 需要因子名")
+    if not flags:
+        raise CommandError("feature set 需要至少一个 --key value")
+    ctl = _feature_controller(data_dir)
+    ft = asyncio.run(ctl.set(pos[0], **flags))
+    return [Result.json("feature", ft.to_dict())]
+
+
+@handler("feature", "del")
+@handler("feature", "delete")
+def _feature_delete(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("feature delete 需要因子名")
+    ctl = _feature_controller(data_dir)
+    out = asyncio.run(ctl.delete(pos[0]))
+    return [Result.json("feature", out)]
+
+
+@handler("feature", "meta")
+def _feature_meta(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("feature meta 需要因子名")
+    ctl = _feature_controller(data_dir)
+    ft = asyncio.run(ctl.meta(pos[0]))
+    return [Result.json("feature", ft.to_dict())]
+
+
+@handler("feature", "list")
+@handler("feature", "")
+def _feature_list(args: list[str], data_dir=None) -> list[Result]:
+    ctl = _feature_controller(data_dir)
+    fts = asyncio.run(ctl.list())
+    return [Result.json("features", [ft.to_dict() for ft in fts])]
+
+
+@handler("feature", "test")
+def _feature_test(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("feature test 需要因子名")
+    flags = parse_flags(args)
+    if not flags.get("sample"):
+        raise CommandError("feature test 需要 --sample <样本池名>")
+    ctl = _feature_controller(data_dir)
+    res, df = asyncio.run(ctl.test(pos[0], flags["sample"]))
+    if df is not None and df.height:
+        buf = io.BytesIO()
+        df.write_ipc_stream(buf)
+        return [Result.json("feature", res.to_dict()),
+                Result.table(f"test/{pos[0]}", buf.getvalue())]
+    return [Result.json("feature", res.to_dict())]

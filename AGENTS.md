@@ -63,6 +63,11 @@ src/stkoe/
 │   ├── engine.py      # 过滤引擎插件（SampleEngine + register/get；仅 polars）
 │   ├── controller.py  # async add/get/meta/list/set/check/delete（读时动态构造 dataset_with_fieldset）
 │   └── handlers.py    # 任务版 Handler（source="sample"，注册进 TaskRegistry）
+├── feature/           # 因子定义库（FeatureController，async 接口；纯定义，无物化）
+│   ├── spec.py        # FeatureMeta/FeatureTestResult dataclass
+│   ├── engine.py      # 公式引擎插件（复用 CalcEngine 注册表；仅 polars）
+│   ├── controller.py  # async add/set/meta/list/test/delete（test 在 sample 视图上求值）
+│   └── handlers.py    # 任务版 Handler（source="feature"，注册进 TaskRegistry）
 ├── stat/              # 数据统计资产（StatController，async 接口）
 │   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
 │   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
@@ -141,9 +146,28 @@ src/stkoe/
 - `tests/test_grpc.py`：`srv`/`client` fixture（StkoeServer 起真实 gRPC，port=0 自动分配）
 - `tests/test_table.py`：controller 直测 + 任务版链路（`_await`/`_mgr_result` 助手）
 - 流式断言用 `_collect`（先 DataHeader，再数据消息）
-- 全量 122 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
+- 全量 137 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
 ## 近期变更记录
+
+### 2026-08 feature 因子定义库模块（命名公式，纯定义无物化）
+
+- **新增 `feature` 模块**：因子（feature）= 一条**命名公式**，注册于 catalog
+  （type='feature'）；**纯定义、无物化**、不依赖具体表/dataset/sample；
+  `add` 只记录 `engine + formula + 元数据`（formula 可空，仅登记元信息）
+- **公式引擎插件制**（engine.py）：`FeatureEngine` 接口 + `register_engine`/`get_engine`
+  注册表，当前仅 `polars`（列作用域 eval，与 fieldset/样本过滤一致）
+- **`feature test <name> --sample <s>`**：在指定样本池的 `dataset_with_fieldset` 视图上
+  即时求值 —— 公式执行成功且结果行数 == 样本行数 → `valid=True` 并返回结果
+  ArrowTable（单列 `field`）；聚合公式 → `valid=False`（message 说明需逐行）；
+  公式报错 → `ok=False` 无结果；样本未注册 → 报错
+- **`set` 只改定义与元数据**（engine/formula/display_name/description/unit/tags/source
+  + 任意键进 extra，版本递增）；未注册报 `FeatureNotFoundError`
+- **读时构造 `dataset_with_fieldset`**：复用 sample 的实时视图构造（well-behaved）
+- **多路径注册**：Execute（dispatch.py）/ SubmitTask（handlers.py）/ CLI（cli.py）
+  三处对齐；`api.md` §3.1/§3.7/§3.10/§4.1/§5/§8/§9 同步
+- 测试：`tests/test_feature.py` 全链路（CRUD/元信息/test 求值·过滤·校验/聚合无效/
+  执行失败/任务版）+ `tests/test_grpc.py` Execute 链路，全量 137 用例绿
 
 ### 2026-08 sample 样本池模块（基于 dataset_with_fieldset 的过滤产物，无物化）
 

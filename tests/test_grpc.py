@@ -383,6 +383,60 @@ def test_execute_sample_add_check_get_delete(client, srv):
     assert _json(datas, "sample") == {"deleted": "sp1"}
 
 
+# ---------- Execute 版 feature ----------
+
+def test_execute_feature_add_test_list_delete(client, srv):
+    """Execute 路径 feature add/test/list/delete 全链路（与 s:feature 任务版对齐）"""
+    import asyncio
+    import polars as pl
+
+    from stkoe.dataset import DatasetController
+    from stkoe.sample import SampleController
+    from stkoe.table import TableController
+
+    root = srv.data_dir
+    d = Path(root) / "tables" / "idx"
+    d.mkdir(parents=True)
+    pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0],
+                  "optime": ["2024-01-01 08:00:00"] * 2}).write_parquet(d / "data.parquet")
+
+    def run(a):
+        return asyncio.run(a)
+
+    tctl = TableController(data_dir=root)
+    run(tctl.add("idx"))
+    dc = DatasetController(data_dir=root)
+    run(dc.add("ds", "idx", keys=["k"]))
+    sc = SampleController(data_dir=root)
+    run(sc.add("sp1", dataset="ds"))
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="feature", action="add", args=["f1", "--formula", "x*2"])))
+    assert header.code == 0
+    assert _json(datas, "feature")["name"] == "f1"
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="feature", action="test", args=["f1", "--sample", "sp1"])))
+    assert header.code == 0
+    res = _json(datas, "feature")
+    assert res["ok"] is True
+    assert res["valid"] is True
+    assert res["rows"] == 2
+    tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
+    assert len(tables) == 1
+    assert tables[0].table.name == "test/f1"
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="feature", action="list")))
+    assert header.code == 0
+    assert [ft["name"] for ft in _json(datas, "features")] == ["f1"]
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="feature", action="delete", args=["f1"])))
+    assert header.code == 0
+    assert _json(datas, "feature") == {"deleted": "f1"}
+
+
 # ---------- 请求日志 ----------
 
 def test_grpc_request_logging(client, caplog):

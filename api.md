@@ -7,7 +7,7 @@
 
 所有业务命令统一为 `<source> <action> <args...>` 位置参数形态，等价于 `stkoe <source> <action> <args...>`。
 
-- **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `sample` / `stat` / `task` / `mock`
+- **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `sample` / `feature` / `stat` / `task` / `mock`
 - **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `scan` / `delete`（`del` 别名）/ `show`
 - **args**：action 之后的位置参数 + `--key value` flag
 
@@ -119,6 +119,12 @@ HealthRequest {}                                   HealthResponse { status, vers
 | sample | `set` | `<name>` | `--engine <e>` `--formula <表达式>` `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（SampleMeta） |
 | sample | `check` | `<name>` | — | JsonData（SampleCheckResult） |
 | sample | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
+| feature | `add` | `<name>` | `--engine <e>`（默认 polars） `--formula <表达式>`（可空，空则只 add 元信息） `--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
+| feature | `set` | `<name>` | `--engine/--formula/--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
+| feature | `meta` | `<name>` | — | JsonData（FeatureMeta） |
+| feature | `list` | — | — | JsonData（FeatureMeta[]） |
+| feature | `delete`/`del` | `<name>` | — | JsonData `{"deleted"}` |
+| feature | `test` | `<name>` | `--sample <s>`（必选，样本池名） | JsonData（FeatureTestResult）+ ArrowTable（有结果时） |
 
 > `table scan` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
@@ -191,6 +197,8 @@ date >= 2024-01-01            开区间（> / >=）
 - **FieldsetCheckResult**：`fieldset, field, ok, message`
 - **SampleMeta**：`name, version, dataset, engine, formula, keys[]（源 dataset 主键）, columns[ColumnMeta]（dataset_with_fieldset 列 = 源列 + fieldset 衍生指标列）, display_name, description, tags[], source, extra, created_at, updated_at`
 - **SampleCheckResult**：`sample, ok, rows, columns[], message`
+- **FeatureMeta**：`name, version, engine, formula, display_name, description, unit, tags[], source, extra, created_at, updated_at`
+- **FeatureTestResult**：`feature, sample, ok, valid, rows, columns[], message`
 
 ### 3.8 fieldset 衍生指标集（公式引擎）
 
@@ -224,6 +232,20 @@ date >= 2024-01-01            开区间（> / >=）
 - **依赖**：sample → 源 dataset（删除源 dataset 需 `--force`）；`set` 可改
   formula/engine 及元数据（版本递增），读取无需重新校验
 
+### 3.10 feature 因子定义库（纯定义，无物化）
+
+- **因子（feature）** = 一条命名公式（如 `ma5`、`rsi`），登记于 catalog（type='feature'），
+  **没有物化概念**、不依赖具体表/dataset：`add` 只记录 `engine + formula + 元数据`
+- **公式语言**：与 fieldset/样本过滤一致，用 `feature/engine.py` 引擎插件（当前仅 `polars`）
+  在样本视图列作用域里 eval，逐行计算
+- **`feature test <name> --sample <s>`**：在指定样本池的 `dataset_with_fieldset` 视图上
+  即时求值 —— 公式执行成功且结果行数 == 样本行数 → `valid=True` 并返回结果
+  ArrowTable（单列 `field`）；聚合公式或执行失败 → `valid=False` / `ok=False`
+- **`add` 可只记元信息（formula 为空）**：此时 test 返回空结果
+  （`valid=True, rows=0`，无 ArrowTable）
+- **依赖**：feature 是**纯定义、不依赖任何资产**，删除源 dataset/sample 不影响 feature
+- 导入顺序与取值规则与 §3.8 一致：源列名可直接当表达式用（`x*2`）
+
 ---
 
 ## 4. 后台任务（`s:...`）
@@ -232,7 +254,7 @@ date >= 2024-01-01            开区间（> / >=）
 
 `SubmitTask(source, action, args)` 立即返回 `header + task_id`（`code=0` 成功）。任务在独立事件循环线程执行。
 
-支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/mock/table/dataset/stat 全部动作），结果放在**终态事件的 `data`**（JSON 字符串）。
+支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/mock/table/dataset/fieldset/sample/feature/stat 全部动作），结果放在**终态事件的 `data`**（JSON 字符串）。
 
 ### 4.2 事件流（SubscribeTask）
 
@@ -297,6 +319,7 @@ pending → running → succeeded
 | `stkoe stat <action> <args...>` | stat 命令 |
 | `stkoe fieldset <action> <args...>` | fieldset 命令（add/get/meta/list/set/scan/delete/check/test） |
 | `stkoe sample <action> <args...>` | sample 命令（add/get/meta/list/set/check/delete；无物化） |
+| `stkoe feature <action> <args...>` | feature 命令（add/set/meta/list/delete/test；纯定义，无物化） |
 | `stkoe task list [--state <state>]` | 任务列表 |
 
 CLI 的 `table/dataset/stat` 表格结果以 ` <table <name>: N 字节 IPC> ` 形式占位打印。
@@ -366,6 +389,7 @@ t:<task_id>
 - **表删除只删 catalog 登记，绝不删用户 parquet**（可重新 `add` 发现）；dataset 删除含物化产物
 - **stat 资产不进 catalog**：文件夹存在即已扫描，`meta`/`list` 读目录
 - **sample 无物化产物**：只登记于 catalog（type='sample'），读取动态构造 dataset_with_fieldset
+- **feature 纯定义**：只登记于 catalog（type='feature'），无任何磁盘产物
 
 ### 8.1 覆盖率统计输出列（ALL_COLS）
 
@@ -395,10 +419,14 @@ stkoe fieldset scan fs1
 # 样本池（基于 dataset_with_fieldset 过滤，无物化）
 stkoe sample add sp1 --dataset ds1 --formula "(date>='2026-01-01')&(price>0)"
 stkoe sample check sp1
+# 因子定义库（命名公式，test 在样本池视图上求值）
+stkoe feature add ma5 --formula "price.rolling_mean(5)" --unit "元"
+stkoe feature test ma5 --sample sp1
 # gRPC 读取
 gclient> e:dataset get ds1 --where "date >= 2024-01-01" --limit 100
 gclient> e:fieldset get fs1 --columns k,ma5 --limit 100
 gclient> e:sample get sp1 --limit 100
+gclient> e:feature test ma5 --sample sp1
 gclient> e:stat get dataset ds1 --partition_by all
 # 后台物化 + 订阅进度
 gclient> s:fieldset scan fs1

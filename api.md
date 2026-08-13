@@ -94,11 +94,11 @@ HealthRequest {}                                   HealthResponse { status, vers
 | dataset | `set` | `<name>` | `--display_name/--description/--tags <v>` + 任意键 | JsonData（DatasetMeta） |
 | dataset | `scan` | `<name>` | `--all` `--resync` | JsonData（DatasetScanReport 或 []） |
 | dataset | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| stat | `scan` | `<table\|dataset> <name>` | `--kind <kind>`（`coverage` 默认 / `storage`） | JsonData（StatScanReport） |
-| stat | `get` | `<table\|dataset> <name>` | `--partition_by <p>` `--kind <kind>` | JsonData + ArrowTable（§3.6） |
-| stat | `meta` | `<table\|dataset> <name>` | `--kind <kind>` | JsonData（StatMeta） |
+| stat | `scan` | `<table\|dataset\|test> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic` `coverage`） | JsonData（StatScanReport） |
+| stat | `get` | `<table\|dataset\|test> <name>` | `--partition_by <p>` `--kind <kind>` | JsonData + ArrowTable（§3.6） |
+| stat | `meta` | `<table\|dataset\|test> <name>` | `--kind <kind>` | JsonData（StatMeta） |
 | stat | `list` | — | — | JsonData（StatMeta[]） |
-| stat | `delete`/`del` | `<table\|dataset> <name>` | `--kind <kind>` | JsonData `{"deleted"}` |
+| stat | `delete`/`del` | `<table\|dataset\|test> <name>` | `--kind <kind>` | JsonData `{"deleted"}` |
 | fieldset | `add` | `<name>` | `--dataset <d>`（必选） `--engine <e>`（默认 polars） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
 | fieldset | `add` | `<name> <field>` | `--formula <表达式>`（必选） `--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta，指标 validated=False） |
 | fieldset | `set` | `<name>` | `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
@@ -133,6 +133,14 @@ HealthRequest {}                                   HealthResponse { status, vers
 | factor | `check` | `<name>` | — | JsonData（FactorCheckResult） |
 | factor | `scan` | `<name>` | `--all` `--resync` | JsonData（FactorScanReport 或 []） |
 | factor | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
+| test | `add` | `<name>` | `--factor <f>`（必选，已注册因子） `--returns <col>`（默认 `r`） `--groupby <col>`（默认 `ic`） `--marketcap <col>`（默认 `fv`） `--by_group` `--quantiles N`（默认 5） `--periods p1,p2,..`（默认 `1,5,10`） `--date_range start,end`（默认 `2023-01-01,2026-01-01`） `--rolling_window N`（默认 252） + 元数据键 | JsonData（FactorTestMeta）；sample 缺 date/sym/returns/groupby/marketcap 列 → 报错 |
+| test | `get` | `<name>` | `--where <谓词>` `--limit N` `--offset N` | **ArrowTable**（测试数据集：date/sym/sample/returns/group/marketcap/factor/d{no}/factor_quantile） |
+| test | `set` | `<name>` | `--returns/--groupby/--marketcap/--factor_col/--by_group/--quantiles/--periods/--date_range/--rolling_window + 元数据键`（改配置 → 物化失效） | JsonData（FactorTestMeta） |
+| test | `meta` | `<name>` | — | JsonData（FactorTestMeta） |
+| test | `list` | — | — | JsonData（FactorTestMeta[]） |
+| test | `check` | `<name>` | — | JsonData（FactorTestCheckResult） |
+| test | `scan` | `<name>` | `--all` `--resync` | JsonData（FactorTestScanReport 或 []） |
+| test | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 
 > `table scan` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
@@ -277,6 +285,32 @@ date >= 2024-01-01            开区间（> / >=）
   读取自动回退实时计算
 - **公式引擎**：与 §3.8/§3.10 一致（列作用域 polars eval，当前仅 `polars`）
 
+### 3.12 factor_test 因子测试数据集（`test` 源 + `stat scan ... --kind <测试器>`）
+
+- **测试数据集（test）** = 在 **factor 关联的 sample** 视图上，结合测试必需列
+  （`date/sym` + returns/groupby/marketcap 列）生成的一份因子测试面板；注册于 catalog
+  （type='factor_test'）。`test add` 时若 sample 视图缺少这些列 → **报错拒绝创建**
+- **Schema**：`date / sym / sample(1观测/0非观测/-1因子空剔除) / returns / group /
+  marketcap / factor / d{no}（sym 内前向累计收益）/ factor_quantile（截面分位，by_group
+  时组内）`
+- **测试列命名**：`--returns/--groupby/--marketcap`（默认 `r/ic/fv`）指定 sample 视图中的
+  收益/分组/市值列名；因子列名取 factor 的 `factor_col`
+- **物化**：`test scan` 落盘 `factor_tests/<name>/data.parquet`（flat 单文件）；**幂等**——
+  依赖签名（factor 依赖 hash + spec + 测试列名）不变则跳过；`--resync` 强制重建
+- **读取**：物化且 curated 读 parquet，否则实时构造（不隐式物化）；`set` 改配置
+  （returns/groupby/marketcap/spec 键）后物化失效自动回退实时
+- **校验**：`test check` 实时构造——成功、含全部必需列、行数 > 0 才算 `ok=True`
+- **依赖**：test → factor（删除 factor 需 `--force`）
+- **测试器（stat 集成）**：`stat scan test <name> --kind <kind>` 或
+  `stat scan <name> --kind <kind>`（单位置参数简写）运行测试器并把各命名产物写入
+  `stats/test/<name>/<kind>/<output>.parquet`；`stat get` 用 `--partition_by <output>` 读单产物
+  - `coverage` → `cvg_date`（SF2S/F2T/S2T/X2S 覆盖率）
+  - `ic` → `ic_d{no}`（IC/RankIC/GIC/RankGIC）
+  - `autocorrelation` → `ac_d{no}`（AC/RankAC）
+  - `bucket_returns` → `rtn_date` / `exr_date` / `gbr_date`（分组收益/超额/行业组收益）
+  - `bucket_turnover` → `tr_d{no}`（分位换手率）
+  - `factor_returns` → `fr_d{no}`（因子加权/等权/分位多空日度 + 累计序列）
+
 ---
 
 ## 4. 后台任务（`s:...`）
@@ -285,7 +319,7 @@ date >= 2024-01-01            开区间（> / >=）
 
 `SubmitTask(source, action, args)` 立即返回 `header + task_id`（`code=0` 成功）。任务在独立事件循环线程执行。
 
-支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/mock/table/dataset/fieldset/sample/feature/factor/stat 全部动作），结果放在**终态事件的 `data`**（JSON 字符串）。
+支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/mock/table/dataset/fieldset/sample/feature/factor/test/stat 全部动作），结果放在**终态事件的 `data`**（JSON 字符串）。
 
 ### 4.2 事件流（SubscribeTask）
 
@@ -329,7 +363,7 @@ pending → running → succeeded
 ### 4.5 任务元操作
 
 - `e:task list`：按创建时间倒序，`--state` 过滤。任务项：`task_id, source, action, args, state, progress, created_at, started_at, finished_at, error, result_ref`
-- **大结果落盘**：`table/dataset/fieldset/sample/stat/factor get` 用 `ctx.put_result` 写 `tasks/<task_id>/<name>`（Arrow IPC / parquet），任务项只存 `result_ref`；`s:... get` 的 `data` 含 `{"name","rows","total","columns","result_ref"}`
+- **大结果落盘**：`table/dataset/fieldset/sample/stat/factor/test get` 用 `ctx.put_result` 写 `tasks/<task_id>/<name>`（Arrow IPC / parquet），任务项只存 `result_ref`；`s:... get` 的 `data` 含 `{"name","rows","total","columns","result_ref"}`
 - `stop`（服务停止）：先在跑任务统一收尾为 `cancelled`，DB 不遗留 orphan
 
 ### 4.6 `mock` 示例任务
@@ -352,6 +386,7 @@ pending → running → succeeded
 | `stkoe sample <action> <args...>` | sample 命令（add/get/meta/list/set/check/delete；无物化） |
 | `stkoe feature <action> <args...>` | feature 命令（add/set/meta/list/delete/test；纯定义，无物化） |
 | `stkoe factor <action> <args...>` | factor 命令（add/get/meta/list/set/check/scan/delete；可物化） |
+| `stkoe test <action> <args...>` | test 命令（add/get/meta/list/set/check/scan/delete；因子测试数据集） |
 | `stkoe task list [--state <state>]` | 任务列表 |
 
 CLI 的 `table/dataset/stat` 表格结果以 ` <table <name>: N 字节 IPC> ` 形式占位打印。
@@ -424,6 +459,8 @@ t:<task_id>
 - **sample 无物化产物**：只登记于 catalog（type='sample'），读取动态构造 dataset_with_fieldset
 - **feature 纯定义**：只登记于 catalog（type='feature'），无任何磁盘产物
 - **factor 物化产物**：`factors/<name>/`（仅索引列 + 因子列），布局镜像源 dataset；删除 factor 时一并清理
+- **factor_test 物化产物**：`factor_tests/<name>/data.parquet`（测试数据集面板，flat 单文件）；
+  测试器产物 `stats/test/<name>/<kind>/<output>.parquet`（stat 命名输出）；删除 test 时一并清理
 
 ### 8.1 覆盖率统计输出列（ALL_COLS）
 
@@ -460,12 +497,19 @@ stkoe feature test ma5 --sample sp1
 stkoe factor add fac1 --feature ma5 --sample sp1 --pipeline "nothing()"
 stkoe factor check fac1
 stkoe factor scan fac1
+# 因子测试数据集（要求 sample 含 date/sym/returns/groupby/marketcap 列）+ 测试器
+stkoe test add t1 --factor fac1 --returns r --groupby ic --marketcap fv
+stkoe test check t1
+stkoe test scan t1
+stkoe stat scan t1 --kind ic
+gclient> e:stat get t1 --kind ic --partition_by ic_d1
 # gRPC 读取
 gclient> e:dataset get ds1 --where "date >= 2024-01-01" --limit 100
 gclient> e:fieldset get fs1 --columns k,ma5 --limit 100
 gclient> e:sample get sp1 --limit 100
 gclient> e:feature test ma5 --sample sp1
 gclient> e:factor get fac1 --limit 100
+gclient> e:test get t1 --limit 100
 gclient> e:stat get dataset ds1 --partition_by all
 # 后台物化 + 订阅进度
 gclient> s:fieldset scan fs1

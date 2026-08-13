@@ -300,25 +300,41 @@ def _stat_controller(data_dir=None):
 @handler("stat", "scan")
 def _stat_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
-    if len(pos) < 2:
-        raise CommandError("stat scan 需要 target 类型和名字（如 dataset <name>）")
     flags = parse_flags(args)
+    if not pos:
+        raise CommandError("stat scan 需要 target 类型和名字（如 dataset <name>）")
+    from ..factor_test.tester import TESTER_KINDS
+
+    kind = flags.get("kind") or "coverage"
+    if len(pos) == 1 and kind in TESTER_KINDS:
+        target_type, target_name = "test", pos[0]
+    elif len(pos) >= 2:
+        target_type, target_name = pos[0], pos[1]
+    else:
+        raise CommandError("stat scan 需要 target 类型和名字（如 dataset <name>，"
+                           "或 test <name> --kind <tester>）")
     ctl = _stat_controller(data_dir)
-    report = asyncio.run(ctl.scan(pos[0], pos[1], kind=flags.get("kind") or "coverage"))
+    report = asyncio.run(ctl.scan(target_type, target_name, kind=kind))
     return [Result.json("stat", report.to_dict())]
 
 
 @handler("stat", "get")
 def _stat_get(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
-    if len(pos) < 2:
+    if not pos:
         raise CommandError("stat get 需要 target 类型和名字（如 dataset <name>）")
     flags = parse_flags(args)
     ctl = _stat_controller(data_dir)
+    kind = flags.get("kind") or "coverage"
     partition_by = flags.get("partition_by") or flags.get("partition-by")
-    out = asyncio.run(ctl.get(pos[0], pos[1],
-                              kind=flags.get("kind") or "coverage",
-                              partition_by=partition_by))
+    if len(pos) == 1:
+        target_type, target_name = "test", pos[0]
+    elif len(pos) >= 2:
+        target_type, target_name = pos[0], pos[1]
+    else:
+        raise CommandError("stat get 需要 target 类型和名字（如 dataset <name>）")
+    out = asyncio.run(ctl.get(target_type, target_name,
+                              kind=kind, partition_by=partition_by))
     if isinstance(out, dict):
         results: list[Result] = []
         for partition, df in out.items():
@@ -332,20 +348,27 @@ def _stat_get(args: list[str], data_dir=None) -> list[Result]:
     buf = io.BytesIO()
     out.write_ipc_stream(buf)
     return [
-        Result.json(pos[1], {"partition": partition_by, "rows": out.height,
-                             "columns": out.columns}),
-        Result.table(pos[1], buf.getvalue()),
+        Result.json(target_name, {"partition": partition_by, "rows": out.height,
+                                  "columns": out.columns}),
+        Result.table(target_name, buf.getvalue()),
     ]
 
 
 @handler("stat", "meta")
 def _stat_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
-    if len(pos) < 2:
+    if not pos:
         raise CommandError("stat meta 需要 target 类型和名字（如 dataset <name>）")
     flags = parse_flags(args)
     ctl = _stat_controller(data_dir)
-    meta = asyncio.run(ctl.meta(pos[0], pos[1], kind=flags.get("kind") or "coverage"))
+    kind = flags.get("kind") or "coverage"
+    if len(pos) == 1:
+        target_type, target_name = "test", pos[0]
+    elif len(pos) >= 2:
+        target_type, target_name = pos[0], pos[1]
+    else:
+        raise CommandError("stat meta 需要 target 类型和名字（如 dataset <name>）")
+    meta = asyncio.run(ctl.meta(target_type, target_name, kind=kind))
     return [Result.json("stat", meta.to_dict())]
 
 
@@ -360,11 +383,17 @@ def _stat_list(args: list[str], data_dir=None) -> list[Result]:
 @handler("stat", "del")
 def _stat_delete(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
-    if len(pos) < 2:
+    if not pos:
         raise CommandError("stat delete 需要 target 类型和名字（如 dataset <name>）")
     flags = parse_flags(args)
     ctl = _stat_controller(data_dir)
-    out = asyncio.run(ctl.delete(pos[0], pos[1], kind=flags.get("kind")))
+    if len(pos) == 1:
+        target_type, target_name = "test", pos[0]
+    elif len(pos) >= 2:
+        target_type, target_name = pos[0], pos[1]
+    else:
+        raise CommandError("stat delete 需要 target 类型和名字（如 dataset <name>）")
+    out = asyncio.run(ctl.delete(target_type, target_name, kind=flags.get("kind")))
     return [Result.json("stat", out)]
 
 
@@ -971,3 +1000,152 @@ def _factor_scan(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("factor scan 需要因子名（或 --all）")
     report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
     return [Result.json("factor", report.to_dict())]
+
+
+# ---------------------------------------------------------------------------
+# test 同步处理器（Execute 路径；SubmitTask 后台任务版在 factor_test/handlers.py）
+# ---------------------------------------------------------------------------
+
+def _test_controller(data_dir=None):
+    from ..factor_test.controller import FactorTestController
+
+    return FactorTestController(data_dir=data_dir)
+
+
+def _test_arrow_meta(name: str, df, total: int, tm) -> str:
+    """ArrowTable.meta JSON：rows/total + 测试数据集列元数据"""
+    known = {c.name: c.to_dict() for c in tm.columns}
+    cols = []
+    for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
+        col = known.get(cn)
+        if col is None:
+            col = {"name": cn, "data_type": dt}
+        else:
+            col = {**col, "data_type": dt}
+        cols.append(col)
+    return dumps_str({"name": name, "rows": df.height, "total": total,
+                      "columns": cols})
+
+
+@handler("test", "add")
+def _test_add(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("test add 需要测试集名")
+    flags = parse_flags(args)
+    if not flags.get("factor"):
+        raise CommandError("test add 需要 --factor <因子名>")
+    ctl = _test_controller(data_dir)
+    from ..factor_test.spec import FactorTesterSpec
+
+    spec = FactorTesterSpec(
+        by_group=bool(flags.get("by_group")),
+        quantiles=int(flags["quantiles"]) if flags.get("quantiles") else 5,
+        periods=tuple(int(p) for p in (flags.get("periods") or "1,5,10").split(",")
+                      if p.strip()),
+        date_range=tuple(str(x) for x in
+                         (flags.get("date_range") or "2023-01-01,2026-01-01").split(",")),
+        rolling_window=int(flags["rolling_window"]) if flags.get("rolling_window") else 252,
+    )
+    tm = asyncio.run(ctl.add(
+        pos[0], factor=flags["factor"],
+        returns=flags.get("returns") or "r",
+        groupby=flags.get("groupby") or "ic",
+        marketcap=flags.get("marketcap") or "fv",
+        spec=spec, **{k: v for k, v in flags.items()
+                      if k not in ("factor", "returns", "groupby", "marketcap",
+                                   "by_group", "quantiles", "periods",
+                                   "date_range", "rolling_window")}))
+    return [Result.json("test", tm.to_dict())]
+
+
+@handler("test", "get")
+def _test_get(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("test get 需要测试集名")
+    flags = parse_flags(args)
+    ctl = _test_controller(data_dir)
+    df, total = asyncio.run(ctl.get(
+        pos[0],
+        where=flags.get("where"),
+        limit=int(flags["limit"]) if flags.get("limit") else None,
+        offset=int(flags["offset"]) if flags.get("offset") else None,
+        count_total=True,
+    ))
+    tm = asyncio.run(ctl.meta(pos[0]))
+    buf = io.BytesIO()
+    if df.height:
+        df.write_ipc_stream(buf)
+    return [Result.table(pos[0], buf.getvalue(),
+                         meta=_test_arrow_meta(pos[0], df, total, tm))]
+
+
+@handler("test", "meta")
+def _test_meta(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("test meta 需要测试集名")
+    ctl = _test_controller(data_dir)
+    tm = asyncio.run(ctl.meta(pos[0]))
+    return [Result.json("test", tm.to_dict())]
+
+
+@handler("test", "list")
+@handler("test", "")
+def _test_list(args: list[str], data_dir=None) -> list[Result]:
+    ctl = _test_controller(data_dir)
+    tms = asyncio.run(ctl.list())
+    return [Result.json("tests", [tm.to_dict() for tm in tms])]
+
+
+@handler("test", "set")
+def _test_set(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    if not pos:
+        raise CommandError("test set 需要测试集名")
+    if not flags:
+        raise CommandError("test set 需要至少一个 --key value")
+    ctl = _test_controller(data_dir)
+    kw = dict(flags)
+    if "spec" in kw and isinstance(kw["spec"], str):
+        kw["spec"] = {"periods": [int(p) for p in kw["spec"].split(",")]}
+    tm = asyncio.run(ctl.set(pos[0], **kw))
+    return [Result.json("test", tm.to_dict())]
+
+
+@handler("test", "del")
+@handler("test", "delete")
+def _test_delete(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("test delete 需要测试集名")
+    flags = parse_flags(args)
+    ctl = _test_controller(data_dir)
+    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
+    return [Result.json("test", out)]
+
+
+@handler("test", "check")
+def _test_check(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("test check 需要测试集名")
+    ctl = _test_controller(data_dir)
+    res = asyncio.run(ctl.check(pos[0]))
+    return [Result.json("test", res.to_dict())]
+
+
+@handler("test", "scan")
+def _test_scan(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    ctl = _test_controller(data_dir)
+    if flags.get("all"):
+        reports = asyncio.run(ctl.scan(all=True, resync=bool(flags.get("resync"))))
+        return [Result.json("tests", [r.to_dict() for r in reports])]
+    if not pos:
+        raise CommandError("test scan 需要测试集名（或 --all）")
+    report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
+    return [Result.json("test", report.to_dict())]

@@ -73,6 +73,12 @@ src/stkoe/
 │   ├── engine.py      # 算子注册表（FactorOperator/NothingOperator）+ pipeline 解析 + 公式引擎
 │   ├── controller.py  # async add/get/meta/list/set/check/scan/delete（sample 视图算因子列→算子链→物化）
 │   └── handlers.py    # 任务版 Handler（source="factor"，注册进 TaskRegistry）
+├── factor_test/       # 因子测试数据集（FactorTestController，async 接口）
+│   ├── spec.py        # FactorTesterSpec/FactorTestMeta/FactorTestScanReport/FactorTestCheckResult
+│   ├── tester.py      # 测试数据集准备 + 六类测试器（bucket_returns/factor_returns/
+│   │                  #   bucket_turnover/autocorrelation/ic/coverage，纯 polars）
+│   ├── controller.py  # async add/get/meta/list/set/check/scan/delete + tester 产物写入
+│   └── handlers.py    # 任务版 Handler（source="test"，注册进 TaskRegistry）
 ├── stat/              # 数据统计资产（StatController，async 接口）
 │   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
 │   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
@@ -154,6 +160,31 @@ src/stkoe/
 - 全量 162 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
 ## 近期变更记录
+
+### 2026-08 factor_test 因子测试数据集模块（test add/scan + stat 测试器集成）
+
+- **新增 `factor_test` 模块**：因子测试数据集（test）= 在 **factor 关联的 sample** 视图上，
+  结合测试必需列（`date/sym/returns/groupby/marketcap`）生成的面板；注册于 catalog
+  （type='factor_test'）。**`test add` 要求 sample 视图含这些列，缺失报错拒绝创建**
+- **测试数据集 Schema**：`date/sym/sample/returns/group/marketcap/factor/d{no}/
+  factor_quantile`（`d{no}`=sym 内前向累计收益，`factor_quantile`=date(+group) 截面分位）
+- **测试列命名**：`--returns/--groupby/--marketcap`（默认 `r/ic/fv`）；因子列取 factor 的
+  `factor_col`；`JobSpec` 类 `FactorTesterSpec`（by_group/quantiles/periods/date_range/
+  rolling_window）存 meta，`set` 可改（物化失效）
+- **物化** `test scan`：落盘 `factor_tests/<name>/data.parquet`（flat 单文件）；**幂等**——
+  依赖签名（factor 依赖 hash + spec + 测试列名）不变则跳过；`--resync` 强制重建
+- **读取**：物化且 curated 读 parquet，否则实时构造，不隐式物化；`test check` 校验构造
+  成功 + 含必需列 + 行数 > 0
+- **依赖登记**：test → factor（stkoe_depends），删除 factor 需 `--force`
+- **测试器（stat 集成）**：`stat scan test <name> --kind <kind>`（也支持单位置参数简写
+  `stat scan <name> --kind <kind>`），六类测试器（bucket_returns/factor_returns/
+  bucket_turnover/autocorrelation/ic/coverage）产物写 `stats/test/<name>/<kind>/<output>.parquet`；
+  `stat get/meta/delete` 对 test 目标复用 stat 文件逻辑（单位置参数 → test）
+- **多路径注册**：Execute（dispatch.py）/ SubmitTask（handlers.py）/ CLI（cli.py）三处对齐；
+  `api.md` §3.1/§3.12/§4.1/§4.5/§5/§8/§9 同步
+- 测试：`tests/test_factor_test.py` 全链路（CRUD/必需列拒绝/实时构造/scan 幂等与 resync/
+  curated 失效/依赖阻断/stat testers/任务版 32 例）+ `tests/test_grpc.py` Execute 链路，
+  全量 195 用例绿
 
 ### 2026-08 factor 最终因子模块（feature 公式 + sample 视图 + pipeline 算子链 + 物化）
 

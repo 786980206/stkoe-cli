@@ -133,6 +133,15 @@ class FactorController:
         parts.append(f"pipeline:{meta.get('pipeline', '')}")
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
+    def dependency_hash(self, name: str) -> str:
+        """按当前注册定义重算 factor 的一致性签名（供下游依赖方读取）"""
+        conn = self.catalog.new_conn()
+        try:
+            meta = self._meta_dict(conn, name)
+        finally:
+            conn.close()
+        return self._current_hash(meta)
+
     # ---------- add / list / meta ----------
 
     def _register(self, conn, name: str, feature: str, sample: str,

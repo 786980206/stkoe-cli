@@ -83,6 +83,25 @@ class StatController:
             return self._dc._get_lazy_sync(target_name)
         raise StatTargetError(f"unsupported stat target: {target_type}")
 
+    # ---------- test 目标（因子测试器） ----------
+
+    def _scan_test_sync(self, target_name: str, kind: str,
+                        on_progress=None) -> StatScanReport:
+        """因子测试器扫描：运行 tester kind 并把命名产物写入
+        ``stats/test/<name>/<kind>/<output>.parquet``"""
+        from ..factor_test.controller import (FactorTestController,
+                                              FactorTestNotFoundError)
+
+        ctl = FactorTestController(data_dir=self.data_dir)
+        try:
+            ctl._describe_sync(target_name)
+        except FactorTestNotFoundError:
+            raise StatNotFoundError(f"test 未注册: {target_name}")
+        files = ctl._tester_scan_sync(target_name, kind, on_progress=on_progress)
+        return StatScanReport(
+            target_type="test", target_name=target_name, kind=kind,
+            partitions=tuple(f.partition for f in files), files=tuple(files))
+
     # ---------- scan ----------
 
     def _scan_sync(self, target_type: str, target_name: str, kind: str = "coverage",
@@ -94,6 +113,8 @@ class StatController:
         """
         if kind == "storage":
             return self._scan_storage_sync(target_type, target_name, on_progress)
+        if target_type == "test":
+            return self._scan_test_sync(target_name, kind, on_progress)
         parts = self._partitions(target_type, target_name)
         lf = self._select_lf(target_type, target_name)
         out_dir = self._kind_dir(target_type, target_name, kind)

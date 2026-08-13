@@ -168,8 +168,8 @@ src/stkoe/
 
 - **新增 `mock` 模块**：把 `scripts/gen_example_data.py` 的造数能力内建为 `stkoe mock`
   接口，参考 v1.0 `data/mock.py` 生成器设计（tdcal/common/index/feature/klday/m1 + write）
-- **`stkoe mock demo`**：生成 example.md 演示源表 index + m1（10 只 × 3 个交易日，30 行，
-  数据与 gen_example_data.py 对齐）到 `<data_dir>/tables/`；**只写盘不注册**，仍由
+- **`stkoe mock demo`**：生成 example.md 演示源表 index + m1（**默认 300 只 × 500 个交易日
+  = 15 万行**，`--n-syms/--n-days` 可调）到 `<data_dir>/tables/`；**只写盘不注册**，仍由
   `table add` 发现登记（保持「发现资产」语义）
 - **`stkoe mock gen <name> --kind <kind>`**：参数化生成单张表（kind：
   tdcal/common/index/feature/klday/m1，`--n-syms/--start/--end/--seed/--col` 可选）
@@ -181,9 +181,9 @@ src/stkoe/
 - **删除 `scripts/gen_example_data.py`**；example.md §0.2 改用 `stkoe mock demo`、
   §1 `table get --where` 日期加引号、§10 补任务版 `s:mock demo`/`gen`；api.md
   §1/§3.1/§4.1/§4.6/§5/§9 同步
-- 测试：新增 `tests/test_mock.py`（demo/gen 全链路 + 任务版 + Execute）3 例补进
-  test_grpc.py，全量 218 用例绿（`test_task_list_ordered_and_filtered` 等时序敏感用例
-  偶发 flaky，与 mock 改动无关）
+- 测试：新增 `tests/test_mock.py`（demo/gen 全链路 + 任务版 + Execute）+ `--n-syms/--n-days`
+  生效用例补进 test_grpc.py，全量 220 用例绿（`test_task_list_ordered_and_filtered`
+  等时序敏感用例偶发 flaky，与 mock 改动无关）
 
 ### 2026-08 整体审视修复 + 版本 0.5.0（tag v0.5.0）
 

@@ -22,19 +22,28 @@ def mgr(tmp_path):
 # ---------- 生成器 ----------
 
 def test_demo_index_shape():
-    """演示 index 表：30 行（10 只 × 3 日），含 r/ic/fv/x，日期为字符串"""
-    df = demo_index()
-    assert df.height == 30
-    assert df.columns == ["sym", "date", "r", "ic", "fv", "x"]
+    """演示 index 表：date×sym 面板，含 r/ic/fv/x，日期为字符串"""
+    df = demo_index(n_syms=10, n_days=5)
+    assert df.height == 50
+    assert df.columns == ["date", "sym", "r", "ic", "fv", "x"]
     assert df["date"].dtype == pl.Utf8
     assert df["date"].to_list()[:10] == ["2024-01-01"] * 10
     assert df["sym"].n_unique() == 10
 
 
+def test_demo_default_is_300x500():
+    """默认演示规模：300 只 × 500 个交易日 = 15 万行"""
+    df = demo_index()
+    assert df.height == 300 * 500
+    assert df["sym"].n_unique() == 300
+    assert df["date"].n_unique() == 500
+    assert df["date"].min() == "2024-01-01"
+
+
 def test_demo_m1_shape():
-    df = demo_m1()
-    assert df.height == 30
-    assert df.columns == ["sym", "date", "name", "industry"]
+    df = demo_m1(n_syms=10, n_days=5)
+    assert df.height == 50
+    assert df.columns == ["date", "sym", "name", "industry"]
     assert df["date"].dtype == pl.Utf8
 
 
@@ -88,19 +97,20 @@ def test_generators_deterministic_with_seed():
 # ---------- 写盘 ----------
 
 def test_write_creates_flat_parquet(tmp_path):
-    df = demo_index()
+    df = demo_index(n_syms=4, n_days=3)
     rep = write(tmp_path / "data", "index", df)
     path = tmp_path / "data" / "tables" / "index" / "data.parquet"
     assert path.exists()
     assert rep["name"] == "index"
-    assert rep["rows"] == 30
+    assert rep["rows"] == 12
     assert rep["columns"] == df.columns
     assert pl.read_parquet(path).equals(df)
 
 
 def test_demo_writes_index_and_m1(tmp_path):
-    reports = demo(tmp_path / "data")
+    reports = demo(tmp_path / "data", n_syms=10, n_days=5)
     assert [r["name"] for r in reports] == ["index", "m1"]
+    assert reports[0]["rows"] == 50
     assert (tmp_path / "data" / "tables" / "index" / "data.parquet").exists()
     assert (tmp_path / "data" / "tables" / "m1" / "data.parquet").exists()
 
@@ -122,7 +132,7 @@ def test_gen_unknown_kind_error(tmp_path):
 def test_table_add_discovers_mock_tables(tmp_path):
     from stkoe.table import TableController
 
-    demo(tmp_path / "data")
+    demo(tmp_path / "data", n_syms=10, n_days=5)
     ctl = TableController(data_dir=tmp_path / "data")
 
     import asyncio
@@ -132,7 +142,7 @@ def test_table_add_discovers_mock_tables(tmp_path):
     names = [m.name for m in asyncio.run(ctl.list())]
     assert names == ["index", "m1"]
     df = asyncio.run(ctl.get("index"))
-    assert df.height == 30
+    assert df.height == 50
 
 
 # ---------- 任务版（s:mock demo / s:mock gen） ----------
@@ -175,6 +185,7 @@ def test_task_mock_gen(mgr):
     assert done.state == "succeeded"
     rep = _mgr_result(mgr, task)
     assert rep["name"] == "g1"
+    assert rep["rows"] == 4 * 3
     assert (mgr.data_dir / "tables" / "g1" / "data.parquet").exists()
 
 

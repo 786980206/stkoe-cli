@@ -96,26 +96,38 @@ def test_execute_config_set_then_show(client, tmp_path, monkeypatch):
 
 
 def test_execute_mock_demo(client, srv):
-    """e:mock demo：写 tables/index + tables/m1 到服务数据目录（不注册）"""
+    """e:mock demo：写 tables/index + tables/m1 到服务数据目录（默认 300×500）"""
     header, datas = _collect(client.Execute(
         stkoe_pb2.ExecuteRequest(source="mock", action="demo")))
     assert header.code == 0
     reports = json.loads(datas[0].json.data)
     assert [r["name"] for r in reports] == ["index", "m1"]
-    assert reports[0]["rows"] == 30
+    assert reports[0]["rows"] == 300 * 500
     root = Path(srv.data_dir)
     assert (root / "tables" / "index" / "data.parquet").exists()
     assert (root / "tables" / "m1" / "data.parquet").exists()
 
 
+def test_execute_mock_demo_with_flags(client, srv):
+    """e:mock demo --n-syms/--n-days 生效（hyphen 键名）"""
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="mock", action="demo",
+        args=["--n-syms", "5", "--n-days", "3"])))
+    assert header.code == 0
+    reports = json.loads(datas[0].json.data)
+    assert reports[0]["rows"] == 5 * 3
+    assert (Path(srv.data_dir) / "tables" / "index" / "data.parquet").exists()
+
+
 def test_execute_mock_gen(client, srv):
-    """e:mock gen：参数化生成单张表到 tables/<name>/"""
+    """e:mock gen：参数化生成单张表到 tables/<name>/（--n-syms 生效）"""
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="mock", action="gen",
         args=["g1", "--kind", "klday", "--n-syms", "4"])))
     assert header.code == 0
     rep = json.loads(datas[0].json.data)
     assert rep["name"] == "g1"
+    assert rep["rows"] == 4 * 3
     assert (Path(srv.data_dir) / "tables" / "g1" / "data.parquet").exists()
 
 

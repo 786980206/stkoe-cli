@@ -19,10 +19,10 @@ uv run -m stkoe mock demo
 ```
 
 > 说明：stkoe 只「发现」磁盘上的 parquet（`table add`），不会替你生成数据；
-> `stkoe mock demo` 用 polars 造了两张演示表（30 行 × 10 只股票 × 3 个交易日）到
-> 配置数据目录的 `tables/`，可接着用 `table add` 登记。也可用
-> `uv run -m stkoe mock gen <name> --kind <kind>` 参数化生成单张表
-> （`--kind index/m1/tdcal/common/feature/klday`，`--n-syms/--start/--end/--seed` 可选）。
+> `stkoe mock demo` 用 polars 造了两张演示表（默认 **300 只股票 × 500 个交易日 = 15 万行**）
+> 到配置数据目录的 `tables/`，可接着用 `table add` 登记；也可用 `--n-syms/--n-days`
+> 调整规模。单表可用 `uv run -m stkoe mock gen <name> --kind <kind>` 参数化生成
+> （`--kind index/m1/tdcal/common/feature/klday`，`--n-syms/--n-days/--start/--end/--seed` 可选）。
 
 ## 1. 发现表资产
 

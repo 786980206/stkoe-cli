@@ -36,7 +36,11 @@ class MockDemoHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         from .gen import demo
 
-        reports = await asyncio.to_thread(demo, ctx.data_dir)
+        flags = parse_flags(ctx.args)
+        reports = await asyncio.to_thread(
+            demo, ctx.data_dir,
+            n_syms=int(flags["n-syms"]) if flags.get("n-syms") else 300,
+            n_days=int(flags["n-days"]) if flags.get("n-days") else 500)
         return TaskResult(data=dumps_str(reports))
 
 
@@ -51,9 +55,10 @@ class MockGenHandler(TaskHandler):
         report = await asyncio.to_thread(
             _gen, pos[0], flags.get("kind") or "index",
             data_dir=ctx.data_dir,
-            n_syms=int(flags["n_syms"]) if flags.get("n_syms") else 10,
+            n_syms=int(flags["n-syms"]) if flags.get("n-syms") else 10,
             start=flags.get("start") or "2024-01-01",
             end=flags.get("end") or "2024-01-03",
+            n_days=int(flags["n-days"]) if flags.get("n-days") else None,
             seed=int(flags["seed"]) if flags.get("seed") else None,
             col=flags.get("col"),
         )

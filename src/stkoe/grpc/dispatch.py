@@ -643,3 +643,121 @@ def _fieldset_scan(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("fieldset scan 需要指标集名（或 --all）")
     report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
     return [Result.json("fieldset", report.to_dict())]
+
+
+# ---------------------------------------------------------------------------
+# sample 同步处理器（Execute 路径；SubmitTask 后台任务版在 sample/handlers.py）
+# ---------------------------------------------------------------------------
+
+def _sample_controller(data_dir=None):
+    from ..sample.controller import SampleController
+
+    return SampleController(data_dir=data_dir)
+
+
+def _sample_arrow_meta(name: str, df, total: int, sm) -> str:
+    """ArrowTable.meta JSON：rows/total + 返回列的完整列元数据（源 dataset + fieldset 衍生列）"""
+    known = {c.name: c.to_dict() for c in sm.columns}
+    cols = []
+    for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
+        col = known.get(cn)
+        if col is None:
+            col = {"name": cn, "data_type": dt}
+        else:
+            col = {**col, "data_type": dt}
+        cols.append(col)
+    return dumps_str({"name": name, "rows": df.height, "total": total,
+                      "columns": cols})
+
+
+@handler("sample", "add")
+def _sample_add(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("sample add 需要样本池名")
+    flags = parse_flags(args)
+    ctl = _sample_controller(data_dir)
+    sm = asyncio.run(ctl.add(pos[0], dataset=flags.get("dataset"),
+                             engine=flags.get("engine") or "polars",
+                             formula=flags.get("formula") or "", **{
+                                 k: v for k, v in flags.items()
+                                 if k not in ("dataset", "engine", "formula")}))
+    return [Result.json("sample", sm.to_dict())]
+
+
+@handler("sample", "get")
+def _sample_get(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("sample get 需要样本池名")
+    flags = parse_flags(args)
+    ctl = _sample_controller(data_dir)
+    df, total = asyncio.run(ctl.get(
+        pos[0],
+        columns=flags.get("columns").split(",") if flags.get("columns") else None,
+        where=flags.get("where"),
+        partition=flags.get("partition"),
+        exclude_tool=bool(flags.get("exclude-tool")),
+        limit=int(flags["limit"]) if flags.get("limit") else None,
+        offset=int(flags["offset"]) if flags.get("offset") else None,
+        count_total=True,
+    ))
+    sm = asyncio.run(ctl.meta(pos[0]))
+    buf = io.BytesIO()
+    if df.height:
+        df.write_ipc_stream(buf)
+    return [Result.table(pos[0], buf.getvalue(),
+                         meta=_sample_arrow_meta(pos[0], df, total, sm))]
+
+
+@handler("sample", "meta")
+def _sample_meta(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("sample meta 需要样本池名")
+    ctl = _sample_controller(data_dir)
+    sm = asyncio.run(ctl.meta(pos[0]))
+    return [Result.json("sample", sm.to_dict())]
+
+
+@handler("sample", "list")
+@handler("sample", "")
+def _sample_list(args: list[str], data_dir=None) -> list[Result]:
+    ctl = _sample_controller(data_dir)
+    sms = asyncio.run(ctl.list())
+    return [Result.json("samples", [sm.to_dict() for sm in sms])]
+
+
+@handler("sample", "set")
+def _sample_set(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    if not pos:
+        raise CommandError("sample set 需要样本池名")
+    if not flags:
+        raise CommandError("sample set 需要至少一个 --key value")
+    ctl = _sample_controller(data_dir)
+    sm = asyncio.run(ctl.set(pos[0], **flags))
+    return [Result.json("sample", sm.to_dict())]
+
+
+@handler("sample", "check")
+def _sample_check(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("sample check 需要样本池名")
+    ctl = _sample_controller(data_dir)
+    res = asyncio.run(ctl.check(pos[0]))
+    return [Result.json("sample", res.to_dict())]
+
+
+@handler("sample", "del")
+@handler("sample", "delete")
+def _sample_delete(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("sample delete 需要样本池名")
+    flags = parse_flags(args)
+    ctl = _sample_controller(data_dir)
+    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
+    return [Result.json("sample", out)]

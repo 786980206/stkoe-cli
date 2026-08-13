@@ -75,6 +75,9 @@ class TaskManager:
         from ..fieldset.handlers import register as _register_fieldset_handlers
 
         _register_fieldset_handlers(self.registry)
+        from ..sample.handlers import register as _register_sample_handlers
+
+        _register_sample_handlers(self.registry)
 
     # ---------- 提交 / 查询 / 取消 ----------
 

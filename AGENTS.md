@@ -53,6 +53,16 @@ src/stkoe/
 │   ├── spec.py        # DatasetMeta/DatasetScanReport dataclass
 │   ├── controller.py  # async add/get/meta/list/set/scan/delete（add 只注册，物化走 scan）
 │   └── handlers.py    # 任务版 Handler（source="dataset"，注册进 TaskRegistry）
+├── fieldset/          # 衍生指标集（FieldsetController，async 接口）
+│   ├── spec.py        # FieldMeta/FieldsetMeta/FieldsetScanReport/FieldsetCheckResult dataclass
+│   ├── engine.py      # 公式引擎插件（CalcEngine + register/get；仅 polars）
+│   ├── controller.py  # async add/get/meta/list/set/scan/delete/check/test + 指标级操作
+│   └── handlers.py    # 任务版 Handler（source="fieldset"，注册进 TaskRegistry）
+├── sample/            # 样本池（SampleController，async 接口；无物化）
+│   ├── spec.py        # SampleMeta/SampleCheckResult dataclass
+│   ├── engine.py      # 过滤引擎插件（SampleEngine + register/get；仅 polars）
+│   ├── controller.py  # async add/get/meta/list/set/check/delete（读时动态构造 dataset_with_fieldset）
+│   └── handlers.py    # 任务版 Handler（source="sample"，注册进 TaskRegistry）
 ├── stat/              # 数据统计资产（StatController，async 接口）
 │   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
 │   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
@@ -131,9 +141,29 @@ src/stkoe/
 - `tests/test_grpc.py`：`srv`/`client` fixture（StkoeServer 起真实 gRPC，port=0 自动分配）
 - `tests/test_table.py`：controller 直测 + 任务版链路（`_await`/`_mgr_result` 助手）
 - 流式断言用 `_collect`（先 DataHeader，再数据消息）
-- 全量 56 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
+- 全量 122 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
 ## 近期变更记录
+
+### 2026-08 sample 样本池模块（基于 dataset_with_fieldset 的过滤产物，无物化）
+
+- **新增 `sample` 模块**：基于已注册 **dataset** 创建样本池，注册于 catalog
+  （type='sample'）；样本池**没有物化概念**，`get`/`check` 每次读取时实时构造
+- **`dataset_with_fieldset` 构造**（get/check 共用）：先读源 dataset 视图
+  （物化且 curated 读 parquet，否则实时 join 视图），再查 catalog 中
+  `dataset == 源 dataset` 的全部 fieldset，取其**已校验**指标在源视图逐行计算并按
+  keys `left join` 出衍生列
+- **过滤引擎插件制**（engine.py）：`SampleEngine` 接口 + `register_engine`/`get_engine`
+  注册表，当前仅 `polars`（列作用域布尔表达式 eval 后 `filter`）；formula 为空 →
+  返回整个 `dataset_with_fieldset`
+- **`sample check`**：过滤后结果集**含全部源索引列且行数 > 0** 才算有效；
+  公式执行失败 → 不有效（message 含原因）
+- **依赖登记**：sample → dataset（stkoe_depends），删除源 dataset 需 `--force`；
+  `set` 可改 formula/engine 及元数据（版本递增）
+- **多路径注册**：Execute（dispatch.py）/ SubmitTask（handlers.py）/ CLI（cli.py）
+  三处对齐；`api.md` §3.1/§3.9/§3.7/§5/§8 同步
+- 测试：`tests/test_sample.py` 全链路（CRUD/无公式全量/过滤/fieldset 衍生列/check
+  有效性/依赖阻断/任务版），全量 122 用例绿
 
 ### 2026-08 fieldset 衍生指标集模块（公式引擎 + 指标生命周期 + 物化）
 

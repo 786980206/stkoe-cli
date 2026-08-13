@@ -321,6 +321,68 @@ def _json_names(datas):
     return []
 
 
+# ---------- Execute 版 sample ----------
+
+def test_execute_sample_add_check_get_delete(client, srv):
+    """Execute 路径 sample add/check/get/delete/list 全链路（与 s:sample 任务版对齐）"""
+    import asyncio
+    import polars as pl
+
+    from stkoe.dataset import DatasetController
+    from stkoe.fieldset import FieldsetController
+    from stkoe.table import TableController
+
+    root = srv.data_dir
+    d = Path(root) / "tables" / "idx"
+    d.mkdir(parents=True)
+    pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0],
+                  "date": ["2026-01-01", "2026-01-02"]}).write_parquet(d / "data.parquet")
+
+    def run(a):
+        return asyncio.run(a)
+
+    tctl = TableController(data_dir=root)
+    run(tctl.add("idx"))
+    dc = DatasetController(data_dir=root)
+    run(dc.add("ds", "idx", keys=["k"]))
+    fs = FieldsetController(data_dir=root)
+    run(fs.add("fs1", dataset="ds"))
+    run(fs.add_field("fs1", "x2", formula="x*2"))
+    run(fs.check("fs1", "x2"))
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="sample", action="add",
+        args=["sp1", "--dataset", "ds", "--formula", "(x>=2.0)"])))
+    assert header.code == 0
+    assert _json(datas, "sample")["name"] == "sp1"
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="sample", action="check", args=["sp1"])))
+    assert header.code == 0
+    assert _json(datas, "sample")["ok"] is True
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="sample", action="get", args=["sp1", "--limit", "5"])))
+    assert header.code == 0
+    tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
+    assert len(tables) == 1
+    meta = json.loads(tables[0].table.meta)
+    assert meta["rows"] == 1  # 仅 x>=2.0 → b
+    assert [c["name"] for c in meta["columns"]] == ["k", "x", "date", "x2"]
+    assert meta["total"] == 1
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="sample", action="list")))
+    assert header.code == 0
+    names = [s["name"] for s in _json(datas, "samples")]
+    assert names == ["sp1"]
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="sample", action="delete", args=["sp1"])))
+    assert header.code == 0
+    assert _json(datas, "sample") == {"deleted": "sp1"}
+
+
 # ---------- 请求日志 ----------
 
 def test_grpc_request_logging(client, caplog):

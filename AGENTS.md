@@ -189,6 +189,24 @@ src/stkoe/
 
 - 测试：全量 220 用例绿，`test_dataset.py` 23.5s→11s，整包 222s→105s
 
+### 2026-08 stat coverage 内存优化（calc_stats 流式化）
+
+- **问题**：`stat scan dataset coverage` 对宽表内存爆炸（unpivot 原始数据 = 行数×列数，
+  10M×24 列峰值 ~5GB，卡爆整机）
+- **`calc.py` 重写 calc_stats**：改为**按 dtype 类别聚合再 unpivot**——数值/字符串/时间
+  三类各做一次流式 `group_by`（每列每指标一个聚合列，输出窄表行数=组数），再对窄表
+  按指标逐列 unpivot 并以 `(g, count, field)` join 拼成 ALL_COLS 长表；全程不对原始
+  数据 unpivot。数值列聚合前先 cast 到 unpivot 超类型（`base.select(cols).unpivot()
+  .collect_schema()` 取 dtype，仅解析 schema 不读数据），与旧实现的 min/max 字符串
+  形态、mean 精度逐值一致（parity 脚本全等）
+- **`controller.py`**：`_scan_sync` 直接对 calc_stats 返回的 LazyFrame
+  `sink_parquet`（流式落盘，不再 collect + write_parquet），行数改为写后
+  `_parquet_rows` 回读；storage 分支同改为 `lazy().sink_parquet`
+- **效果**：5M 行 × 28 列全量 + 2 个索引分组 16s 完成、峰值 +371MB；行为/输出
+  与旧版完全一致（test_stat.py 13 例 + 全量 220 例绿）
+- 注意：`sink_parquet` 对低基数 join 键（如仅 300 个取值）会估算巨量输出并挂死，
+  属测试数据病态场景；真实 dataset 视图 keys（date+sym）高基数无碍
+
 ### 2026-08 mock 改造为 stkoe mock 接口（替代 scripts/gen_example_data.py）
 
 - **新增 `mock` 模块**：把 `scripts/gen_example_data.py` 的造数能力内建为 `stkoe mock`

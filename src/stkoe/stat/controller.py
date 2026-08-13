@@ -110,6 +110,8 @@ class StatController:
 
         ``on_progress(i, total, msg)`` 可选进度回调（worker 线程同步调用，逐分组）。
         kind=storage 走存续统计分支（见 _scan_storage_sync）。
+        覆盖率统计全程 LazyFrame，写入走 ``sink_parquet``（流式），
+        calc_stats 内部按 dtype 类别聚合再对窄结果 unpivot，内存与数据规模解耦。
         """
         if kind == "storage":
             return self._scan_storage_sync(target_type, target_name, on_progress)
@@ -123,11 +125,10 @@ class StatController:
         for i, p in enumerate(parts, start=1):
             if on_progress is not None:
                 on_progress(i, len(parts), f"{target_type}/{target_name}: {p}")
-            df = calc_stats(lf, group_col=None if p == "all" else p).collect()
             f = out_dir / f"{p}.parquet"
-            df.write_parquet(f)
+            calc_stats(lf, group_col=None if p == "all" else p).sink_parquet(f)
             files.append(StatFile(partition=p, rel_path=f.relative_to(self.root),
-                                  rows=df.height, size=f.stat().st_size))
+                                  rows=_parquet_rows(f), size=f.stat().st_size))
         files = list(_ordered(tuple(files)))
         return StatScanReport(target_type=target_type, target_name=target_name,
                               kind=kind, partitions=tuple(f.partition for f in files),
@@ -165,7 +166,7 @@ class StatController:
                 on_progress(i, len(parts), f"{target_type}/{target_name}: {p}")
             df = calc_storage(items, group_key=None if p == "all" else p)
             f = out_dir / f"{p}.parquet"
-            df.write_parquet(f)
+            df.lazy().sink_parquet(f)
             out_files.append(StatFile(partition=p, rel_path=f.relative_to(self.root),
                                       rows=df.height, size=f.stat().st_size))
         out_files = list(_ordered(tuple(out_files)))

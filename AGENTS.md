@@ -157,9 +157,27 @@ src/stkoe/
 - `tests/test_grpc.py`：`srv`/`client` fixture（StkoeServer 起真实 gRPC，port=0 自动分配）
 - `tests/test_table.py`：controller 直测 + 任务版链路（`_await`/`_mgr_result` 助手）
 - 流式断言用 `_collect`（先 DataHeader，再数据消息）
-- 全量 162 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
+- 全量 198 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
 ## 近期变更记录
+
+### 2026-08 整体审视修复 + 版本 0.5.0（tag v0.5.0）
+
+- **stat 任务版单位置 test 简写对齐**：`stat/handlers.py` 的 `_target` 支持单位置参数
+  → test 目标（scan 需 `--kind <测试器>`，get/meta/delete 无条件），与 Execute 对齐
+- **`test set --spec` 任务版修复**：`factor_test/handlers.py` 把 `--spec <p1,p2,..>` 逗号串
+  转 `{"periods": [...]}` 再透传（此前任务版崩溃）
+- **`factor set --engine` 改为定义键**：`factor/controller.py` `_set_sync` 把 `engine` 纳入
+  定义键（校验 `get_engine` + 物化失效），与 api.md 文档一致
+- **文档同步**：api.md §1 source/action 列表补 `test`/`check`/`test` + 单侧动词例外
+  （mock 仅任务版、task 仅 Execute）；§3.1 table scan 移除无效 `--resync`、feature add
+  formula 必填、feature delete 下游仅 factor、test add 补 `--factor_col`、test set 补
+  `--spec`、stat 行补单位置简写；§3.7 补 StatScanReport 与 factor_test 四个数据模型；
+  §3.10 formula 必填；§3.12 补测试器输出列与任务版简写说明；§4.1 对齐声明修正；§8 补
+  `factor_tests/` 存储目录；AGENTS.md feature 模块 formula 必填、factor set 定义键补 engine；
+  dispatch.py/proto 注释 source 列表更新
+- 测试：新增 factor set engine 定义键、任务版 test set --spec、任务版 stat 单位置简写
+  3 用例，全量 198 用例绿
 
 ### 2026-08 factor_test 因子测试数据集模块（test add/scan + stat 测试器集成）
 
@@ -200,7 +218,7 @@ src/stkoe/
 - **读取**：物化且 curated 读物化 parquet（含 hive 分区列 `part`），否则实时基于 sample
   视图计算，**不隐式物化**；`factor check` 校验计算成功 + 含全部索引列 + 因子列恰好 1 列 + 行数 > 0
 - **依赖登记**：factor → feature、factor → sample（stkoe_depends），删除上游需 `--force`；
-  `set` 改定义键（feature/sample/pipeline/factor_col）后物化失效，读取自动回退实时
+  `set` 改定义键（feature/sample/engine/pipeline/factor_col）后物化失效，读取自动回退实时
 - **feature 删除增加依赖阻断**：FeatureController.delete 检查 `dependents`（factor 依赖存在时
   需 `--force`，参照 sample/dataset），Execute/任务版/CLI 三处对齐
 - **多路径注册**：Execute（dispatch.py）/ SubmitTask（handlers.py）/ CLI（cli.py）三处对齐；
@@ -212,7 +230,7 @@ src/stkoe/
 
 - **新增 `feature` 模块**：因子（feature）= 一条**命名公式**，注册于 catalog
   （type='feature'）；**纯定义、无物化**、不依赖具体表/dataset/sample；
-  `add` 只记录 `engine + formula + 元数据`（formula 可空，仅登记元信息）
+  `add` 必须提供 `engine + formula`（formula 为空直接报错），再叠加元数据
 - **公式引擎插件制**（engine.py）：`FeatureEngine` 接口 + `register_engine`/`get_engine`
   注册表，当前仅 `polars`（列作用域 eval，与 fieldset/样本过滤一致）
 - **`feature test <name> --sample <s>`**：在指定样本池的 `dataset_with_fieldset` 视图上

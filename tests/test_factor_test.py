@@ -445,6 +445,34 @@ def test_task_meta(ctl, mgr, tmp_path):
     assert tm["keys"] == ["sym", "date"]
 
 
+def test_task_set_spec_shortcut(ctl, mgr, tmp_path):
+    """任务版 test set --spec <csv>：逗号串 → periods（与 Execute 对齐）"""
+    _setup_source(tmp_path)
+    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
+    t = _await(mgr, mgr.submit("test", "set", ["t1", "--spec", "1,2"]))
+    tm = _task_result(mgr, t)
+    assert tm["spec"]["periods"] == [1, 2]
+
+
+def test_task_stat_single_positional_test(ctl, mgr, tmp_path):
+    """任务版 stat 单位置参数简写 → test 目标（scan 需 --kind 测试器，get/meta/delete 无条件）"""
+    _setup_source(tmp_path)
+    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
+    _await(mgr, mgr.submit("test", "scan", ["t1"]))
+
+    t = _await(mgr, mgr.submit("stat", "scan", ["t1", "--kind", "ic"]))
+    rep = _task_result(mgr, t)
+    assert rep["target_type"] == "test" and rep["target_name"] == "t1"
+
+    t2 = _await(mgr, mgr.submit("stat", "get", ["t1", "--kind", "ic"]))
+    g = _task_result(mgr, t2)
+    assert g["target"] == "test:t1"
+
+    t3 = _await(mgr, mgr.submit("stat", "meta", ["t1", "--kind", "ic"]))
+    m = _task_result(mgr, t3)
+    assert m["target_type"] == "test" and m["target_name"] == "t1"
+
+
 # ---------- 任务框架助手 ----------
 
 def _await(mgr, task, timeout=10.0):

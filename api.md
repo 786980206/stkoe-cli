@@ -7,8 +7,9 @@
 
 所有业务命令统一为 `<source> <action> <args...>` 位置参数形态，等价于 `stkoe <source> <action> <args...>`。
 
-- **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `sample` / `feature` / `factor` / `stat` / `task` / `mock`
-- **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `scan` / `delete`（`del` 别名）/ `show`
+- **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `sample` / `feature` / `factor` / `test` / `stat` / `task` / `mock`
+- **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `scan` / `check` / `test` / `delete`（`del` 别名）/ `show`
+- **单侧动词例外**：`mock` 仅 SubmitTask 可用（示例任务，见 §4.6）；`task` 仅 Execute 可用（任务元操作，见 §4.5）
 - **args**：action 之后的位置参数 + `--key value` flag
 
 同一业务命令有**双路径**，行为对齐：
@@ -81,7 +82,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | task | （空）/ `list` | — | `--state <state>` | JsonData `{"tasks": [...]}`（按创建时间倒序） |
 | table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（TableScanReport） |
 | table | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
-| table | `scan` | `<name>` | `--all` `--resync` | JsonData（TableScanReport 或 []） |
+| table | `scan` | `<name>` | `--all` | JsonData（TableScanReport 或 []） |
 | table | `list` | — | `--candidate` | JsonData（TableMeta[] 或 候选名[]） |
 | table | `meta` | `<name>` | — | JsonData（TableMeta） |
 | table | `set` | `<name>` | `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（TableMeta） |
@@ -94,11 +95,11 @@ HealthRequest {}                                   HealthResponse { status, vers
 | dataset | `set` | `<name>` | `--display_name/--description/--tags <v>` + 任意键 | JsonData（DatasetMeta） |
 | dataset | `scan` | `<name>` | `--all` `--resync` | JsonData（DatasetScanReport 或 []） |
 | dataset | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| stat | `scan` | `<table\|dataset\|test> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic` `coverage`） | JsonData（StatScanReport） |
-| stat | `get` | `<table\|dataset\|test> <name>` | `--partition_by <p>` `--kind <kind>` | JsonData + ArrowTable（§3.6） |
-| stat | `meta` | `<table\|dataset\|test> <name>` | `--kind <kind>` | JsonData（StatMeta） |
+| stat | `scan` | `<table\|dataset\|test> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic`）；`<name>` 单位置 + `--kind <测试器>` 简写 → test 目标 | JsonData（StatScanReport） |
+| stat | `get` | `<table\|dataset\|test> <name>` | `--partition_by <p>` `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData + ArrowTable（§3.6） |
+| stat | `meta` | `<table\|dataset\|test> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData（StatMeta） |
 | stat | `list` | — | — | JsonData（StatMeta[]） |
-| stat | `delete`/`del` | `<table\|dataset\|test> <name>` | `--kind <kind>` | JsonData `{"deleted"}` |
+| stat | `delete`/`del` | `<table\|dataset\|test> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData `{"deleted"}` |
 | fieldset | `add` | `<name>` | `--dataset <d>`（必选） `--engine <e>`（默认 polars） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
 | fieldset | `add` | `<name> <field>` | `--formula <表达式>`（必选） `--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta，指标 validated=False） |
 | fieldset | `set` | `<name>` | `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
@@ -119,11 +120,11 @@ HealthRequest {}                                   HealthResponse { status, vers
 | sample | `set` | `<name>` | `--engine <e>` `--formula <表达式>` `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（SampleMeta） |
 | sample | `check` | `<name>` | — | JsonData（SampleCheckResult） |
 | sample | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| feature | `add` | `<name>` | `--engine <e>`（默认 polars） `--formula <表达式>`（可空，空则只 add 元信息） `--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
+| feature | `add` | `<name>` | `--engine <e>`（默认 polars） `--formula <表达式>`（必填） `--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
 | feature | `set` | `<name>` | `--engine/--formula/--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
 | feature | `meta` | `<name>` | — | JsonData（FeatureMeta） |
 | feature | `list` | — | — | JsonData（FeatureMeta[]） |
-| feature | `delete`/`del` | `<name>` | `--force`（下游 factor/sample 依赖存在时） | JsonData `{"deleted"}` |
+| feature | `delete`/`del` | `<name>` | `--force`（下游 factor 依赖存在时） | JsonData `{"deleted"}` |
 | feature | `test` | `<name>` | `--sample <s>`（必选，样本池名） | JsonData（FeatureTestResult）+ ArrowTable（有结果时） |
 | factor | `add` | `<name>` | `--feature <f>`（必选，已注册因子公式） `--sample <s>`（必选，已注册样本池） `--engine <e>`（默认 polars） `--pipeline <算子链>`（默认 `nothing()`，`\|` 分隔） `--factor_col <列名>`（默认 = feature 名） + 元数据键 | JsonData（FactorMeta） |
 | factor | `get` | `<name>` | `--where <谓词>` `--partition <p>` `--limit N` `--offset N` | **ArrowTable**（§3.2 约定；列 = 样本索引 + 1 因子列） |
@@ -133,9 +134,9 @@ HealthRequest {}                                   HealthResponse { status, vers
 | factor | `check` | `<name>` | — | JsonData（FactorCheckResult） |
 | factor | `scan` | `<name>` | `--all` `--resync` | JsonData（FactorScanReport 或 []） |
 | factor | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| test | `add` | `<name>` | `--factor <f>`（必选，已注册因子） `--returns <col>`（默认 `r`） `--groupby <col>`（默认 `ic`） `--marketcap <col>`（默认 `fv`） `--by_group` `--quantiles N`（默认 5） `--periods p1,p2,..`（默认 `1,5,10`） `--date_range start,end`（默认 `2023-01-01,2026-01-01`） `--rolling_window N`（默认 252） + 元数据键 | JsonData（FactorTestMeta）；sample 缺 date/sym/returns/groupby/marketcap 列 → 报错 |
+| test | `add` | `<name>` | `--factor <f>`（必选，已注册因子） `--returns <col>`（默认 `r`） `--groupby <col>`（默认 `ic`） `--marketcap <col>`（默认 `fv`） `--factor_col <col>`（默认 = factor 的 factor_col） `--by_group` `--quantiles N`（默认 5） `--periods p1,p2,..`（默认 `1,5,10`） `--date_range start,end`（默认 `2023-01-01,2026-01-01`） `--rolling_window N`（默认 252） + 元数据键 | JsonData（FactorTestMeta）；sample 缺 date/sym/returns/groupby/marketcap 列 → 报错 |
 | test | `get` | `<name>` | `--where <谓词>` `--limit N` `--offset N` | **ArrowTable**（测试数据集：date/sym/sample/returns/group/marketcap/factor/d{no}/factor_quantile） |
-| test | `set` | `<name>` | `--returns/--groupby/--marketcap/--factor_col/--by_group/--quantiles/--periods/--date_range/--rolling_window + 元数据键`（改配置 → 物化失效） | JsonData（FactorTestMeta） |
+| test | `set` | `<name>` | `--returns/--groupby/--marketcap/--factor_col/--by_group/--quantiles/--periods/--date_range/--rolling_window + 元数据键`；`--spec <p1,p2,..>`（简写，等价于 `--periods`）；改配置 → 物化失效 | JsonData（FactorTestMeta） |
 | test | `meta` | `<name>` | — | JsonData（FactorTestMeta） |
 | test | `list` | — | — | JsonData（FactorTestMeta[]） |
 | test | `check` | `<name>` | — | JsonData（FactorTestCheckResult） |
@@ -205,7 +206,8 @@ date >= 2024-01-01            开区间（> / >=）
 - **TableMeta**：`name, version, layout, display_name, description, tags, source, extra, partition_by, partition_count, files[{rel_path,partition,size,mtime_ns}], columns[ColumnMeta], consistent, created_at, updated_at`
 - **DatasetMeta**：`name, version, index_table, tables, keys, columns[ColumnMeta], partition_by, partition_gran(''/year/month/date/identity), materialized, materialized_at, curated, pending_partitions, validation, extra, display_name, description, tags, created_at, updated_at`
 - **DatasetScanReport**：`name, version_before, version_after, materialized, changed, incremental, partition_by, rebuilt_partitions, triggered`
-- **StatMeta / StatScanReport**：`target_type, target_name, kind, partitions[], files[{partition, rel_path, rows, size}], created_at, updated_at`
+- **StatMeta**：`target_type, target_name, kind, partitions[], files[{partition, rel_path, rows, size}], created_at, updated_at`
+- **StatScanReport**：`target_type, target_name, kind, partitions[], files[{partition, rel_path, rows, size}]`
 - **ColumnMeta**：`name, display_name, description, data_type, unit, formula, tags[], as_index, is_tool, source_table, source_field`
 - **FieldsetMeta**：`name, version, dataset, engine, keys[], fields[FieldMeta], partition_by, partition_gran, materialized, materialized_at, curated, columns[ColumnMeta]（源 dataset 列）, extra, display_name, description, tags[], source, created_at, updated_at`
 - **FieldMeta**：`name, formula, display_name, description, unit, tags[], validated（是否已 check）`
@@ -219,6 +221,10 @@ date >= 2024-01-01            开区间（> / >=）
 - **FieldMeta（factor）**：`name, formula（源 feature 公式）, display_name, description, unit, tags[]`
 - **FactorScanReport**：`name, version_before, version_after, materialized, changed, partition_by, rebuilt_partitions[]`
 - **FactorCheckResult**：`factor, ok, rows, columns[], message`（`ok` 条件：计算成功、含全部索引列、因子列恰好 1 列、行数 > 0）
+- **FactorTesterSpec**：`by_group, quantiles, periods[], date_range[]（start,end）, rolling_window`
+- **FactorTestMeta**：`name, version, factor, sample, returns, groupby, marketcap, factor_col, spec[FactorTesterSpec], keys[]（date/sym）, materialized, materialized_at, curated, columns[ColumnMeta]（sample 视图列 + 测试必需列）, extra, display_name, description, tags[], source, created_at, updated_at`
+- **FactorTestScanReport**：`name, version_before, version_after, materialized, changed, rows, quantiles, periods[]`
+- **FactorTestCheckResult**：`test, ok, rows, columns[], message`（`ok` 条件：构造成功、含全部必需列、行数 > 0）
 
 ### 3.8 fieldset 衍生指标集（公式引擎）
 
@@ -261,8 +267,8 @@ date >= 2024-01-01            开区间（> / >=）
 - **`feature test <name> --sample <s>`**：在指定样本池的 `dataset_with_fieldset` 视图上
   即时求值 —— 公式执行成功且结果行数 == 样本行数 → `valid=True` 并返回结果
   ArrowTable（单列 `field`）；聚合公式或执行失败 → `valid=False` / `ok=False`
-- **`add` 可只记元信息（formula 为空）**：此时 test 返回空结果
-  （`valid=True, rows=0`，无 ArrowTable）
+- **`add` 必须提供 `--formula <表达式>`**（空 formula 会被拒绝，见 §3.1）；`feature test` 在
+  样本视图上即时求值
 - **依赖**：feature 是**纯定义、不依赖任何资产**，删除源 dataset/sample 不影响 feature
 - 导入顺序与取值规则与 §3.8 一致：源列名可直接当表达式用（`x*2`）
 
@@ -303,13 +309,16 @@ date >= 2024-01-01            开区间（> / >=）
 - **依赖**：test → factor（删除 factor 需 `--force`）
 - **测试器（stat 集成）**：`stat scan test <name> --kind <kind>` 或
   `stat scan <name> --kind <kind>`（单位置参数简写）运行测试器并把各命名产物写入
-  `stats/test/<name>/<kind>/<output>.parquet`；`stat get` 用 `--partition_by <output>` 读单产物
-  - `coverage` → `cvg_date`（SF2S/F2T/S2T/X2S 覆盖率）
-  - `ic` → `ic_d{no}`（IC/RankIC/GIC/RankGIC）
-  - `autocorrelation` → `ac_d{no}`（AC/RankAC）
-  - `bucket_returns` → `rtn_date` / `exr_date` / `gbr_date`（分组收益/超额/行业组收益）
-  - `bucket_turnover` → `tr_d{no}`（分位换手率）
-  - `factor_returns` → `fr_d{no}`（因子加权/等权/分位多空日度 + 累计序列）
+  `stats/test/<name>/<kind>/<output>.parquet`；`stat get` 用 `--partition_by <output>` 读单产物。
+  单位置简写在 Execute 与 SubmitTask 两条路径均可用（`s:stat scan <name> --kind <kind>`）
+  - `coverage` → `cvg_date`（`date/SF2S/F2T/S2T/X2S` 覆盖率）
+  - `ic` → `ic_d{no}`（`IC(d{no})/RankIC(d{no})/GIC(d{no})/RankGIC(d{no})`，按 `date`）
+  - `autocorrelation` → `ac_d{no}`（`AC(d{no})/RankAC(d{no})`，按 `date`）
+  - `bucket_returns` → `rtn_date`（`date + E(d{no})/SE(d{no})`）/ `exr_date`（`EXR(d{no})`，
+    按 `date` 均值中心化）/ `gbr_date`（`GBR(d{no})`，按 `date+group` 组内中心化）
+  - `bucket_turnover` → `tr_d{no}`（`TR(d{no})` 分位换手率，按 `date`）
+  - `factor_returns` → `fr_d{no}`（`fw_ls/fw_raw/fw_ind/fw_ind_raw/eq_raw/eq_ind/ls/top_raw/
+    bottom_raw/ls_ind/hold/mkt` + `*_cum` 累计序列，按 `date`）
 
 ---
 
@@ -319,7 +328,7 @@ date >= 2024-01-01            开区间（> / >=）
 
 `SubmitTask(source, action, args)` 立即返回 `header + task_id`（`code=0` 成功）。任务在独立事件循环线程执行。
 
-支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/mock/table/dataset/fieldset/sample/feature/factor/test/stat 全部动作），结果放在**终态事件的 `data`**（JSON 字符串）。
+支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/table/dataset/fieldset/sample/feature/factor/test/stat 全部动作；`mock` 仅任务版、`task` 仅 Execute，见 §1），结果放在**终态事件的 `data`**（JSON 字符串）。
 
 ### 4.2 事件流（SubscribeTask）
 
@@ -450,6 +459,7 @@ t:<task_id>
 ├── datasets/<name>/           # dataset 物化产物（data.parquet 或 part=<v>/data.parquet）
 ├── fieldsets/<name>/          # fieldset 物化产物（keys + 已校验指标；布局镜像源 dataset）
 ├── factors/<name>/            # factor 物化产物（样本索引 + 1 因子列；布局镜像源 dataset）
+├── factor_tests/<name>/       # 因子测试数据集物化产物（data.parquet，flat 单文件）
 └── stats/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 catalog）
 ```
 

@@ -34,11 +34,19 @@ def _controller(ctx):
     return StatController(data_dir=ctx.data_dir)
 
 
-def _target(ctx) -> tuple[str, str]:
+def _target(ctx, *, tester_only: bool = False) -> tuple[str, str]:
+    """解析 stat target；单位置参数 → test 目标（与 Execute 对齐）"""
     pos = _positional(ctx.args)
-    if len(pos) < 2:
-        raise ValueError("stat 命令需要 target 类型和名字（如 dataset <name>）")
-    return pos[0], pos[1]
+    if len(pos) >= 2:
+        return pos[0], pos[1]
+    if len(pos) == 1:
+        kind = (parse_flags(ctx.args).get("kind") or "coverage")
+        from ..factor_test.tester import TESTER_KINDS
+
+        if not tester_only or kind in TESTER_KINDS:
+            return "test", pos[0]
+    raise ValueError("stat 命令需要 target 类型和名字（如 dataset <name>，"
+                     "或 test <name> --kind <tester>）")
 
 
 def _write_ipc(df: pl.DataFrame, ctx, name: str) -> str:
@@ -50,9 +58,9 @@ def _write_ipc(df: pl.DataFrame, ctx, name: str) -> str:
 
 class StatScanHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
-        target_type, target_name = _target(ctx)
         flags = parse_flags(ctx.args)
         kind = flags.get("kind") or "coverage"
+        target_type, target_name = _target(ctx, tester_only=True)
         ctl = _controller(ctx)
         loop = asyncio.get_running_loop()
         report = await ctl.scan(target_type, target_name, kind=kind,

@@ -150,6 +150,20 @@ def test_set_updates_definition(ctl, tmp_path):
     assert fm.pipeline == "nothing()"
 
 
+def test_set_engine_is_definition_key(ctl, tmp_path):
+    """set --engine：作为定义键（校验 get_engine + 物化失效），与 add 一致"""
+    _setup_source(tmp_path)
+    _add(ctl, "fac1", feature="f1", sample="sp1")
+    _run(ctl.scan("fac1"))
+    assert _meta(ctl, "fac1").curated is True
+    fm = _run(ctl.set("fac1", engine="polars"))
+    assert fm.engine == "polars"
+    assert fm.materialized is False
+    assert _meta(ctl, "fac1").curated is False
+    with pytest.raises(ValueError):
+        _run(ctl.set("fac1", engine="nope"))
+
+
 def test_check_valid(ctl, tmp_path):
     _setup_source(tmp_path)
     _add(ctl, "fac1", feature="f1", sample="sp1")

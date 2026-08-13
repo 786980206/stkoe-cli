@@ -119,7 +119,10 @@ class TestSetHandler(TaskHandler):
         if not flags:
             raise ValueError("test set 需要至少一个 --key value")
         ctl = _controller(ctx)
-        tm = await ctl.set(pos[0], **flags)
+        kw = dict(flags)
+        if "spec" in kw and isinstance(kw["spec"], str):
+            kw["spec"] = {"periods": [int(p) for p in kw["spec"].split(",")]}
+        tm = await ctl.set(pos[0], **kw)
         return TaskResult(data=dumps_str(tm.to_dict()))
 
 

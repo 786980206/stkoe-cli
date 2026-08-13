@@ -1,8 +1,8 @@
 """命令分发：把 Execute / SubmitTask 的 ``(source, action, args)`` 路由到对应处理器
 
 协议约定请求为 ``stkoe <source> <action> <args...>`` 位置参数形态：
-- source：table / dataset / stat / field / config / task / mock / version
-- action：add / get / del / set / list / meta / ... 等子命令动词
+- source：table / dataset / stat / fieldset / sample / feature / factor / test / config / task / mock / version
+- action：add / get / del / set / list / meta / check / test / scan / ... 等子命令动词
 - args：action 之后的位置参数
 
 处理器通过 ``@handler(source, action)`` 装饰器注册，签名 ``fn(args, data_dir=None) -> list[Result]``；

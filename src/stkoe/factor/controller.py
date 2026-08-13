@@ -242,9 +242,11 @@ class FactorController:
             from ..table.catalog import update_object_meta
 
             meta = dict(self._meta_dict(conn, name))
-            # feature/sample/pipeline/factor_col 为定义键，改动后物化态失效
-            for key in ("feature", "sample", "pipeline", "factor_col"):
+            # feature/sample/engine/pipeline/factor_col 为定义键，改动后物化态失效
+            for key in ("feature", "sample", "engine", "pipeline", "factor_col"):
                 if key in kw:
+                    if key == "engine":
+                        get_engine(kw[key])
                     meta[key] = kw[key]
                     meta["materialized"] = False
                     meta["dependency_hash"] = None

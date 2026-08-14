@@ -43,7 +43,7 @@ def _setup_source(tmp_path, index_rows=None, member_rows=None):
     from stkoe.dataset import DatasetController
 
     tctl = TableController(data_dir=root)
-    _run(tctl.add("idx"))
+    _run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     if member_rows is not None:
         _run(tctl.add("m1"))
@@ -215,7 +215,7 @@ def test_task_framework_fieldset_handlers(mgr):
     _write(root, "idx", pl.DataFrame({
         "k": ["a", "b"], "x": [1.0, 2.0], "optime": ["2024-01-01 08:00:00"] * 2}))
     tctl = TableController(data_dir=root)
-    _run(tctl.add("idx"))
+    _run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     _run(dc.add("ds", "idx", keys=["k"]))
 

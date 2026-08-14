@@ -164,6 +164,19 @@ src/stkoe/
 
 ## 近期变更记录
 
+### 2026-08 table `--type` 表类型 + dataset index_table 约束
+
+- **`table add/set --type <v>` 表类型**：新增标准元数据字段 `type`（默认空字符串），
+  可设为 `index` 或任意自定义值；仅作分类标识，除 dataset 约束外不影响其他流程
+- **dataset index_table 约束**：`dataset add` 的 index 表必须为 `--type index` 的 table
+  （`scan_spec` 校验，非 index 类型报 `must be type 'index'`）；成员表无类型要求；
+  Execute / 任务版 / CLI 三处经 `_add_sync` 自动对齐
+- 旧库兼容：`_to_meta` 对未设 type 的表回退空字符串；`_sync_source_meta` 对旧 dataset
+  （index 非 index 类型）仅跳过列同步，不影响物化
+- 文档同步：api.md §3.1（table add/set 补 `--type`、dataset add 补约束）、§3.7 TableMeta
+  补 `type`；example.md §1 `table add index --type index`；测试补 table type / dataset
+  约束 / Execute 全链路 3 例，全量 222 用例绿
+
 ### 2026-08 版本 0.6.0（tag v0.6.0）：mock 接口 + 测试提速 + 依赖整理
 
 - **mock 接口 / demo 默认 300×500 / SQLite 提速**：见下两条记录

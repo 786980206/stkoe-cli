@@ -50,7 +50,7 @@ from .util import (
 DEFAULT_IGNORE_COLS = ("optime",)
 
 #: ``table set`` 可编辑的标准元数据字段（其余任意键进 extra）
-META_FIELDS = ("display_name", "description", "source")
+META_FIELDS = ("display_name", "description", "source", "type")
 
 #: ``table col`` 可编辑的列元数据字段
 COL_META_FIELDS = ("display_name", "description", "unit", "formula", "tags")
@@ -91,6 +91,7 @@ class TableController:
             "description": "",
             "tags": [],
             "source": "local",
+            "type": "",
             "layout": TableLayout.SINGLE.value,
             "partition_by": [],
             "columns": [],
@@ -109,6 +110,7 @@ class TableController:
             name=obj["name"],
             version=obj["version"],
             layout=TableLayout(meta.get("layout", "single")),
+            type=meta.get("type", ""),
             display_name=meta.get("display_name", obj["name"]),
             description=meta.get("description", ""),
             tags=tuple(meta.get("tags", [])),

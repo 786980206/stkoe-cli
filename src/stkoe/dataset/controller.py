@@ -124,7 +124,8 @@ class DatasetController:
                   keys: list[str] | None = None) -> dict:
         """校验 index + 成员表，自动推导 join 键与列映射
 
-        **join 键由 index 表定义**：keys 缺省 = index 表的全部**非工具**列
+        **index 表必须为 ``type='index'`` 的 table**（``table add/set --type index``
+        设置）；join 键由 index 表定义：keys 缺省 = index 表的全部**非工具**列
         （排除 ignore_cols，如 ``optime``）；每个键必须存在于所有成员表，缺列报错。
         """
         members = [index_table, *tables]
@@ -132,6 +133,10 @@ class DatasetController:
         for t, m in zip(members, metas):
             if not m.files:
                 return {"ok": False, "message": f"table has no data: {t}"}
+        if metas[0].type != "index":
+            return {"ok": False, "message": f"index table '{index_table}' must be "
+                                            f"type 'index'（table add/set --type index 设置）; "
+                                            f"current type: '{metas[0].type}'"}
         index_by_name = {c.name: c for c in metas[0].columns}
         if keys is None:
             keys = [c.name for c in metas[0].columns if not c.is_tool]

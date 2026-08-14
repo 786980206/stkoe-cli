@@ -27,8 +27,8 @@ uv run -m stkoe mock demo
 ## 1. 发现表资产
 
 ```bash
-uv run -m stkoe table add index        # 注册 index（发现 data.parquet，隐式登记）
-uv run -m stkoe table add m1           # 注册 m1
+uv run -m stkoe table add index --type index   # 注册 index（发现 data.parquet，标记为 index 类型表）
+uv run -m stkoe table add m1                    # 注册 m1
 uv run -m stkoe table list             # 已注册表清单
 uv run -m stkoe table meta index       # 表元数据（含列信息）
 uv run -m stkoe table get index --where "date >= '2024-01-02'" --limit 5   # 谓词裁剪读取
@@ -37,7 +37,7 @@ uv run -m stkoe table get index --where "date >= '2024-01-02'" --limit 5   # 谓
 ## 2. 逻辑数据集（add 只注册，scan 才物化）
 
 ```bash
-uv run -m stkoe dataset add ds1 index m1 --keys sym,date   # 注册数据集（index 为主表，m1 为成员）
+uv run -m stkoe dataset add ds1 index m1 --keys sym,date   # 注册数据集（index 为主表且必须 type=index，m1 为成员）
 uv run -m stkoe dataset scan ds1                            # 物化：join 后落盘 datasets/ds1/
 uv run -m stkoe dataset meta ds1                            # 数据集元数据（含 join 后的列）
 uv run -m stkoe dataset get ds1 --limit 5                   # 读数据集（curated 读物化 parquet）

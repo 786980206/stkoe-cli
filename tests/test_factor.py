@@ -41,7 +41,7 @@ def _setup_source(tmp_path):
     from stkoe.table import TableController
 
     tctl = TableController(data_dir=root)
-    _run(tctl.add("idx"))
+    _run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     _run(dc.add("ds", "idx", keys=["k"]))
     sc = SampleController(data_dir=root)
@@ -296,7 +296,7 @@ def test_task_framework_factor_handlers(mgr):
     root = mgr.data_dir
     _write(root, "idx", pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0]}))
     tctl = TableController(data_dir=root)
-    _run(tctl.add("idx"))
+    _run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     _run(dc.add("ds", "idx", keys=["k"]))
     sc = SampleController(data_dir=root)

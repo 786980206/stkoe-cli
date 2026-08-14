@@ -184,13 +184,13 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     assert header.code == 0
     assert _json(datas, "table")["name"] == "demo"
 
-    # add 携带元数据：e:table add demo2 --display_name --tags
+    # add 携带元数据：e:table add demo2 --display_name --tags --type
     root2 = Path(srv.data_dir) / "tables" / "demo2"
     root2.mkdir(parents=True)
     pl.DataFrame({"a": [1]}).write_parquet(root2 / "p.parquet")
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="table", action="add",
-        args=["demo2", "--display_name=E表", "--tags=x, y"])))
+        args=["demo2", "--display_name=E表", "--tags=x, y", "--type=index"])))
     assert header.code == 0
     add_meta = _json(datas, "table")
     assert add_meta["name"] == "demo2"
@@ -198,6 +198,7 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
         source="table", action="meta", args=["demo2"])))
     assert _json(datas, "table")["display_name"] == "E表"
     assert _json(datas, "table")["tags"] == ["x", "y"]
+    assert _json(datas, "table")["type"] == "index"
 
     # set：更新元数据
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -385,7 +386,7 @@ def test_execute_sample_add_check_get_delete(client, srv):
         return asyncio.run(a)
 
     tctl = TableController(data_dir=root)
-    run(tctl.add("idx"))
+    run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     run(dc.add("ds", "idx", keys=["k"]))
     fs = FieldsetController(data_dir=root)
@@ -447,7 +448,7 @@ def test_execute_feature_add_test_list_delete(client, srv):
         return asyncio.run(a)
 
     tctl = TableController(data_dir=root)
-    run(tctl.add("idx"))
+    run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     run(dc.add("ds", "idx", keys=["k"]))
     sc = SampleController(data_dir=root)
@@ -501,7 +502,7 @@ def test_execute_factor_add_get_check_scan_delete(client, srv):
         return asyncio.run(a)
 
     tctl = TableController(data_dir=root)
-    run(tctl.add("idx"))
+    run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     run(dc.add("ds", "idx", keys=["k"]))
     sc = SampleController(data_dir=root)
@@ -568,7 +569,7 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
         return asyncio.run(a)
 
     tctl = TableController(data_dir=root)
-    run(tctl.add("idx"))
+    run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     run(dc.add("ds", "idx", "idx", keys=["sym", "date"]))
     sc = SampleController(data_dir=root)

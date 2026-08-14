@@ -72,6 +72,7 @@ class TableMeta:
     name: str
     version: int
     layout: TableLayout
+    type: str = ""  # 表类型（``table add/set --type`` 可设）：index 或自定义；dataset index_table 要求 index
     display_name: str = ""
     description: str = ""
     tags: tuple[str, ...] = ()
@@ -90,6 +91,7 @@ class TableMeta:
             "name": self.name,
             "version": self.version,
             "layout": self.layout.value,
+            "type": self.type,
             "display_name": self.display_name,
             "description": self.description,
             "tags": list(self.tags),

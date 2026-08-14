@@ -51,7 +51,7 @@ def _setup_sources(tmp_path, tctl):
         "industry": ["金融", "科技", "金融"],
     }))
     for t in ("index", "m1"):
-        _run(tctl.add(t))
+        _run(tctl.add(t, meta={"type": "index"} if t == "index" else None))
     from stkoe.dataset import DatasetController
 
     dc = DatasetController(data_dir=root)
@@ -218,7 +218,7 @@ def test_task_framework_stat_handlers(mgr):
         "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
         "name": ["AA", "BB"], "industry": ["金融", "科技"]}))
     for t in ("index", "m1"):
-        _run(tctl.add(t))
+        _run(tctl.add(t, meta={"type": "index"} if t == "index" else None))
     dc = DatasetController(data_dir=root)
     _run(dc.add("ds1", "index", "m1", keys=["sym", "date"]))
 
@@ -252,7 +252,7 @@ def test_task_scan_reports_index_progress(mgr):
         "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
         "name": ["AA", "BB"], "industry": ["金融", "科技"]}))
     for t in ("index", "m1"):
-        _run(tctl.add(t))
+        _run(tctl.add(t, meta={"type": "index"} if t == "index" else None))
     dc = DatasetController(data_dir=root)
     _run(dc.add("ds1", "index", "m1", keys=["sym", "date"]))
 

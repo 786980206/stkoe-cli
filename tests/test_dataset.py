@@ -53,7 +53,7 @@ def _setup_sources(tmp_path, tctl):
         "industry": ["金融", "科技", "金融"],
     }))
     for t in ("index", "m1"):
-        _run(tctl.add(t))
+        _run(tctl.add(t, meta={"type": "index"} if t == "index" else None))
     return root
 
 
@@ -119,6 +119,28 @@ def test_missing_member_key_errors(ctl, tmp_path, tctl):
     with pytest.raises(ValueError) as e:
         _add(ctl, "ds2", "index", "m2", keys=KEYS)
     assert "missing join keys" in str(e.value)
+
+
+def test_index_table_must_be_type_index(ctl, tmp_path, tctl):
+    """index_table 只允许 type='index' 的 table：非 index 类型拒绝创建"""
+    _setup_sources(tmp_path, tctl)
+    # 把 index 表 type 改为非 index → dataset add 拒绝
+    _run(tctl.set("index", type=""))
+    with pytest.raises(ValueError) as e:
+        _add(ctl, "ds2", "index", "m1", keys=KEYS)
+    assert "must be type 'index'" in str(e.value)
+
+    # 另一张普通表（未设 type）也不能作 index
+    _write(tmp_path / "data", "plain", pl.DataFrame({"k": ["a"], "x": [1.0]}))
+    _run(tctl.add("plain"))
+    with pytest.raises(ValueError) as e:
+        _add(ctl, "ds3", "plain", keys=["k"])
+    assert "must be type 'index'" in str(e.value)
+
+    # 设回 type=index → 创建成功
+    _run(tctl.set("index", type="index"))
+    dm = _add(ctl, "ds4", "index", "m1", keys=KEYS)
+    assert dm.name == "ds4"
 
 
 def test_scan_propagates_source_col_meta(ctl, tmp_path, tctl):
@@ -263,7 +285,7 @@ def test_task_framework_dataset_handlers(mgr):
         "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
         "name": ["AA", "BB"], "industry": ["金融", "科技"]}))
     for t in ("index", "m1"):
-        _run(tctl.add(t))
+        _run(tctl.add(t, meta={"type": "index"} if t == "index" else None))
 
     t_add = mgr.submit("dataset", "add", ["ds1", "index", "m1", "--keys", "sym,date"])
     _await(mgr, t_add)
@@ -312,7 +334,7 @@ def test_task_scan_reports_partition_progress(mgr):
         "name": ["AA", "BB"],
     }).write_parquet(root / "tables" / "m1" / "f.parquet")
     tctl = TableController(data_dir=mgr.data_dir)
-    _run(tctl.add("idx"))
+    _run(tctl.add("idx", meta={"type": "index"}))
     _run(tctl.add("m1"))
 
     t_add = mgr.submit("dataset", "add", ["ds1", "idx", "m1", "--keys", "dt,sym"])

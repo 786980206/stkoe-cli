@@ -41,7 +41,7 @@ def _setup_source(tmp_path):
     from stkoe.dataset import DatasetController
 
     tctl = TableController(data_dir=root)
-    _run(tctl.add("idx"))
+    _run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     _run(dc.add("ds", "idx", keys=["k"]))
     return root
@@ -210,7 +210,7 @@ def test_task_framework_sample_handlers(mgr):
         "date": ["2026-01-01", "2026-01-02", "2026-01-03"],
     }))
     tctl = TableController(data_dir=root)
-    _run(tctl.add("idx"))
+    _run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     _run(dc.add("ds", "idx", keys=["k"]))
     fs = FieldsetController(data_dir=root)

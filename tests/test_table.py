@@ -210,6 +210,31 @@ def test_get_auto_sync_on_change(ctl, tmp_path):
     assert after.version == 2
 
 
+def test_add_and_set_type_metadata(ctl, tmp_path):
+    """table --type：add/set 均可设置表类型（index 或其他值），属于标准元数据字段"""
+    root = tmp_path / "data"
+    _write_single(root, "idx", {"sym": ["a"], "price": [1.0]})
+    report = _run(ctl.add("idx", meta={"type": "index"}))
+    assert report.name == "idx"
+    m = _meta(ctl, "idx")
+    assert m.type == "index"
+
+    # set 可改 type；未设置时默认空字符串
+    m2 = _set(ctl, "idx", type="benchmark")
+    assert m2.type == "benchmark"
+    m3 = _set(ctl, "idx", type="")
+    assert m3.type == ""
+
+    # 普通表（不设 type）默认空
+    _write_single(root, "plain", {"sym": ["b"], "price": [2.0]})
+    _add(ctl, "plain")
+    assert _meta(ctl, "plain").type == ""
+
+    # 自定义值保留（不限定枚举）
+    m4 = _set(ctl, "plain", type="feature")
+    assert m4.type == "feature"
+
+
 def test_set_updates_metadata(ctl, tmp_path):
     """table set：标准字段 + tags + 任意键进 extra，版本递增，返回更新后 meta"""
     _write_single(tmp_path / "data", "demo", {"sym": ["a"], "price": [1.0]})

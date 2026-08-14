@@ -47,11 +47,12 @@ uv run stkoe table list                           # 已注册表
 uv run stkoe table meta demo                      # 表元数据
 uv run stkoe table add demo                       # 注册表
 uv run stkoe table set demo --display_name 演示表  # 更新表元数据
+uv run stkoe table add idx --type index            # 注册 index 类型表（dataset index_table 必需）
 uv run stkoe table col demo sym --display_name 代码 --unit 元   # 更新列元数据
 uv run stkoe table get demo                       # 读表（返回 IPC 元信息）
 uv run stkoe table delete demo                    # 删除表注册（数据文件保留）
 
-uv run stkoe dataset add ds1 index m1 --keys sym,date    # 注册数据集（不物化）
+uv run stkoe dataset add ds1 index m1 --keys sym,date    # 注册数据集（index 表须 --type index；不物化）
 uv run stkoe dataset scan ds1                     # 物化数据集（新增/覆盖表也行）
 uv run stkoe dataset get ds1                      # 读数据集（curated 读 parquet，否则实时 join）
 uv run stkoe dataset meta ds1                     # 数据集元数据

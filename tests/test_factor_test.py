@@ -61,7 +61,7 @@ def _setup_source(tmp_path, panel=True):
     from stkoe.table import TableController
 
     tctl = TableController(data_dir=root)
-    _run(tctl.add("idx"))
+    _run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     _run(dc.add("ds", "idx", "idx", keys=["sym", "date"]))
     sc = SampleController(data_dir=root)
@@ -116,7 +116,7 @@ def test_add_missing_required_cols_rejected(ctl, tmp_path):
     from stkoe.table import TableController
 
     tctl = TableController(data_dir=root)
-    _run(tctl.add("idx"))
+    _run(tctl.add("idx", meta={"type": "index"}))
     dc = DatasetController(data_dir=root)
     _run(dc.add("ds", "idx", "idx", keys=["sym", "date"]))
     sc = SampleController(data_dir=root)

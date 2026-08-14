@@ -82,15 +82,15 @@ HealthRequest {}                                   HealthResponse { status, vers
 | task | （空）/ `list` | — | `--state <state>` | JsonData `{"tasks": [...]}`（按创建时间倒序） |
 | mock | `demo` | — | `--n-syms N`（默认 300） `--n-days N`（默认 500，交易日数，从 2024-01-01 起） | JsonData（写入清单：`[{name, path, rows, columns}]`，写 `tables/index` + `tables/m1`，不注册） |
 | mock | `gen` | `<name>` | `--kind <kind>`（默认 index；`tdcal/common/index/feature/klday/m1`） `--n-syms N` `--n-days N` `--start S` `--end E` `--seed N` `--col C` | JsonData（单表写入清单） |
-| table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（TableScanReport） |
+| table | `add` | `<name>` | `--all`；单表可带 `--type <v>` `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（TableScanReport） |
 | table | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | table | `scan` | `<name>` | `--all` | JsonData（TableScanReport 或 []） |
 | table | `list` | — | `--candidate` | JsonData（TableMeta[] 或 候选名[]） |
 | table | `meta` | `<name>` | — | JsonData（TableMeta） |
-| table | `set` | `<name>` | `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（TableMeta） |
+| table | `set` | `<name>` | `--type <v>` `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（TableMeta） |
 | table | `col` | `<name> <column>` | `--display_name/--description/--unit/--formula/--tags <v>` | JsonData（TableMeta） |
 | table | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| dataset | `add` | `<name> <index> [member...]` | `--keys k1,k2` `--materialize` | JsonData（DatasetMeta） |
+| dataset | `add` | `<name> <index> [member...]` | `--keys k1,k2` `--materialize`（**index 必须为 `--type index` 的 table**，否则报错） | JsonData（DatasetMeta） |
 | dataset | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | dataset | `list` | — | — | JsonData（DatasetMeta[]） |
 | dataset | `meta` | `<name>` | — | JsonData（DatasetMeta） |
@@ -148,6 +148,8 @@ HealthRequest {}                                   HealthResponse { status, vers
 > `table scan` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
 > `table add` 单表可携带初始元数据（键语义与 `table set` 一致，仅首次注册生效；`--all` 时不适用）。
+> `--type <v>` 设置表类型（默认空字符串）：`index` 表可作为 dataset 的 index_table，
+> 其余任意自定义值（如 `feature`/`benchmark`）仅作分类标识，不影响其他流程。
 
 ### 3.2 `table get` / `dataset get` 的 ArrowTable.meta
 
@@ -205,7 +207,7 @@ date >= 2024-01-01            开区间（> / >=）
 ### 3.7 返回数据模型字段
 
 - **TableScanReport**：`name, version_before, version_after, layout(single/flat/hive), partition_by, partition_count, diffs[{rel_path,kind(added/removed/changed),...}], changed, implicit_registered`
-- **TableMeta**：`name, version, layout, display_name, description, tags, source, extra, partition_by, partition_count, files[{rel_path,partition,size,mtime_ns}], columns[ColumnMeta], consistent, created_at, updated_at`
+- **TableMeta**：`name, version, layout, type, display_name, description, tags, source, extra, partition_by, partition_count, files[{rel_path,partition,size,mtime_ns}], columns[ColumnMeta], consistent, created_at, updated_at`
 - **DatasetMeta**：`name, version, index_table, tables, keys, columns[ColumnMeta], partition_by, partition_gran(''/year/month/date/identity), materialized, materialized_at, curated, pending_partitions, validation, extra, display_name, description, tags, created_at, updated_at`
 - **DatasetScanReport**：`name, version_before, version_after, materialized, changed, incremental, partition_by, rebuilt_partitions, triggered`
 - **StatMeta**：`target_type, target_name, kind, partitions[], files[{partition, rel_path, rows, size}], created_at, updated_at`

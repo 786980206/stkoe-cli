@@ -106,7 +106,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | fieldset | `add` | `<name> <field>` | `--formula <表达式>`（必选） `--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta，指标 validated=False） |
 | fieldset | `set` | `<name>` | `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
 | fieldset | `set` | `<name> <field>` | `--formula/--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta；改公式 → validated 复位 False） |
-| fieldset | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
+| fieldset | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--fields-only` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | fieldset | `meta` | `<name>` | — | JsonData（FieldsetMeta） |
 | fieldset | `meta` | `<name> <field>` | — | JsonData（FieldMeta） |
 | fieldset | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
@@ -240,8 +240,10 @@ date >= 2024-01-01            开区间（> / >=）
   指标 `validated=True`；公式编译/执行失败或行数不一致 → 校验失败（保持未校验）
 - **物化**：`scan` 只落盘 `keys + 已校验指标`（跳过未校验指标），幂等（依赖签名不变则跳过）；
   物化目录 `fieldsets/<name>/`，布局镜像源 dataset（源已分区则按同分区键/粒度 `part=<v>/`，否则单文件）
-- **读取**：物化完成且与源+公式一致（`curated`）读物化 parquet；否则实时基于源 dataset
-  视图计算，不隐式物化（显式 `scan` 触发）
+- **读取**：`get` **默认返回 dataset + fieldset 已校验指标 join 拼接后的完整视图**
+  （left join on keys，dataset 为左表，下游过滤/join 可直接使用）；
+  `--fields-only` 只返回衍生数据（keys + 已校验指标）。物化完成且与源+公式一致（`curated`）
+  读物化 parquet；否则实时基于源 dataset 视图计算，不隐式物化（显式 `scan` 触发）
 - **生命周期**：指标 add/set 后 `validated=False`；`set --formula` 会复位校验位；
   `fieldset test --formula` 即时求值返回成功/失败 + 结果数据
 

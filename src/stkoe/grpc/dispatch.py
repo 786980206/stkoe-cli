@@ -566,6 +566,7 @@ def _fieldset_get(args: list[str], data_dir=None) -> list[Result]:
         limit=int(flags["limit"]) if flags.get("limit") else None,
         offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
+        fields_only=bool(flags.get("fields-only")),
     ))
     fm = asyncio.run(ctl.meta(pos[0]))
     buf = io.BytesIO()

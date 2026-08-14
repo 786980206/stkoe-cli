@@ -70,6 +70,7 @@ class FieldsetGetHandler(TaskHandler):
             limit=int(flags["limit"]) if flags.get("limit") else None,
             offset=int(flags["offset"]) if flags.get("offset") else None,
             count_total=True,
+            fields_only=bool(flags.get("fields-only")),
         )
         buf = io.BytesIO()
         if df.height:

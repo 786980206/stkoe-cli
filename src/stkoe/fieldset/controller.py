@@ -342,15 +342,26 @@ class FieldsetController:
 
     def _get_lazy_sync(self, name: str, *, columns: list[str] | None = None,
                        where=None, partition: str | None = None,
-                       exclude_tool: bool = False) -> pl.LazyFrame:
-        """读 fieldset（lazy）：物化且 curated → 读物化 parquet；否则实时基于源计算"""
+                       exclude_tool: bool = False,
+                       fields_only: bool = False) -> pl.LazyFrame:
+        """读 fieldset（lazy）。
+
+        ``fields_only=True`` 只返回衍生数据（keys + 已校验指标）；**默认返回
+        dataset + fieldset 已校验指标 join 拼接后的完整视图**（left join on
+        keys，dataset 为左表），下游过滤/join 可直接使用无需再拼接。
+
+        物化且 curated 读物化 parquet，否则实时基于源计算（不隐式物化）。
+        """
         fs = self._describe_sync(name)
-        if fs.materialized and fs.curated:
-            lf = pl.scan_parquet(self._root(name), hive_partitioning=True)
-            if partition is not None:
-                lf = lf.filter(pl.col("part").cast(pl.String).str.starts_with(partition))
+        if fields_only:
+            if fs.materialized and fs.curated:
+                lf = pl.scan_parquet(self._root(name), hive_partitioning=True)
+                if partition is not None:
+                    lf = lf.filter(pl.col("part").cast(pl.String).str.starts_with(partition))
+            else:
+                lf = self._engine_select_lazy(fs)
         else:
-            lf = self._engine_select_lazy(fs)
+            lf = self._joined_lazy(fs, partition=partition)
         if where is not None:
             from ..table.query import to_expr
 
@@ -358,6 +369,23 @@ class FieldsetController:
         if columns is not None:
             lf = lf.select(*columns)
         return lf
+
+    def _joined_lazy(self, fs: FieldsetMeta, *,
+                     partition: str | None = None) -> pl.LazyFrame:
+        """dataset + fieldset 已校验指标 join 拼接视图（left join on keys）"""
+        src = self._dc._get_lazy_sync(fs.dataset, partition=partition)
+        fields = self._valid_fields(list(fs.fields))
+        if not fields:
+            return src
+        keys = list(fs.keys)
+        if fs.materialized and fs.curated:
+            mat = pl.scan_parquet(self._root(fs.name), hive_partitioning=True)
+            if partition is not None:
+                mat = mat.filter(pl.col("part").cast(pl.String).str.starts_with(partition))
+        else:
+            mat = get_engine(fs.engine).scan(src, keys, fields)
+        return src.join(mat.select([*keys, *[f.name for f in fields]]),
+                        on=keys, how="left")
 
     def _engine_select_lazy(self, fs: FieldsetMeta, fields=None) -> pl.LazyFrame:
         """实时计算视图：源 dataset 视图 + 已校验指标（keys + fields）"""
@@ -368,9 +396,11 @@ class FieldsetController:
 
     def _get_sync(self, name: str, *, columns=None, where=None, partition=None,
                   exclude_tool: bool = False, limit=None, offset=None,
-                  count_total: bool = False) -> pl.DataFrame | tuple[pl.DataFrame, int]:
+                  count_total: bool = False,
+                  fields_only: bool = False) -> pl.DataFrame | tuple[pl.DataFrame, int]:
         lf = self._get_lazy_sync(name, columns=columns, where=where,
-                                 partition=partition, exclude_tool=exclude_tool)
+                                 partition=partition, exclude_tool=exclude_tool,
+                                 fields_only=fields_only)
         total = None
         if count_total and (limit is not None or offset is not None):
             total = lf.select(pl.len()).collect().item()
@@ -497,12 +527,17 @@ class FieldsetController:
                   where=None, partition: str | None = None,
                   exclude_tool: bool = False, limit: int | None = None,
                   offset: int | None = None,
-                  count_total: bool = False) -> pl.DataFrame | tuple[pl.DataFrame, int]:
-        """读 fieldset（collect）：物化且一致读物化数据，否则实时基于源计算"""
+                  count_total: bool = False,
+                  fields_only: bool = False) -> pl.DataFrame | tuple[pl.DataFrame, int]:
+        """读 fieldset（collect）：**默认返回 dataset + fieldset 已校验指标 join 拼接
+        的完整视图**；``fields_only=True`` 只返回衍生数据（keys + 已校验指标）。
+
+        物化且一致读物化数据，否则实时基于源计算（不隐式物化）。
+        """
         return await asyncio.to_thread(
             self._get_sync, name, columns=columns, where=where, partition=partition,
             exclude_tool=exclude_tool, limit=limit, offset=offset,
-            count_total=count_total)
+            count_total=count_total, fields_only=fields_only)
 
     async def meta(self, name: str) -> FieldsetMeta:
         return await asyncio.to_thread(self._describe_sync, name)

@@ -93,9 +93,14 @@ def test_add_field_meta_flow(ctl, tmp_path):
     rep = _scan(ctl, "fs1")
     assert rep.materialized and rep.changed
     assert rep.fields_count == 1
+    # 默认 get = dataset + fieldset 已校验指标 join 拼接视图
     df = _get(ctl, "fs1")
-    assert df.columns == ["k", "x2"]
+    assert df.columns == ["k", "x", "date", "x2"]
     assert df["x2"].to_list() == [2.0, 4.0, 6.0]
+    # --fields-only 只返回衍生数据（keys + 已校验指标）
+    df2 = _get(ctl, "fs1", fields_only=True)
+    assert df2.columns == ["k", "x2"]
+    assert df2["x2"].to_list() == [2.0, 4.0, 6.0]
 
 
 def test_check_failure_keeps_unvalidated(ctl, tmp_path):
@@ -236,8 +241,13 @@ def test_task_framework_fieldset_handlers(mgr):
     t_get = mgr.submit("fieldset", "get", ["fs1"])
     _await(mgr, t_get)
     get_res = _mgr_result(mgr, t_get)
-    assert get_res["columns"] == ["k", "x2"]
+    assert get_res["columns"] == ["k", "x", "x2"]  # 默认含 dataset 列（idx: k/x）
     assert get_res["result_ref"]
+
+    # --fields-only 仅返回衍生数据（keys + 指标）
+    t_get_fs = mgr.submit("fieldset", "get", ["fs1", "--fields-only"])
+    _await(mgr, t_get_fs)
+    assert _mgr_result(mgr, t_get_fs)["columns"] == ["k", "x2"]
 
     # 引擎/测试任务
     t_test = mgr.submit("fieldset", "test", ["fs1", "--formula", "x+1"])

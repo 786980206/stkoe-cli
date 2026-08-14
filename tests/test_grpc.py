@@ -427,6 +427,53 @@ def test_execute_sample_add_check_get_delete(client, srv):
     assert _json(datas, "sample") == {"deleted": "sp1"}
 
 
+# ---------- Execute 版 fieldset ----------
+
+def test_execute_fieldset_get_default_and_fields_only(client, srv):
+    """Execute 路径 fieldset get 默认返回 dataset+fieldset join 视图，--fields-only 仅返回衍生数据"""
+    import asyncio
+    import polars as pl
+
+    from stkoe.dataset import DatasetController
+    from stkoe.fieldset import FieldsetController
+    from stkoe.table import TableController
+
+    root = srv.data_dir
+    d = Path(root) / "tables" / "idx"
+    d.mkdir(parents=True)
+    pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0],
+                  "date": ["2026-01-01", "2026-01-02"]}).write_parquet(d / "data.parquet")
+
+    def run(a):
+        return asyncio.run(a)
+
+    run(TableController(data_dir=root).add("idx", meta={"type": "index"}))
+    dc = DatasetController(data_dir=root)
+    run(dc.add("ds", "idx", keys=["k"]))
+    fs = FieldsetController(data_dir=root)
+    run(fs.add("fs1", dataset="ds"))
+    run(fs.add_field("fs1", "x2", formula="x*2"))
+    run(fs.check("fs1", "x2"))
+
+    # 默认：dataset + fieldset 已校验指标 join 拼接
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="fieldset", action="get", args=["fs1"])))
+    assert header.code == 0
+    tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
+    assert len(tables) == 1
+    meta = json.loads(tables[0].table.meta)
+    assert [c["name"] for c in meta["columns"]] == ["k", "x", "date", "x2"]
+    assert meta["rows"] == 2
+
+    # --fields-only：仅返回衍生数据（keys + 已校验指标）
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="fieldset", action="get", args=["fs1", "--fields-only"])))
+    assert header.code == 0
+    tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
+    meta = json.loads(tables[0].table.meta)
+    assert [c["name"] for c in meta["columns"]] == ["k", "x2"]
+
+
 # ---------- Execute 版 feature ----------
 
 def test_execute_feature_add_test_list_delete(client, srv):

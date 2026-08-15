@@ -163,7 +163,10 @@ def _controller(data_dir=None):
 
 def _arrow_meta(name: str, df, total: int, col_metas) -> str:
     """ArrowTable.meta JSON：rows/total + 返回列的完整列元数据（display_name/unit/formula 等）"""
-    known = {c.name: c.to_dict() for c in col_metas}
+    known = {}
+    for c in col_metas:
+        d = c.to_dict() if hasattr(c, "to_dict") else dict(c)
+        known[d.get("name")] = d
     cols = []
     for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
         col = known.get(cn)
@@ -174,19 +177,25 @@ def _arrow_meta(name: str, df, total: int, col_metas) -> str:
                       "columns": cols})
 
 
+def _graph_service(data_dir=None):
+    """V3.0 GraphService（登记/依赖/版本走 graph；物理指纹 graph.db 普通表）。"""
+    from ..graph.service import GraphService
+
+    return GraphService(data_dir=data_dir)
+
+
 @handler("table", "add")
 def _table_add(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     pos = _positional(args)
-    ctl = _controller(data_dir)
+    svc = _graph_service(data_dir)
     if flags.get("all"):
-        reports = asyncio.run(ctl.add("", all=True))
-        return [Result.json("tables", [r.to_dict() for r in reports])]
+        reports = svc.table_add("", all=True)
+        return [Result.json("tables", reports)]
     if not pos:
         raise CommandError("table add 需要表名（或 --all）")
     meta = {k: v for k, v in flags.items() if k != "all"}
-    report = asyncio.run(ctl.add(pos[0], meta=meta or None))
-    return [Result.json("table", report.to_dict())]
+    return [Result.json("table", svc.table_add(pos[0], meta=meta or None))]
 
 
 @handler("table", "get")
@@ -195,8 +204,8 @@ def _table_get(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("table get 需要表名")
     flags = parse_flags(args)
-    ctl = _controller(data_dir)
-    df, total = asyncio.run(ctl.get(
+    svc = _graph_service(data_dir)
+    df, total = svc.table_get(
         pos[0],
         columns=flags.get("columns").split(",") if flags.get("columns") else None,
         where=flags.get("where"),
@@ -205,12 +214,12 @@ def _table_get(args: list[str], data_dir=None) -> list[Result]:
         limit=int(flags["limit"]) if flags.get("limit") else None,
         offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
-    ))
-    meta = asyncio.run(ctl.meta(pos[0]))
+    )
+    meta = svc.table_meta(pos[0])
     buf = io.BytesIO()
     df.write_ipc_stream(buf)
     return [Result.table(pos[0], buf.getvalue(),
-                         meta=_arrow_meta(pos[0], df, total, meta.columns))]
+                         meta=_arrow_meta(pos[0], df, total, meta["columns"]))]
 
 
 @handler("table", "delete")
@@ -220,35 +229,30 @@ def _table_delete(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("table delete 需要表名")
     flags = parse_flags(args)
-    ctl = _controller(data_dir)
-    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
-    return [Result.json("table", out)]
+    svc = _graph_service(data_dir)
+    return [Result.json("table", svc.table_delete(pos[0], force=bool(flags.get("force"))))]
 
 
 @handler("table", "scan")
 def _table_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
-    ctl = _controller(data_dir)
+    svc = _graph_service(data_dir)
     if flags.get("all"):
-        reports = asyncio.run(ctl.scan("", all=True, resync=bool(flags.get("resync"))))
-        return [Result.json("tables", [r.to_dict() for r in reports])]
+        return [Result.json("tables", svc.table_scan("", all=True))]
     if not pos:
         raise CommandError("table scan 需要表名（或 --all）")
-    report = asyncio.run(ctl.scan(pos[0]))
-    return [Result.json("table", report.to_dict())]
+    return [Result.json("table", svc.table_scan(pos[0]))]
 
 
 @handler("table", "list")
 @handler("table", "")
 def _table_list(args: list[str], data_dir=None) -> list[Result]:
-    ctl = _controller(data_dir)
+    svc = _graph_service(data_dir)
     flags = parse_flags(args)
     if flags.get("candidate"):
-        cands = asyncio.run(ctl.list(candidate=True))
-        return [Result.json("candidates", cands)]
-    metas = asyncio.run(ctl.list())
-    return [Result.json("tables", [m.to_dict() for m in metas])]
+        return [Result.json("candidates", svc.table_list(candidate=True))]
+    return [Result.json("tables", svc.table_list())]
 
 
 @handler("table", "meta")
@@ -256,9 +260,8 @@ def _table_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("table meta 需要表名")
-    ctl = _controller(data_dir)
-    meta = asyncio.run(ctl.meta(pos[0]))
-    return [Result.json("table", meta.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("table", svc.table_meta(pos[0]))]
 
 
 @handler("table", "col")
@@ -269,9 +272,8 @@ def _table_col(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     if not flags:
         raise CommandError("table col 需要至少一个 --key value")
-    ctl = _controller(data_dir)
-    meta = asyncio.run(ctl.col(pos[0], pos[1], **flags))
-    return [Result.json("table", meta.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("table", svc.table_col(pos[0], pos[1], **flags))]
 
 
 @handler("table", "set")
@@ -282,9 +284,8 @@ def _table_set(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("table set 需要表名")
     if not flags:
         raise CommandError("table set 需要至少一个 --key value")
-    ctl = _controller(data_dir)
-    meta = asyncio.run(ctl.set(pos[0], **flags))
-    return [Result.json("table", meta.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("table", svc.table_set(pos[0], **flags))]
 
 
 # ---------------------------------------------------------------------------
@@ -398,39 +399,35 @@ def _stat_delete(args: list[str], data_dir=None) -> list[Result]:
 
 
 # ---------------------------------------------------------------------------
-# dataset 同步处理器（Execute 路径；SubmitTask 后台任务版在 dataset/handlers.py）
+# panel 同步处理器（V3.0：原 dataset 改名；登记/依赖走 graph，get 实时 join）
+# dataset 为旧别名（转发到同一实现）
 # ---------------------------------------------------------------------------
 
-def _dataset_controller(data_dir=None):
-    from ..dataset.controller import DatasetController
-
-    return DatasetController(data_dir=data_dir)
-
-
+@handler("panel", "add")
 @handler("dataset", "add")
-def _dataset_add(args: list[str], data_dir=None) -> list[Result]:
+def _panel_add(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if len(pos) < 3:
-        raise CommandError("dataset add 需要 dataset 名、index 表与至少一个成员表")
+        raise CommandError("panel add 需要 panel 名、index 节点与至少一个成员表")
     flags = parse_flags(args)
-    ctl = _dataset_controller(data_dir)
+    svc = _graph_service(data_dir)
     keys = None
     if flags.get("keys"):
         keys = [k.strip() for k in flags["keys"].split(",") if k.strip()]
-    dm = asyncio.run(ctl.add(pos[0], pos[1], *pos[2:], keys=keys,
-                             materialize=bool(flags.get("materialize"))))
-    return [Result.json("dataset", dm.to_dict())]
+    dm = svc.panel_add(pos[0], pos[1], pos[2:], keys=keys, **flags)
+    return [Result.json("panel", dm)]
 
 
+@handler("panel", "get")
 @handler("dataset", "get")
-def _dataset_get(args: list[str], data_dir=None) -> list[Result]:
+def _panel_get(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("dataset get 需要 dataset 名")
+        raise CommandError("panel get 需要 panel 名")
     flags = parse_flags(args)
-    ctl = _dataset_controller(data_dir)
+    svc = _graph_service(data_dir)
     columns = flags.get("columns") or None
-    df, total = asyncio.run(ctl.get(
+    df, total = svc.panel_get(
         pos[0],
         columns=columns.split(",") if columns else None,
         where=flags.get("where"),
@@ -438,70 +435,165 @@ def _dataset_get(args: list[str], data_dir=None) -> list[Result]:
         limit=int(flags["limit"]) if flags.get("limit") else None,
         offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
-    ))
-    dm = asyncio.run(ctl.meta(pos[0]))
+    )
+    dm = svc.panel_meta(pos[0])
     buf = io.BytesIO()
     if df.height:
         df.write_ipc_stream(buf)
     return [Result.table(pos[0], buf.getvalue(),
-                         meta=_arrow_meta(pos[0], df, total, dm.columns))]
+                         meta=_arrow_meta(pos[0], df, total, dm["columns"]))]
 
 
+@handler("panel", "delete")
+@handler("panel", "del")
 @handler("dataset", "delete")
 @handler("dataset", "del")
-def _dataset_delete(args: list[str], data_dir=None) -> list[Result]:
+def _panel_delete(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("dataset delete 需要 dataset 名")
+        raise CommandError("panel delete 需要 panel 名")
     flags = parse_flags(args)
-    ctl = _dataset_controller(data_dir)
-    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
-    return [Result.json("dataset", out)]
+    svc = _graph_service(data_dir)
+    return [Result.json("panel", svc.panel_delete(pos[0], force=bool(flags.get("force"))))]
 
 
+@handler("panel", "list")
+@handler("panel", "")
 @handler("dataset", "list")
 @handler("dataset", "")
-def _dataset_list(args: list[str], data_dir=None) -> list[Result]:
-    ctl = _dataset_controller(data_dir)
-    dms = asyncio.run(ctl.list())
-    return [Result.json("datasets", [dm.to_dict() for dm in dms])]
+def _panel_list(args: list[str], data_dir=None) -> list[Result]:
+    svc = _graph_service(data_dir)
+    return [Result.json("panels", svc.panel_list())]
 
 
+@handler("panel", "meta")
 @handler("dataset", "meta")
-def _dataset_meta(args: list[str], data_dir=None) -> list[Result]:
+def _panel_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("dataset meta 需要 dataset 名")
-    ctl = _dataset_controller(data_dir)
-    dm = asyncio.run(ctl.meta(pos[0]))
-    return [Result.json("dataset", dm.to_dict())]
+        raise CommandError("panel meta 需要 panel 名")
+    svc = _graph_service(data_dir)
+    return [Result.json("panel", svc.panel_meta(pos[0]))]
 
 
+@handler("panel", "set")
 @handler("dataset", "set")
-def _dataset_set(args: list[str], data_dir=None) -> list[Result]:
+def _panel_set(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
     if not pos:
-        raise CommandError("dataset set 需要 dataset 名")
+        raise CommandError("panel set 需要 panel 名")
     if not flags:
-        raise CommandError("dataset set 需要至少一个 --key value")
-    ctl = _dataset_controller(data_dir)
-    dm = asyncio.run(ctl.set(pos[0], **flags))
-    return [Result.json("dataset", dm.to_dict())]
+        raise CommandError("panel set 需要至少一个 --key value")
+    svc = _graph_service(data_dir)
+    return [Result.json("panel", svc.panel_set(pos[0], **flags))]
 
 
-@handler("dataset", "scan")
-def _dataset_scan(args: list[str], data_dir=None) -> list[Result]:
+# ---------------------------------------------------------------------------
+# index 同步处理器（V3.0 独立主体：Index 节点 + 物理 parquet，symbol/datetime 列）
+# ---------------------------------------------------------------------------
+
+@handler("index", "add")
+def _index_add(args: list[str], data_dir=None) -> list[Result]:
+    flags = parse_flags(args)
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("index add 需要 index 名")
+    svc = _graph_service(data_dir)
+    meta = {k: v for k, v in flags.items()
+            if k not in ("symbol-col", "datetime-col", "materialize-partition")}
+    return [Result.json("index", svc.index_add(
+        pos[0],
+        symbol_col=flags.get("symbol-col") or "sym",
+        datetime_col=flags.get("datetime-col") or "date",
+        materialize_partition=flags.get("materialize-partition") or "yearly",
+        meta=meta or None))]
+
+
+@handler("index", "get")
+def _index_get(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("index get 需要 index 名")
+    flags = parse_flags(args)
+    svc = _graph_service(data_dir)
+    df, total = svc.index_get(
+        pos[0],
+        columns=flags.get("columns").split(",") if flags.get("columns") else None,
+        where=flags.get("where"),
+        partition=flags.get("partition"),
+        limit=int(flags["limit"]) if flags.get("limit") else None,
+        offset=int(flags["offset"]) if flags.get("offset") else None,
+        count_total=True,
+    )
+    meta = svc.index_meta(pos[0])
+    buf = io.BytesIO()
+    df.write_ipc_stream(buf)
+    return [Result.table(pos[0], buf.getvalue(),
+                         meta=_arrow_meta(pos[0], df, total, meta["columns"]))]
+
+
+@handler("index", "delete")
+@handler("index", "del")
+def _index_delete(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("index delete 需要 index 名")
+    flags = parse_flags(args)
+    svc = _graph_service(data_dir)
+    return [Result.json("index", svc.index_delete(pos[0], force=bool(flags.get("force"))))]
+
+
+@handler("index", "scan")
+def _index_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
-    ctl = _dataset_controller(data_dir)
+    svc = _graph_service(data_dir)
     if flags.get("all"):
-        reports = asyncio.run(ctl.scan(all=True, resync=bool(flags.get("resync"))))
-        return [Result.json("datasets", [r.to_dict() for r in reports])]
+        return [Result.json("indexes", svc.index_scan("", all=True))]
     if not pos:
-        raise CommandError("dataset scan 需要 dataset 名（或 --all）")
-    report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
-    return [Result.json("dataset", report.to_dict())]
+        raise CommandError("index scan 需要 index 名（或 --all）")
+    return [Result.json("index", svc.index_scan(pos[0]))]
+
+
+@handler("index", "list")
+@handler("index", "")
+def _index_list(args: list[str], data_dir=None) -> list[Result]:
+    svc = _graph_service(data_dir)
+    return [Result.json("indexes", svc.index_list())]
+
+
+@handler("index", "meta")
+def _index_meta(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("index meta 需要 index 名")
+    svc = _graph_service(data_dir)
+    return [Result.json("index", svc.index_meta(pos[0]))]
+
+
+@handler("index", "col")
+def _index_col(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    if len(pos) < 2:
+        raise CommandError("index col 需要 index 名和列名")
+    flags = parse_flags(args)
+    if not flags:
+        raise CommandError("index col 需要至少一个 --key value")
+    svc = _graph_service(data_dir)
+    return [Result.json("index", svc.index_col(pos[0], pos[1], **flags))]
+
+
+@handler("index", "set")
+def _index_set(args: list[str], data_dir=None) -> list[Result]:
+    pos = _positional(args)
+    flags = parse_flags(args)
+    if not pos:
+        raise CommandError("index set 需要 index 名")
+    if not flags:
+        raise CommandError("index set 需要至少一个 --key value")
+    svc = _graph_service(data_dir)
+    return [Result.json("index", svc.index_set(pos[0], **flags))]
 
 
 # ---------------------------------------------------------------------------

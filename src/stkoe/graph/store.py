@@ -9,6 +9,10 @@ graphqlite = SQLite 扩展（Cypher 查询）。本层约定：
   ``_cypher``（ensure_ascii=False）规避；
 - 多语句写入用 ``txn()`` 包裹原生 SQL ``BEGIN/COMMIT/ROLLBACK`` 保证原子性
   （实测 Cypher 内不支持事务语句，但 SQL 级事务可整体回滚 cypher 写入）。
+- **物理指纹表**：graph.db 同时承载普通 SQL 表（``stkoe_data_files`` /
+  ``stkoe_file_stats``，物理 parquet 文件清单/列统计）——与图节点同文件、同事务
+  （实测普通表 INSERT 与 cypher 写入可同事务回滚），替代 V2.0 独立 catalog.db
+  的登记表（对象登记/依赖已由图节点/边承载）。
 """
 from __future__ import annotations
 
@@ -25,6 +29,35 @@ from .errors import EdgeNotFoundError
 from .model import split_node_id
 
 _PROP_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# 物理指纹普通表（V2.0 catalog.db 的 stkoe_data_files / stkoe_file_stats 迁移至此；
+# object_id 以图节点 id 承载，如 "table:index"）
+_FP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS stkoe_data_files (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    object_id      TEXT NOT NULL,
+    partition_path TEXT NOT NULL DEFAULT '',
+    rel_path       TEXT NOT NULL,
+    row_count      INTEGER,
+    file_bytes     INTEGER,
+    size           INTEGER,
+    mtime_ns       INTEGER,
+    schema         TEXT,
+    UNIQUE (object_id, rel_path)
+);
+CREATE INDEX IF NOT EXISTS idx_df_obj ON stkoe_data_files(object_id);
+CREATE TABLE IF NOT EXISTS stkoe_file_stats (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    data_file_id  INTEGER NOT NULL REFERENCES stkoe_data_files(id) ON DELETE CASCADE,
+    col           TEXT NOT NULL,
+    dtype         TEXT,
+    min           TEXT,
+    max           TEXT,
+    null_count    INTEGER,
+    UNIQUE (data_file_id, col)
+);
+CREATE INDEX IF NOT EXISTS idx_fs_col ON stkoe_file_stats(col);
+"""
 
 
 def _now_iso() -> str:
@@ -43,7 +76,9 @@ class GraphStore:
 
     def __init__(self, db_path: str = ":memory:"):
         self._conn: sqlite3.Connection = sqlite3.connect(db_path)
+        self._conn.row_factory = sqlite3.Row  # 物理指纹查询按列名访问
         graphqlite.load(self._conn)
+        self._conn.executescript(_FP_SCHEMA)  # 物理指纹普通表（幂等）
         self._txn_depth = 0
 
     # ---------- 连接 ----------
@@ -51,6 +86,50 @@ class GraphStore:
     @property
     def connection(self) -> sqlite3.Connection:
         return self._conn
+
+    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """执行普通 SQL（物理指纹表读写；与图同连接/同事务）。"""
+        return self._conn.execute(sql, params)
+
+    # ---------- 物理指纹（stkoe_data_files / stkoe_file_stats） ----------
+
+    def fingerprint_get(self, object_id: str) -> dict[str, dict]:
+        """object_id（图节点 id）的全部 stkoe_data_files，rel_path -> 行 dict。"""
+        rows = self.execute(
+            "SELECT * FROM stkoe_data_files WHERE object_id=? ORDER BY rel_path",
+            (object_id,)).fetchall()
+        return {r["rel_path"]: dict(r) for r in rows}
+
+    def fingerprint_stats(self, object_id: str) -> dict[int, dict[str, tuple]]:
+        """object_id 的列统计：file_id -> {col: (dtype, min, max, null_count)}。"""
+        rows = self.execute(
+            "SELECT df.id AS file_id, fs.col, fs.dtype, fs.min, fs.max, fs.null_count "
+            "FROM stkoe_data_files df JOIN stkoe_file_stats fs ON fs.data_file_id = df.id "
+            "WHERE df.object_id=?", (object_id,)).fetchall()
+        out: dict[int, dict[str, tuple]] = {}
+        for r in rows:
+            out.setdefault(r["file_id"], {})[r["col"]] = (r["dtype"], r["min"], r["max"], r["null_count"])
+        return out
+
+    def fingerprint_replace(self, object_id: str, items: list[tuple]) -> None:
+        """整表替换指纹：items = [(partition_path, rel_path, row_count, file_bytes,
+        size, mtime_ns, schema_json, stats)]，stats = {col: (dtype, min, max, null)}。"""
+        self.execute("DELETE FROM stkoe_data_files WHERE object_id=?", (object_id,))
+        for (part, rel, row_count, file_bytes, size, mtime_ns, schema_json, stats) in items:
+            cur = self.execute(
+                "INSERT INTO stkoe_data_files (object_id, partition_path, rel_path, row_count, "
+                "file_bytes, size, mtime_ns, schema) VALUES (?,?,?,?,?,?,?,?)",
+                (object_id, part, rel, row_count, file_bytes, size, mtime_ns, schema_json))
+            fid = cur.lastrowid
+            for col, (dtype, lo, hi, nulls) in stats.items():
+                self.execute(
+                    "INSERT INTO stkoe_file_stats (data_file_id, col, dtype, min, max, null_count) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (fid, col, dtype, lo, hi, nulls))
+
+    def fingerprint_clear(self, object_id: str) -> None:
+        """清空 object_id 的指纹（删除资产登记时调用）。"""
+        self.execute("DELETE FROM stkoe_data_files WHERE object_id=?", (object_id,))
 
     def _cypher(self, query: str, params: dict | None = None) -> list[dict]:
         """执行 Cypher 并解析结果（参数 ensure_ascii=False，中文安全）。"""

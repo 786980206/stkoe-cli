@@ -184,7 +184,7 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     assert header.code == 0
     assert _json(datas, "table")["name"] == "demo"
 
-    # add 携带元数据：e:table add demo2 --display_name --tags --type
+    # add 携带元数据：e:table add demo2 --display_name --tags（--type 为旧概念，进 extra）
     root2 = Path(srv.data_dir) / "tables" / "demo2"
     root2.mkdir(parents=True)
     pl.DataFrame({"a": [1]}).write_parquet(root2 / "p.parquet")
@@ -198,7 +198,9 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
         source="table", action="meta", args=["demo2"])))
     assert _json(datas, "table")["display_name"] == "E表"
     assert _json(datas, "table")["tags"] == ["x", "y"]
-    assert _json(datas, "table")["type"] == "index"
+    # V3.0：类型由 label 承载（table 恒 "table"），index 是独立资产；--type 进 extra
+    assert _json(datas, "table")["type"] == "table"
+    assert _json(datas, "table")["extra"]["type"] == "index"
 
     # set：更新元数据
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -316,7 +318,8 @@ def test_execute_table_scan(client, srv, tmp_path):
     report = _json(datas, "table")
     assert report["name"] == "demo"
     assert report["changed"] is False
-    assert report["version_after"] == 1  # 无差异不 bump
+    # V3.0 版本为高精度时间戳：无差异不 bump（version_after == version_before）
+    assert report["version_after"] == report["version_before"]
 
     pl.DataFrame({"sym": ["c"], "price": [3.0]}).write_parquet(root / "more.parquet")
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -324,7 +327,7 @@ def test_execute_table_scan(client, srv, tmp_path):
     assert header.code == 0
     report = _json(datas, "table")
     assert report["changed"] is True
-    assert report["version_after"] == 2
+    assert report["version_after"] > report["version_before"]
 
 
 def test_execute_table_list_candidate(client, srv, tmp_path):

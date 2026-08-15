@@ -212,6 +212,24 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 V3 Event 增量闭环 P0：范围化事件 + factor/test 增量物化
+
+- **P0-1 物理变化 → 范围化事件**（`service._change_events`）：
+  - added/changed 文件 → `action="upsert"`；removed 文件 → `action="delete"`（一次 scan 有增删
+    时记两个版本事件）；`datetime_scope` 统一为 **[min, max] 区间**（hive 分区键=
+    datetime_col 用分区值，其余读变化文件 footer 的 datetime 列 min/max，不读数据页）；
+  - 兜底：范围取不到也发全集事件（保证下游置脏不丢）
+- **P0-2 factor/test update 增量物化**：
+  - `_upstream_sources`（BFS 收集全部 table/index 源头）+ `_upstream_scope`（源头 version_list
+    中 `version > consumed` 事件的 datetime 区间，`extra.consumed_versions` 记各源头水位）；
+  - 已有物化且区间明确 → 读旧物化删范围 + 仅重算范围内行（`_factor_compute`/`_test_build`
+    加 `dt_range`，`is_between(pl.lit(lo), pl.lit(hi))`，String/ISO 字典序可比）→
+    `vertical_relaxed` 合并写回；`--resync`/首次/无范围 → 全量兜底
+  - 中间节点（panel/sample/feature）不记事件，故从源头直接收集（绕过 E4 断档）
+- 测试：P0-1 事件范围/delete/分区提取 2 例 + P0-2 factor/test 增量（compute 带 dt_range 断言）
+  + resync 全量回退，全量 185 用例绿
+- 文档：graph-v3-gap.md E1/E2/E3 标 ✅ 已修、结论更新为 P0 落地
+
 ### 2026-08 panel add 成员表 join 方式可配置（默认 asof，可选 left）
 
 - **参数格式**：`panel add <name> <index> [member[:join]...]`——每个 member 可带

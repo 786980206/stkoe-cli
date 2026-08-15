@@ -43,7 +43,7 @@ from .handlers import (
     TableHandler,
     TesterHandler,
 )
-from .model import ColumnMeta, FieldMeta, node_id
+from .model import ColumnMeta, FieldMeta, node_id, split_node_id
 from .store import GraphStore
 
 
@@ -253,9 +253,9 @@ class GraphService:
                          "update_time": _now_iso()}
                 self.store.patch_node(nid, **patch)
                 if not implicit:
-                    # 物理数据变化 → 铸新版本 + 事件入日志 + 下游置脏
-                    self.graph.notify_change(asset_type, name, event=DataChangeEvent(
-                        action="upsert", field_scope=[c["name"] for c in new_cols]))
+                    # 物理数据变化 → 范围化事件入日志（upsert/delete）+ 下游置脏
+                    for ev in self._change_events(asset_type, name, diffs, cat):
+                        self.graph.notify_change(asset_type, name, event=ev)
                 version_after = node["version"] if implicit else self.store.get_node(nid)["version"]
                 partition_count = len({p for _, _, p in payload}) if disk else 0
             else:
@@ -272,6 +272,77 @@ class GraphService:
             "changed": changed,
             "implicit_registered": implicit,
         }
+
+    def _change_events(self, asset_type: str, name: str, diffs: list,
+                       cat: dict[str, dict]) -> list[DataChangeEvent]:
+        """物理变化 → 范围化事件（v3.0-def 语义，P0-1）。
+
+        - added/changed 文件 → ``action="upsert"``；removed 文件 → ``action="delete"``；
+        - ``datetime_scope``：hive 分区路径含 ``<datetime_col>=<v>`` 时直接用分区值；
+          其余从变化文件 footer 的 datetime 列 min/max 提取（只读元数据不读数据页）；
+          removed 文件已不在磁盘，用 catalog 指纹的 ``partition_path`` 提取分区值，
+          取不到则范围 None（全集，保守）；
+        - ``symbol_scope``/``field_scope``：None（时间范围内的全部标的/文件全部列）。
+        """
+        node = self.store.get_node(node_id(asset_type, name)) or {}
+        datetime_col = node.get("datetime_col", "date")
+        root = self._asset_root(asset_type, name)
+
+        def partition_values(rel: str, part_path: str) -> list[str]:
+            vals = []
+            for seg in (part_path or T.partition_of(rel)).split("/"):
+                if not seg:
+                    continue
+                k, _, v = seg.partition("=")
+                if k == datetime_col and v:
+                    vals.append(v)
+            return vals
+
+        def scope_for(rel: str, part_path: str) -> list[str] | None:
+            scope = partition_values(rel, part_path)
+            if (root / rel).exists():  # added/changed：footer min/max
+                try:
+                    st = T.footer(root / rel)["stats"].get(datetime_col)
+                    if st:
+                        lo, hi = st[1], st[2]
+                        if lo is not None and hi is not None:
+                            scope.extend([lo, hi])
+                except Exception:
+                    pass
+            return list(dict.fromkeys(s for s in scope if s is not None)) or None
+
+        upsert_scope: list[str] = []
+        delete_scope: list[str] = []
+        for d in diffs:
+            part = (cat.get(d.rel_path) or {}).get("partition_path") or ""
+            sc = scope_for(d.rel_path, part)
+            if sc is None:
+                continue
+            if d.kind == "removed":
+                delete_scope.extend(sc)
+            else:
+                upsert_scope.extend(sc)
+        upsert_scope = list(dict.fromkeys(upsert_scope))
+        delete_scope = list(dict.fromkeys(delete_scope))
+        had_upsert = any(d.kind != "removed" for d in diffs)
+        had_delete = any(d.kind == "removed" for d in diffs)
+
+        def interval(vals: list[str]) -> list[str] | None:
+            vals = [v for v in vals if v is not None]
+            return [min(vals), max(vals)] if vals else None
+
+        events = []
+        # 有增改文件 → 至少一个 upsert 事件（范围取不到时为全集 None，保证下游置脏）；
+        # datetime_scope 统一为 [min, max] 区间（字符串/ISO 字典序可比），供增量物化过滤
+        if upsert_scope or had_upsert:
+            events.append(DataChangeEvent(action="upsert", symbol_scope=None,
+                                          datetime_scope=interval(upsert_scope),
+                                          field_scope=None))
+        if delete_scope or had_delete:
+            events.append(DataChangeEvent(action="delete", symbol_scope=None,
+                                          datetime_scope=interval(delete_scope),
+                                          field_scope=None))
+        return events
 
     def _ensure_fresh(self, asset_type: str, name: str) -> None:
         """读前快检：签名一致则继续；不一致自动 scan（未登记则隐式注册）。"""
@@ -913,6 +984,49 @@ class GraphService:
             "updated_at": node.get("update_time", ""),
         }
 
+    def _upstream_sources(self, nid: str) -> list[tuple[str, dict]]:
+        """BFS 收集该节点的全部源头上游（table/index）节点（去重，带环保护）。"""
+        sources: list[tuple[str, dict]] = []
+        seen: set[str] = set()
+        pending = [nid]
+        while pending:
+            cur = pending.pop()
+            for e in self.store.deps_of(cur):
+                tgt = e["target"]
+                if tgt in seen:
+                    continue
+                seen.add(tgt)
+                t, _ = split_node_id(tgt)
+                dep = self.store.get_node(tgt)
+                if dep is None:
+                    continue
+                if t in ("table", "index"):
+                    sources.append((tgt, dep))
+                else:
+                    pending.append(tgt)
+        return sources
+
+    def _upstream_scope(self, node: dict) -> list[str] | None:
+        """源头积累事件的 datetime 区间 [min, max]（version > consumed 水位的事件）。
+
+        中间节点（panel/sample/feature 等）不记录事件，故从源头 table/index 直接
+        收集；``extra.consumed_versions`` 记录上次物化时各源头的版本（首次=全部）。
+        返回 None 表示无明确范围（应全量重算）。
+        """
+        nid = node.get("id") or node_id(node["type"], node["name"])
+        consumed = dict((node.get("extra") or {}).get("consumed_versions") or {})
+        scope: list[str] = []
+        for src_id, src in self._upstream_sources(nid):
+            since = int(consumed.get(src_id, 0))
+            for v in sorted(int(k) for k in (src.get("version_list") or {})):
+                if v <= since:
+                    continue
+                ev = DataChangeEvent.from_dict(src["version_list"][str(v)])
+                if ev.datetime_scope:
+                    scope.extend(ev.datetime_scope)
+        scope = [s for s in scope if s is not None]
+        return [min(scope), max(scope)] if scope else None
+
     def _factor_hash(self, node: dict) -> str:
         """物化一致性签名 = 上游 feature/sample 版本 + engine/pipeline/factor_col。"""
         feature = node.get("feature", "").split(":", 1)[1] if node.get("feature") else ""
@@ -926,13 +1040,21 @@ class GraphService:
         ]
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
-    def _factor_compute(self, node: dict, *, partition: str | None = None) -> pl.DataFrame:
-        """实时计算最终因子：sample 视图求 feature 公式 → 拼索引+因子列 → 算子链。"""
+    def _factor_compute(self, node: dict, *, partition: str | None = None,
+                        dt_range: tuple[str, str] | None = None) -> pl.DataFrame:
+        """实时计算最终因子：sample 视图求 feature 公式 → 拼索引+因子列 → 算子链。
+
+        ``dt_range=(lo, hi)`` 时只计算该时间区间内的行（增量物化用，字符串/ISO 可比）。
+        """
         feature = node.get("feature", "").split(":", 1)[1]
         sample = node.get("sample", "").split(":", 1)[1]
         fnode = self._require_node("feature", feature)
         keys = self._factor_keys(node)
         lf = self._sample_view_lf(sample)
+        if dt_range:
+            dt = keys[-1]
+            lo, hi = dt_range
+            lf = lf.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
         engine = get_factor_engine(node.get("engine") or "polars")
         field = engine.field(lf, fnode.get("formula") or "")
         src_rows = lf.select(pl.len()).collect().item()
@@ -1054,14 +1176,31 @@ class GraphService:
             return {"name": name, "version_before": version_before,
                     "version_after": version_before, "materialized": True,
                     "changed": False, "partition_by": list(extra.get("partition_by") or ())}
-        df = self._factor_compute(node)
         out_dir = self.data_dir / "factor" / name
         out_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(out_dir / "data.parquet")
+        out_path = out_dir / "data.parquet"
+        # P0-2 增量物化：源头积累事件有明确 datetime 区间且已有物化 → 只重算该区间
+        scope = None if resync else self._upstream_scope(node)
+        if scope and out_path.exists():
+            lo, hi = scope
+            keys = self._factor_keys(node)
+            dt = keys[-1]
+            old = pl.read_parquet(out_path)
+            keep = old.filter(~pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
+            inc = self._factor_compute(node, dt_range=(lo, hi))
+            df = pl.concat([keep, inc], how="vertical_relaxed"
+                           ).unique(subset=keys, keep="last").sort(keys)
+        else:
+            df = self._factor_compute(node)
+        df.write_parquet(out_path)
         feature = node.get("feature", "").split(":", 1)[1]
         fnode = self._require_node("feature", feature)
+        # consumed 水位：记录各源头当前版本（供下次增量判定）
+        consumed = {src_id: src.get("version", 0)
+                    for src_id, src in self._upstream_sources(node_id("factor", name))}
         self.graph.set("factor", name, materialized=True, materialized_at=_now_iso(),
                        dependency_hash=cur_hash, partition_by=[], partition_gran="",
+                       consumed_versions=consumed,
                        field={"name": node.get("factor_col") or feature,
                               "formula": fnode.get("formula") or "",
                               "display_name": node.get("factor_col") or feature,
@@ -1124,13 +1263,22 @@ class GraphService:
         ]
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
-    def _test_build(self, node: dict) -> pl.DataFrame:
-        """测试数据集：sample 视图（含测试必需列）+ factor 列 → prepare_factor_data。"""
+    def _test_build(self, node: dict, *, dt_range: tuple[str, str] | None = None) -> pl.DataFrame:
+        """测试数据集：sample 视图（含测试必需列）+ factor 列 → prepare_factor_data。
+
+        ``dt_range=(lo, hi)`` 时只构造该时间区间内的行（增量物化用）。
+        """
         factor = node.get("factor", "").split(":", 1)[1]
         fnode = self._require_node("factor", factor)
         fm = self._factor_meta_dict(factor)
         sample = node.get("sample", "").split(":", 1)[1] if node.get("sample") else fm["sample"]
-        view = self._sample_view_lf(sample).collect()
+        view = self._sample_view_lf(sample)
+        keys = list(fm["keys"])
+        if dt_range:
+            dt = keys[-1]
+            lo, hi = dt_range
+            view = view.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
+        view = view.collect()
         returns = node.get("returns", "r")
         groupby = node.get("groupby", "ic")
         marketcap = node.get("marketcap", "fv")
@@ -1139,8 +1287,7 @@ class GraphService:
         if missing:
             raise ValueError(f"sample 缺少测试必需列: {missing}（需要 date/sym 与 "
                              f"returns/groupby/marketcap）")
-        fdf = self._factor_compute(fnode)
-        keys = list(fm["keys"])
+        fdf = self._factor_compute(fnode, dt_range=dt_range)
         base = (
             view.select(*[pl.col(c) for c in need])
             .with_columns(pl.lit(1, dtype=pl.Int32).alias("sample"))
@@ -1281,11 +1428,26 @@ class GraphService:
         df = self._test_build(node)
         out_dir = self.data_dir / "factor_test" / name
         out_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(out_dir / "data.parquet")
+        out_path = out_dir / "data.parquet"
+        # P0-2 增量物化：源头积累事件有明确 datetime 区间且已有物化 → 只重算该区间
+        scope = None if resync else self._upstream_scope(node)
+        if scope and out_path.exists():
+            lo, hi = scope
+            keys = list(self._factor_meta_dict(
+                node.get("factor", "").split(":", 1)[1])["keys"])
+            dt = keys[-1]
+            old = pl.read_parquet(out_path)
+            keep = old.filter(~pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
+            inc = self._test_build(node, dt_range=(lo, hi))
+            df = pl.concat([keep, inc], how="vertical_relaxed"
+                           ).unique(subset=keys, keep="last").sort(keys)
+        df.write_parquet(out_path)
         cols = [{"name": c, "display_name": c, "data_type": str(t)}
                 for c, t in zip(df.columns, df.dtypes)]
+        consumed = {src_id: src.get("version", 0)
+                    for src_id, src in self._upstream_sources(node_id("tester", name))}
         self.graph.set("tester", name, materialized=True, materialized_at=_now_iso(),
-                       dependency_hash=cur_hash, columns=cols)
+                       dependency_hash=cur_hash, columns=cols, consumed_versions=consumed)
         self.store.patch_node(node_id("tester", name), valid=True)
         version_after = self.store.get_node(node_id("tester", name))["version"]
         return {"name": name, "version_before": version_before,

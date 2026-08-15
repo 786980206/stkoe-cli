@@ -1,33 +1,32 @@
 # V3 定义 vs 当前实现 出入清单（对照 v3.0-def.py）
 
 > 对照基准：仓库根 `v3.0-def.py`（V3.0 初始设计定义）+ `graph-design.md`。
-> 结论：**Event 增量更新语义（版本水位 + 范围化事件 + 增量物化）在设计上已实现大半，
-> 但"物理变化 → 范围化事件"的入口与"事件 → 增量物化"的出口两条链路未接通**，
-> 中间件（accumulate/merge/水位对齐）是通的但被"全量重算"绕过。
+> 状态：**P0 已落地**（范围化事件 + factor/test 增量物化）；中间件（accumulate/merge/水位）
+> 与消费端（增量物化）已接通，剩余 P1/P2 见文末。
 
 ---
 
 ## 一、Event 增量更新逻辑出入（重点）
 
-### E1【核心】物理变化 → 事件丢失 symbol/datetime 范围
+### E1【已修 ✅】物理变化 → 事件丢失 symbol/datetime 范围
 
 - **定义**（v3.0-def.py 顶部注释）："每一次原始物理表的数据变化，本质上就是对**某一个时间范围内的一批标的**的指定字段数据的 upsert 或 delete"——事件必须带 `symbol_scope` / `datetime_scope` / `field_scope` / `action`。
-- **当前**：`service._scan_disk` 的 `notify_change` 只构造
-  `DataChangeEvent(action="upsert", field_scope=[新列名])`——**只有字段名，没有 symbol/datetime 范围**；文件级 diff（`T.diff_files`）已能区分文件增删，但没有把"新增/变化文件里覆盖的标的与日期范围"提取进事件。
-- **后果**：`version_list` 里的事件信息量不足以支撑"从上游重算哪个范围"的增量物化；下游即使 accumulate 也只知道"哪些字段变了"，不知道"哪些标的时间段要重算"。
+- **当前（已修）**：`service._change_events` 从文件 diff 提取范围——hive 分区路径含 `<datetime_col>=<v>` 时用分区值，其余读变化文件 footer 的 datetime 列 min/max（只读元数据）；`datetime_scope` 统一为 **[min, max] 区间**（字符串/ISO 字典序可比）；added/changed → upsert，removed → delete。
+- **剩余**：`symbol_scope` 仍为 None（时间范围内的全部标的）；精确行级/标的级范围需读数据页，未做（P2 可选）。
 
-### E2【核心】delete 事件完全缺失
+### E2【已修 ✅】delete 事件完全缺失
 
 - **定义**：`action: Literal["upsert", "delete"]`，物理删除 → delete 事件 → 下游按范围删对应数据。
-- **当前**：物理文件被删（diff 含 removed）时，事件仍是 `action="upsert"`（field_scope 为当前新列，甚至为空列表）——**下游永远收不到 delete 事件**，被删的标的/时间在派生资产里无法清除（全量重算时才能抹掉）。
+- **当前（已修）**：removed 文件 → `action="delete"` 事件（范围来自 catalog 指纹 `partition_path` 的分区值；flat 无分区则 None 全集）；一次 scan 同时有增删时**记两个版本事件**（upsert + delete 各一次 bump）。
 
-### E3【核心】增量物化未落地（update = 全量重算 / 标记有效）
+### E3【已修 ✅（factor/test）】增量物化未落地（update = 全量重算 / 标记有效）
 
 - **定义**（PanelHandler.update → materialize）：积累事件合并出 `{upsert, delete}` → **按范围从上游提取增量数据 upsert 进现有物化存储、按范围 delete 现有数据** → 边水位对齐 + 节点有效。
-- **当前**：
-  - panel / sample / feature：无物化，update 只 `assert_ready` + 实时构造 + `patch valid=True`（panel 的"物化"语义已被"实时 join 视图"替代——README 路线图把 **panel 物化（scan 落盘）** 列为待办，属已知未完成项）；
-  - fieldset / factor / test：update = **全量重算**落盘（幂等仅当节点 valid 且依赖 hash 不变），没有按 Event 范围做增量。
-- **性质**：事件链的中间件（accumulate / merge / 水位对齐）都实现了，但**消费端（物化）没有增量路径**——这是"事件驱动增量更新"未闭环的核心。
+- **当前（已修 factor/test）**：
+  - **factor / test update 增量物化**：`_upstream_scope` 从全部源头（table/index）收集 `version > consumed` 的积累事件 → datetime 区间；已有物化且区间明确时，读旧物化 + 范围外保留 + 仅重算范围内行（`_factor_compute`/`_test_build` 带 `dt_range`）合并写回；`extra.consumed_versions` 记录各源头水位（供下次判定）；`--resync` 或首次/无范围 → 全量重算兜底；
+  - panel / sample / feature 仍无物化（实时构造，update 只置 valid）——README 路线图 **panel 物化（scan 落盘）** 待办；
+  - fieldset update 仍未真实落盘（只 resolve 标记，物化假象）——待办。
+- **剩余**：`symbol_scope` 未参与过滤（按时间区间重算覆盖该区间全部标的）；fieldset 真物化 + 增量。
 
 ### E4 边水位线（required_version）维护不完整
 
@@ -81,8 +80,11 @@
 
 ## 三、结论与建议优先级
 
-1. **P0（事件闭环）**：物理层 diff（`table/util.py diff_files` 文件级已有）→ 行级范围提取（新增文件的 symbol/datetime min-max，或至少文件级分区范围）→ `notify_change` 事件带上 `symbol_scope`/`datetime_scope`，文件删除 → `action="delete"`。
-2. **P0（增量物化）**：给 fieldset/factor/test（及未来的 panel 物化）的 update 增加"按积累事件范围重算增量"路径；全量重算保留为 `--resync` 兜底。
-3. **P1（水位一致性）**：panel/sample/feature update 走统一收口（如 `resolve` 或等价逻辑），确保出边 `required_version` 对齐；否则 accumulate 的"水位之后"过滤不可信。
-4. **P1（resolve 事件语义）**：记录"本次重算产生的字段范围"而非直接透传上游事件；upsert/delete 分别记录（合并成两个版本条目或一个复合事件）。
-5. **P2**：stat 是否纳入图资产（或保留图外，文档明示）；index 唯一性校验；version_list 裁剪（按边水位清理已消费事件）。
+1. **P0 ✅ 已落地（本轮）**：物理 diff → 范围化事件（`_change_events`，datetime 区间 + delete 事件）；
+   factor/test update 增量物化（`_upstream_scope` 源头水位 + `dt_range` 区间重算 + 合并写回 + `--resync` 兜底）。
+2. **P1（水位一致性）**：panel/sample/feature update 不铸版本、不记合并事件——事件水位链在中间节点断档
+   （当前 factor/test 增量从源头直接收集事件，绕过了中间节点，但中间节点自身的事件日志仍空；
+   若未来 panel 物化落地或需要"中间层已消费"语义，需让中间节点 update 统一收口）。
+3. **P1（resolve 事件语义）**：记录"本次重算产生的字段范围"而非直接透传上游事件；upsert/delete 分别记录。
+4. **P2**：fieldset 真实物化 + 增量；symbol_scope 提取（读数据页）；stat 是否纳入图资产；index 唯一性校验；
+   version_list 裁剪（按 consumed 水位清理已消费事件）。

@@ -129,6 +129,57 @@ class TestTableGraph:
         assert svc3.store.fingerprint_get("table:m1") == {}
         svc3.close()
 
+    def test_scan_event_has_datetime_scope(self, svc):
+        """P0-1：物理变化事件带 datetime 范围（footer min/max，不读数据页）"""
+        svc.table_add("m1")
+        pl.DataFrame({"sym": ["c"], "date": ["2024-02-01"], "price": [3.0]}).write_parquet(
+            os.path.join(svc.data_dir, "table", "m1", "more.parquet"))
+        svc.table_update("m1")
+        node = svc.store.get_node("table:m1")
+        ev = node["version_list"][str(node["version"])]
+        assert ev["action"] == "upsert"
+        assert ev["datetime_scope"], "事件应带 datetime 范围"
+        assert any("2024-02-01" in str(v) for v in ev["datetime_scope"])
+        assert ev["field_scope"] is None  # 物理变化影响文件全部列
+
+    def test_scan_removed_emits_delete_and_new_partition_upsert(self, tmp_path):
+        """P0-1：删分区文件 → delete 事件（分区路径提取）；新增分区 → upsert 事件"""
+        import shutil
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_evt_hive")
+        shutil.rmtree(base, ignore_errors=True)
+        d = os.path.join(base, "table", "t1")
+        os.makedirs(os.path.join(d, "date=2024-01-01"), exist_ok=True)
+        os.makedirs(os.path.join(d, "date=2024-01-02"), exist_ok=True)
+        pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"], "p": [1.0]}).write_parquet(
+            os.path.join(d, "date=2024-01-01", "f.parquet"))
+        pl.DataFrame({"sym": ["b"], "date": ["2024-01-02"], "p": [2.0]}).write_parquet(
+            os.path.join(d, "date=2024-01-02", "f.parquet"))
+        try:
+            s = GraphService(base)
+            s.table_add("t1")
+            # 删 01-02 分区 + 新增 01-03 分区 → 一次 update 同时有 delete 与 upsert 事件
+            os.remove(os.path.join(d, "date=2024-01-02", "f.parquet"))
+            os.makedirs(os.path.join(d, "date=2024-01-03"), exist_ok=True)
+            pl.DataFrame({"sym": ["c"], "date": ["2024-01-03"], "p": [3.0]}).write_parquet(
+                os.path.join(d, "date=2024-01-03", "f.parquet"))
+            s.table_update("t1")
+            node = s.store.get_node("table:t1")
+            vl = node["version_list"]
+            versions = sorted(int(k) for k in vl)
+            ev_new = vl[str(versions[-1])]
+            ev_old = vl[str(versions[-2])]
+            actions = {ev_new["action"], ev_old["action"]}
+            assert actions == {"upsert", "delete"}, f"应同时记录两类事件: {actions}"
+            for v in (ev_new, ev_old):
+                if v["action"] == "delete":
+                    assert "2024-01-02" in v["datetime_scope"]  # 分区路径提取
+                else:
+                    assert "2024-01-03" in v["datetime_scope"]  # 新分区 footer/分区值
+            s.close()
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
 
 class TestIndexGraph:
     def test_index_independent(self, svc):
@@ -351,6 +402,58 @@ class TestFactorGraph:
         svc.factor_delete("fac1")
         assert svc.store.get_node("factor:fac1") is None
 
+    def test_factor_update_incremental_by_scope(self, svc, monkeypatch):
+        """P0-2：源头新增日期 → factor update 增量重算（compute 带 dt_range，非全量）"""
+        self._chain(svc)
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_update("fac1")  # 首次全量物化（2 行，date=01-01）
+        assert svc.factor_get("fac1").height == 2
+
+        calls: list = []
+        orig = GraphService._factor_compute
+
+        def spy(self, node, **kw):
+            calls.append(kw.get("dt_range"))
+            return orig(self, node, **kw)
+
+        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+
+        # 源头追加新日期文件 → upsert 事件 [01-02, 01-02] → 链置脏 → 依次 update
+        # （dtype 与现有文件一致，避免多文件 scan 不 union schema）
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        for t, n in [("panel", "ds1"), ("fieldset", "fs1"),
+                     ("sample", "sp1"), ("feature", "f1")]:
+            getattr(svc, f"{t}_update")(n)
+        svc.factor_update("fac1")
+
+        assert calls and calls[-1] == ("2024-01-02", "2024-01-02"), \
+            f"增量应带 dt_range，实际 {calls}"
+        df = svc.factor_get("fac1")
+        assert df.height == 3
+        assert sorted(df["date"].to_list()) == ["2024-01-01", "2024-01-01", "2024-01-02"]
+        assert sorted(df["f1"].to_list()) == [2.0, 4.0, 6.0]
+        # consumed 水位已记录（供下次增量判定）
+        node = svc.store.get_node("factor:fac1")
+        assert (node.get("extra") or {}).get("consumed_versions")
+
+    def test_factor_update_resync_full(self, svc, monkeypatch):
+        """P0-2：--resync 强制全量（compute 不带 dt_range）"""
+        self._chain(svc)
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_update("fac1")
+        calls: list = []
+        orig = GraphService._factor_compute
+
+        def spy(self, node, **kw):
+            calls.append(kw.get("dt_range"))
+            return orig(self, node, **kw)
+
+        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+        svc.factor_update("fac1", resync=True)
+        assert calls == [None]  # 全量：无 dt_range
+
 
 class TestTesterGraph:
     """test：factor 关联 sample 视图 + 测试必需列；scan 物化，test_data 供 stat。"""
@@ -411,3 +514,35 @@ class TestTesterGraph:
 
         svc.test_delete("t1")
         assert svc.store.get_node("tester:t1") is None
+
+    def test_test_update_incremental_by_scope(self, svc, monkeypatch):
+        """P0-2：源头新增日期 → factor/test 链增量重算（test_build 带 dt_range）"""
+        self._chain(svc)
+        svc.test_add("t1", "fac1")
+        svc.test_update("t1")  # 首次全量（2 行）
+        assert svc.test_data("t1").height == 2
+
+        calls: list = []
+        orig = GraphService._test_build
+
+        def spy(self, node, **kw):
+            calls.append(kw.get("dt_range"))
+            return orig(self, node, **kw)
+
+        monkeypatch.setattr(GraphService, "_test_build", spy)
+
+        # 源头追加新日期（含测试必需列；dtype 与现有文件一致）→ 链置脏 → 依次 update
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3],
+                      "r": [0.03], "ic": ["G1"], "fv": [3.0]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        for t, n in [("panel", "ds1"), ("fieldset", "fs1"), ("sample", "sp1"),
+                     ("feature", "f1"), ("factor", "fac1")]:
+            getattr(svc, f"{t}_update")(n)
+        svc.test_update("t1")
+
+        assert calls and calls[-1] == ("2024-01-02", "2024-01-02"), \
+            f"增量应带 dt_range，实际 {calls}"
+        d = svc.test_data("t1")
+        assert d.height == 3
+        assert sorted(d["date"].to_list()) == ["2024-01-01", "2024-01-01", "2024-01-02"]

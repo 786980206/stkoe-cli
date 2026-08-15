@@ -51,6 +51,26 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _asof_join(left: pl.LazyFrame, right: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
+    """asof join：等值键 ``keys[:-1]``（by）+ 时间键 ``keys[-1]``（on，backward 就近匹配）。
+
+    on 键为 String 日期形态（如 "2024-01-01"）时 cast 成 Date 做 asof，
+    结果列 cast 回 String 保持输出类型（panel 下游公式依赖字符串日期比较）。
+    """
+    on = keys[-1]
+    by = [k for k in keys if k != on]
+    schema = left.collect_schema()
+    is_str = on in schema and schema[on] == pl.String
+    if is_str:
+        l = left.with_columns(pl.col(on).str.to_date().alias(on)).sort(on)
+        r = right.with_columns(pl.col(on).str.to_date().alias(on)).sort(on)
+        out = l.join_asof(r, on=on, by=by, strategy="backward")
+        return out.with_columns(pl.col(on).dt.strftime("%Y-%m-%d").alias(on))
+    l = left.sort(on)
+    r = right.sort(on)
+    return l.join_asof(r, on=on, by=by, strategy="backward")
+
+
 class GraphService:
     """统一资产服务：table / index / panel。"""
 
@@ -479,12 +499,14 @@ class GraphService:
     # panel（原 dataset：graph 节点 + DEPENDS 边；get 实时 join）
     # =====================================================================
 
-    def panel_add(self, name: str, index: str, tables: list[str] | None = None,
-                  **kw) -> dict:
+    def panel_add(self, name: str, index: str,
+                  tables: dict[str, str] | list | tuple | None = None, **kw) -> dict:
         """panel add：index 为已注册 Index 节点，tables 为已注册 table 节点。
 
         keys 由 index 推断（symbol_col + datetime_col，去空去重；兜底 sym/date），
         不再接受显式 ``--keys``（旧参数被忽略）。
+        tables 支持 {表名: join}、[(表名, join)]、["表名:join" | "表名"] 混合；
+        join 缺省 asof（可选 left），见 PanelHandler.add。
         """
         idx_node = self._require_node("index", index)
         keys = [c for c in (idx_node.get("symbol_col"), idx_node.get("datetime_col"))
@@ -492,8 +514,7 @@ class GraphService:
         keys = list(dict.fromkeys(keys)) or ["sym", "date"]
         kw.pop("keys", None)  # 忽略旧 --keys 参数，以 index 推断为准
         return PanelHandler.add(self.graph, name, index,
-                                tables={t: "left_join" for t in (tables or [])},
-                                keys=keys, **kw)
+                                tables=tables, keys=keys, **kw)
 
     def _panel_columns(self, node: dict) -> list[dict]:
         """派生列：index 列优先（keys 标 as_index），member 表列同名跳过。"""
@@ -552,10 +573,12 @@ class GraphService:
         return {"deleted": name}
 
     def _panel_lazy(self, name: str, where: pl.Expr | str | None = None) -> tuple[pl.LazyFrame, list[str]]:
-        """panel 实时 join 视图（lazy）：index 为左表，member 表 left join on keys。"""
+        """panel 实时 join 视图（lazy）：index 为左表，member 表按各自 join 类型
+        （asof_join 默认 / left_join）on keys。"""
         node = self._require_node("panel", name)
         index = node.get("index", "").split(":", 1)[1]
-        tables = list((node.get("tables") or {}).keys())
+        table_map = dict(node.get("tables") or {})  # {表名: join 类型}
+        tables = list(table_map.keys())
         keys = list(node.get("keys") or ())
         cols = self._panel_columns(node)
         by_src: dict[str, list[dict]] = {}
@@ -572,8 +595,12 @@ class GraphService:
         frames = [frame(index, "index")]
         frames += [frame(t, "table") for t in tables]
         joined = frames[0]
-        for f in frames[1:]:
-            joined = joined.join(f, on=keys, how="left")
+        for i, t in enumerate(tables):
+            f = frames[i + 1]
+            if (table_map.get(t) or "asof_join") == "left_join":
+                joined = joined.join(f, on=keys, how="left")
+            else:
+                joined = _asof_join(joined, f, keys)
         joined = joined.select(*[c["name"] for c in cols])
         if where is not None:
             joined = joined.filter(to_expr(where) if isinstance(where, str) else where)

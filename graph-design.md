@@ -82,7 +82,7 @@ ColumnMeta / FieldMeta 结构沿用 V2.0：
 
 ```
 Index:index ──DEPENDS(role=index)─────────────────▶ Panel:ds1
-Table:m1  ───DEPENDS(role=member, join=left_join)─▶ Panel:ds1
+Table:m1  ───DEPENDS(role=member, join=asof_join)─▶ Panel:ds1
 Panel:ds1 ───DEPENDS(role=panel)──────────────────▶ Fieldset:fs1
 Fieldset:fs1 ─DEPENDS(role=fieldset)──────────────▶ Sample:sp1
 Sample:sp1 ──DEPENDS(role=sample)─────────────────▶ Factor:fac1
@@ -91,7 +91,9 @@ Feature:ma5f ─DEPENDS(role=feature)──────────────�
 
 - **血缘链**：`table / index → panel → fieldset → sample → factor`（另有 feature → factor）。
 - **join 只出现在 table → panel 边上**：panel 以 index 为索引去 join 其他成员表，
-  仅 ``role=member`` 边带 ``detail.join``（left_join / asof_join）；``role=index`` 边**不带 join**。
+  仅 ``role=member`` 边带 ``detail.join``（``asof_join`` 缺省 / ``left_join``）；
+  ``role=index`` 边**不带 join**。成员表 join 方式在 ``panel add`` 时按
+  ``member:asof``/``member:left`` 指定（缺省 asof）。
 - **sample 基于 fieldset 衍生**（在 fieldset 的衍生指标集视图上过滤），不直接依赖 panel。
 - Panel 建节点时**同时建边**：`Panel → Index`（role=index）、`Panel → 每张成员表`（role=member）；
   边的 `required_version` 初始 = 被依赖方当前版本。

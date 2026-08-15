@@ -23,6 +23,16 @@ def _cols(cols: list | tuple | None) -> list[dict]:
     return out
 
 
+def _norm_join(join: str) -> str:
+    """成员表 join 类型归一化：asof/left → asof_join/left_join，未知值报错。"""
+    j = str(join or "").strip().lower()
+    if j in ("", "asof", "asof_join"):
+        return "asof_join"
+    if j in ("left", "left_join"):
+        return "left_join"
+    raise ValueError(f"未知 join 类型: {join!r}（可选 asof / left）")
+
+
 # =====================================================================
 # Table / Index（数据源头）
 # =====================================================================
@@ -136,17 +146,19 @@ class PanelHandler:
             **kw: Any) -> dict:
         """创建一个 Panel 节点和多条边（→ index、→ 每张成员表）。
 
-        tables：{表名: join 类型} 或 [(表名, join 类型), ...]。
+        tables：{表名: join 类型}、[(表名, join 类型), ...] 或 ["表名:join", ...]；
+        join 类型归一化为 ``asof_join``/``left_join``，缺省 ``asof_join``。
         """
         table_map: dict[str, str] = {}
         if isinstance(tables, dict):
-            table_map = dict(tables)
+            table_map = {t: _norm_join(j) for t, j in tables.items()}
         else:
             for item in tables or ():
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    table_map[item[0]] = item[1]
+                    table_map[item[0]] = _norm_join(item[1])
                 elif isinstance(item, str):
-                    table_map[item] = "left_join"
+                    tname, _, j = item.partition(":")
+                    table_map[tname] = _norm_join(j) if j else "asof_join"
         deps = [("index", index, {"role": "index"})]
         deps += [("table", t, {"role": "member", "join": j}) for t, j in table_map.items()]
         return ctrl.add(

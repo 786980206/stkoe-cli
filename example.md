@@ -37,7 +37,8 @@ uv run -m stkoe index get index --where "date >= '2024-01-02'" --limit 5   # 谓
 ## 2. 逻辑数据集（panel：实时 join 视图，无物化）
 
 ```bash
-uv run -m stkoe panel add ds1 index m1                  # 注册 panel（keys 由 index 推断 = sym+date；m1 为成员，实时 join）
+uv run -m stkoe panel add ds1 index m1                  # 注册 panel（keys 由 index 推断 = sym+date；m1 为成员，缺省 asof join）
+uv run -m stkoe panel add ds2 index m1:asof m2:left     # 成员可配 join：m1 asof、m2 left（等值）
 uv run -m stkoe panel meta ds1                            # panel 元数据（含 join 后的列与 keys）
 uv run -m stkoe panel get ds1 --limit 5                     # 读实时 join 视图
 ```

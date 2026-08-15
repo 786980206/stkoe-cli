@@ -162,10 +162,66 @@ class TestPanelGraph:
         p = svc.panel_add("ds1", "index", ["m1", "m2"])
         assert p["name"] == "ds1"
         assert p["index"] == "index:index"
-        assert p["tables"] == {"m1": "left_join", "m2": "left_join"}
+        assert p["tables"] == {"m1": "asof_join", "m2": "asof_join"}  # 缺省 asof join
         # DEPENDS 边
         targets = sorted(d["target"] for d in svc.graph.deps_of("panel", "ds1"))
         assert targets == ["index:index", "table:m1", "table:m2"]
+        # 边 detail 带 join 类型
+        deps = {d["target"]: (d.get("detail") or {}).get("join")
+                for d in svc.graph.deps_of("panel", "ds1")}
+        assert deps == {"index:index": None, "table:m1": "asof_join", "table:m2": "asof_join"}
+
+    def test_panel_add_join_types(self, svc):
+        """成员表可配置 join：table1:asof / table1:left / 缺省 asof"""
+        svc.table_add("m1")
+        svc.table_add("m2")
+        svc.index_add("index")
+        p = svc.panel_add("ds1", "index", ["m1:asof", "m2:left", "m1"])
+        assert p["tables"] == {"m1": "asof_join", "m2": "left_join"}
+        deps = {d["target"]: (d.get("detail") or {}).get("join")
+                for d in svc.graph.deps_of("panel", "ds1")}
+        assert deps == {"index:index": None, "table:m1": "asof_join",
+                        "table:m2": "left_join"}
+        # dict 形态与 (name, join) 元组形态等价
+        p2 = svc.panel_add("ds2", "index", {"m1": "left", "m2": "asof_join"})
+        assert p2["tables"] == {"m1": "left_join", "m2": "asof_join"}
+        p3 = svc.panel_add("ds3", "index", [("m1", "left"), ("m2", "asof")])
+        assert p3["tables"] == {"m1": "left_join", "m2": "asof_join"}
+
+    def test_panel_add_unknown_join_error(self, svc):
+        svc.table_add("m1")
+        svc.index_add("index")
+        import pytest
+
+        with pytest.raises(ValueError):
+            svc.panel_add("ds1", "index", ["m1:inner"])
+
+    def test_panel_get_asof_join_backward(self, svc):
+        """asof join：member 无精确日期行时取最近过去日期（backward）"""
+        import shutil
+        import os as _os
+
+        root = _os.path.join(_os.environ.get("TEMP", "."), "gql_asof_svc")
+        shutil.rmtree(root, ignore_errors=True)
+        for sub, d in (("index", "idx"), ("table", "mem")):
+            _os.makedirs(_os.path.join(root, sub, d), exist_ok=True)
+        # index：sym=a 的 01/03 日无 member 对应 → asof 取 01/02 的值
+        pl.DataFrame({"sym": ["a", "a"], "date": ["2024-01-02", "2024-01-03"],
+                      "price": [1.0, 2.0]}).write_parquet(
+            _os.path.join(root, "index", "idx", "data.parquet"))
+        pl.DataFrame({"sym": ["a"], "date": ["2024-01-02"], "x": [10.0]}).write_parquet(
+            _os.path.join(root, "table", "mem", "data.parquet"))
+        try:
+            s = GraphService(root)
+            s.table_add("mem")
+            s.index_add("idx", symbol_col="sym", datetime_col="date")
+            s.panel_add("ds1", "idx", ["mem:asof"])
+            df, total = s.panel_get("ds1", count_total=True)
+            assert total == 2
+            assert df["x"].to_list() == [10.0, 10.0]  # 01/03 backward → 01/02 的 x
+            s.close()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_panel_get_join_and_columns(self, svc):
         svc.table_add("m1")

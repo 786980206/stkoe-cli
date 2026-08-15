@@ -212,6 +212,24 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 panel add 成员表 join 方式可配置（默认 asof，可选 left）
+
+- **参数格式**：`panel add <name> <index> [member[:join]...]`——每个 member 可带
+  `:asof` / `:left`（归一化为 `asof_join`/`left_join`，未知值报错），**缺省 asof join**
+  （原默认 left join）
+- **实现**：`PanelHandler.add` 解析 dict / (name, join) 元组 / "name:join" 字符串并
+  `_norm_join` 归一化；`GraphService.panel_add` 透传 tables（不再强制 left_join）；
+  `_panel_lazy` 按每个成员的 join 类型执行——left 走精确等值 join，asof 走
+  `join_asof`（等值键 keys[:-1] 作 by + 时间键 keys[-1] 作 on，backward 就近匹配；
+  String 日期先 cast Date 再 asof，结果列 cast 回 String 保持下游公式的字符串比较语义）
+- Execute / 任务版（dataset handler 转发 panel）与 CLI 均支持；边 `role=member` 的
+  `detail.join` 记录实际 join 类型
+- 测试：test_graph_service.py 增 `test_panel_add_join_types`（三种形态归一化 + 边断言）、
+  `test_panel_add_unknown_join_error`、`test_panel_get_asof_join_backward`（01/03 无精确行
+  → backward 取 01/02 值）；`test_panel_add_edges` 默认断言改 asof_join；全量 180 用例绿
+- 文档：api.md §3.1 panel add 行 + 表下注、example.md §2、graph-design.md §2.1 示例边
+- 注：asof join 对 by 分组的排序校验会触发 polars UserWarning（无碍，已先 sort）
+
 ### 2026-08 fix: graph lineage/nodes/stats 空图 —— _graph_store 未 expanduser
 
 - **现象**：配置默认 `data_dir="~/.stkoe"`（未展开字符串）时，`table list` 正常（GraphService

@@ -98,7 +98,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | index | `col` | `<name> <column>` | `--display_name/--description/--unit/--formula/--tags <v>` | JsonData（IndexMeta） |
 | index | `scan`/`update` | `<name>` | `--all` | JsonData（TableScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名） |
 | index | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| panel | `add` | `<name> <index> [member...]` | + 元数据键（index 为已注册 index 资产，member 为已注册 table；**keys 由 index 推断** = symbol_col + datetime_col，不再接受 `--keys`） | JsonData（PanelMeta） |
+| panel | `add` | `<name> <index> [member[:join]...]` | + 元数据键（index 为已注册 index 资产；member 为已注册 table，可带 `:asof`/`:left` 指定 join 方式，**缺省 asof**；**keys 由 index 推断** = symbol_col + datetime_col，不再接受 `--keys`） | JsonData（PanelMeta） |
 | panel | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--limit N` `--offset N` | **ArrowTable**（无 JsonData；实时 join 视图） |
 | panel | `meta` | `<name>` | — | JsonData（PanelMeta） |
 | panel | `list` | — | — | JsonData（PanelMeta[]） |
@@ -166,7 +166,9 @@ HealthRequest {}                                   HealthResponse { status, vers
 > 返回 `indexes` 数组；批量时 `--symbol-col/--datetime-col` 等参数对全部新发现统一生效。
 > V3.0 起类型由节点 label 承载：table 恒 "table"，index 是独立资产（`index add`）；
 > 旧 `--type` 参数仅作分类标识进 extra（如 `--type=index` 不再约束 panel 注册）。
-> `panel`（原 dataset）：`panel add <name> <index> [member...] --keys` 实时 join 视图（index 左表），
+> `panel`（原 dataset）：`panel add <name> <index> [member[:join]...]` 实时 join 视图（index 左表），
+> 每个 member 可带 `:asof`/`:left` 指定 join 方式（**缺省 asof**，asof 按 datetime 键就近匹配、
+> left 为精确等值 join）；边 `role=member` 带 `detail.join`（`asof_join`/`left_join`）。
 > 无物化分区概念；`dataset` 为旧别名转发同一实现。
 
 ### 3.2 `table get` / `index get` / `panel get` 的 ArrowTable.meta

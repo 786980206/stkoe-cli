@@ -38,7 +38,7 @@ graphqlite 节点：**label = 资产类型**；**`id` 属性 = `"<type>:<name>"`
 | `description` | str | 描述 |
 | `tags` | list[str] | 标签 |
 | `source` | str | 来源 |
-| `version` | int | **当前版本**（单调递增；初始 1） |
+| `version` | int | **当前版本**（高精度时间戳，纳秒；单调递增，见 §3.1） |
 | `version_list` | dict[int, event] | **版本事件日志**：version → DataChangeEvent（见 §3） |
 | `materialized` | bool | 是否已物化（有物理产物） |
 | `valid` | bool | 是否有效（上游变化后未重算 → False） |
@@ -53,7 +53,7 @@ graphqlite 节点：**label = 资产类型**；**`id` 属性 = `"<type>:<name>"`
 | `Index` | IndexNode | `columns`、`symbol_col`、`datetime_col`、`materialize_partition` |
 | `Panel` | PanelNode（≈ V2.0 dataset） | `index`（Index 节点 id）、`tables`（{name: join 类型}）、`keys` |
 | `Fieldset` | FieldsetNode | `dataset`（Panel 节点 id）、`fields`（{field: FieldMeta}） |
-| `Sample` | SampleNode | `dataset`（Panel 节点 id）、`engine`、`formula` |
+| `Sample` | SampleNode | `fieldset`（Fieldset 节点 id）、`engine`、`formula` |
 | `Feature` | FeatureNode | `engine`、`formula`、`unit` |
 | `Factor` | FactorNode | `feature`（节点 id）、`sample`（节点 id）、`engine`、`pipeline`、`factor_col` |
 | `Tester` | TesterNode | `factor`（节点 id）、`returns/groupby/marketcap`、`spec`（quantiles/periods/…） |
@@ -75,21 +75,24 @@ ColumnMeta / FieldMeta 结构沿用 V2.0：
 | 属性 | 类型 | 说明 |
 |---|---|---|
 | `required_version` | int | 依赖方已消费的被依赖方版本（物化时对齐，见 §4） |
-| `detail` | dict | 角色与映射：`{"role": "index"/"member"/"dataset"/"feature"/"sample"/"factor", "join": ..., "fields": [...]}` |
+| `detail` | dict | 角色与映射：`{"role": "index"/"member"/"panel"/"fieldset"/"feature"/"sample"/"factor", "join": ..., "fields": [...]}`；`join` 仅 table → panel 边带 |
 | `create_time` | str | 建边时间 |
 
 ### 2.1 典型血缘子图
 
 ```
-Table:index ──┐
-              ├─DEPENDS(role=member, join=left_join)──▶ Panel:ds1 ──DEPENDS(role=dataset)──▶ Fieldset:fs1
-Table:m1  ────┘                                            │
-                                                           ├─DEPENDS(role=dataset)──▶ Sample:sp1 ──DEPENDS(role=sample)──▶ Factor:fac1
-                                                           │                                                              │
-                                                           └────────────────────────────────────────────────────▶ Feature:ma5 ──┘
-                                                                                                             （Factor → Feature 边）
+Index:index ──DEPENDS(role=index)─────────────────▶ Panel:ds1
+Table:m1  ───DEPENDS(role=member, join=left_join)─▶ Panel:ds1
+Panel:ds1 ───DEPENDS(role=panel)──────────────────▶ Fieldset:fs1
+Fieldset:fs1 ─DEPENDS(role=fieldset)──────────────▶ Sample:sp1
+Sample:sp1 ──DEPENDS(role=sample)─────────────────▶ Factor:fac1
+Feature:ma5f ─DEPENDS(role=feature)───────────────▶ Factor:fac1
 ```
 
+- **血缘链**：`table / index → panel → fieldset → sample → factor`（另有 feature → factor）。
+- **join 只出现在 table → panel 边上**：panel 以 index 为索引去 join 其他成员表，
+  仅 ``role=member`` 边带 ``detail.join``（left_join / asof_join）；``role=index`` 边**不带 join**。
+- **sample 基于 fieldset 衍生**（在 fieldset 的衍生指标集视图上过滤），不直接依赖 panel。
 - Panel 建节点时**同时建边**：`Panel → Index`（role=index）、`Panel → 每张成员表`（role=member）；
   边的 `required_version` 初始 = 被依赖方当前版本。
 - 删除约束：**节点存在入边（下游依赖）时禁止删除**（除非 `--force`，force 时先删下游边/节点）。
@@ -99,8 +102,9 @@ Table:m1  ────┘                                            │
 
 ### 3.1 版本
 
-- 每个节点一个单调递增的 `version`（int，初始 1）。`version_list` 记录
-  `{version: event}`，即「这个版本发生了什么数据变化」。
+- **版本号 = 变更时刻的高精度时间戳**：`time.time_ns()` 纳秒（int），可直接看出变更时间、
+  带业务含义；同一纳秒或时钟回拨时以上次版本 +1 兜底，保证严格单调。
+  `version_list` 记录 `{version: event}`，即「这个版本发生了什么数据变化」。
 - **变更即版本**：任何改变节点**定义/数据**的操作（table 数据变化、set 定义键、物化重算）
   都会铸新版本号并把对应 DataChangeEvent 追加进 `version_list`。
 
@@ -133,7 +137,7 @@ Table/Index 通过 `notify_change(event)` 登记（本阶段不接真实数据�
 
 | 操作 | 流程 | 约束 |
 |---|---|---|
-| `add` | 铸版本 1 → 建节点（label=类型）→ 返回节点 | 同 `type:name` 已存在 → `AssetExistsError` |
+| `add` | 铸版本（时间戳）→ 建节点（label=类型）→ 返回节点 | 同 `type:name` 已存在 → `AssetExistsError` |
 | `add + 建边`（Panel/Fieldset/Sample/Factor/Tester） | 先建节点，再逐条建 DEPENDS 边（required_version = 被依赖方当前版本），**同一事务** | 被依赖方不存在 → `AssetNotFoundError` |
 | `get` | 读节点（+ 可选上下游血缘） | 不存在 → `AssetNotFoundError` |
 | `meta` | 读节点全量属性（含 version_list） | 同上 |

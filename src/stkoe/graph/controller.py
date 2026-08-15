@@ -29,6 +29,7 @@ from .model import (
     node_id,
 )
 from .store import GraphStore, _now_iso
+from .version import new_version
 
 # 各资产类型的「定义键」：改动这些键会令下游失效（需要重算）
 DEFINITION_KEYS: dict[str, frozenset[str]] = {
@@ -36,7 +37,7 @@ DEFINITION_KEYS: dict[str, frozenset[str]] = {
     "index": frozenset({"type", "columns", "symbol_col", "datetime_col", "materialize_partition"}),
     "panel": frozenset({"index", "tables", "keys"}),
     "fieldset": frozenset({"dataset", "fields"}),
-    "sample": frozenset({"dataset", "engine", "formula"}),
+    "sample": frozenset({"fieldset", "engine", "formula"}),
     "feature": frozenset({"engine", "formula"}),
     "factor": frozenset({"feature", "sample", "engine", "pipeline", "factor_col"}),
     "tester": frozenset({"factor", "returns", "groupby", "marketcap", "factor_col", "spec"}),
@@ -84,8 +85,8 @@ class GraphController:
         return AssetMeta.from_dict(props).to_dict()
 
     def _bump(self, props: dict, event: DataChangeEvent) -> dict:
-        """铸新版本 + 事件入 version_list（返回增量属性）。"""
-        version = int(props.get("version", 1)) + 1
+        """铸新版本（高精度时间戳）+ 事件入 version_list（返回增量属性）。"""
+        version = new_version()
         version_list = dict(props.get("version_list") or {})
         version_list[str(version)] = event.to_dict()
         return {

@@ -171,6 +171,25 @@ src/stkoe/
 
 ## 近期变更记录
 
+### 2026-08 graph 设计修正（评审反馈）：时间戳版本 + 血缘方向
+
+- **版本号改为高精度时间戳**：`graph/version.py` 新增 `new_version()` ——
+  取 `time.time_ns()` 纳秒时间戳（int，有业务含义、可直接看出变更时间），
+  同一纳秒/时钟回拨时以上次版本 +1 兜底保证严格单调；`_bump`/`AssetMeta`
+  相应改为时间戳版本（不再 int 递增）
+- **血缘方向修正**：
+  - **join 只出现在 table → panel 边上**：panel 以 index 为索引 join 成员表，
+    `role=member` 边带 `detail.join`（left_join/asof_join），`role=index` 边不带 join
+  - **sample 基于 fieldset 衍生**：血缘链改为
+    `table/index → panel → fieldset → sample → factor`（原实现 sample 直接依赖
+    panel）；`SampleHandler.add` 参数改为 `fieldset`、DEPENDS 边 role=fieldset、
+    `DEFINITION_KEYS["sample"]` 同步改为 `{"fieldset","engine","formula"}`
+- **文档同步**：graph-design.md §1.1/§1.2/§2.1/§3.1/§4.1 修正（版本、血缘子图、
+  join 位置、sample 依赖）；AGENTS.md 目录结构 version.py
+- **测试**：test_graph.py 版本断言全部改为时间戳单调比较、fixture 链
+  `sp1` 依赖 `fs1`、删除顺序/传播链断言按新链调整 + 链式积累用例加强，
+  全量 263 用例绿
+
 ### 2026-08 V3.0 图数据库血缘重构（graphqlite 落地：图 CRUD + 事件响应全流程）
 
 - **V2.0 全量备份**：现有代码/测试/文档（src、tests、scripts、api.md、example.md、

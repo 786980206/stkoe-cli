@@ -167,7 +167,7 @@ class AssetMeta:
     description: str = ""
     tags: tuple[str, ...] = ()
     source: str = "local"
-    version: int = 1
+    version: int = 0  # 当前版本（高精度时间戳，见 version.py）
     version_list: dict = field(default_factory=dict)  # {version: DataChangeEvent dict}
     materialized: bool = False
     valid: bool = False
@@ -208,7 +208,7 @@ class AssetMeta:
             description=d.get("description", ""),
             tags=tuple(d.get("tags") or ()),
             source=d.get("source", "local"),
-            version=int(d.get("version", 1)),
+            version=int(d.get("version", 0)),
             version_list=dict(d.get("version_list") or {}),
             materialized=bool(d.get("materialized", False)),
             valid=bool(d.get("valid", False)),

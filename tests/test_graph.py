@@ -41,7 +41,7 @@ def ctrl():
 
 @pytest.fixture
 def lineage(ctrl):
-    """标准血缘链：index/m1(table) → panel → fieldset → sample + feature → factor。
+    """标准血缘链：index/m1(table) → panel → fieldset → sample → factor（+ feature）。
 
     构建后先 ``resolve_all`` 一次把派生节点全部置为有效（settled 状态）。
     """
@@ -56,10 +56,10 @@ def lineage(ctrl):
                      keys=["sym", "date"])
     FieldsetHandler.add(ctrl, "fs1", "ds1")
     FieldsetHandler.add_field(ctrl, "fs1", "ma5", "price.rolling_mean(5)")
-    SampleHandler.add(ctrl, "sp1", "ds1", formula="(date >= '2024-01-01')")
+    SampleHandler.add(ctrl, "sp1", "fs1", formula="(date >= '2024-01-01')")
     FeatureHandler.add(ctrl, "ma5f", "price.rolling_mean(5)")
     FactorHandler.add(ctrl, "fac1", "ma5f", "sp1", pipeline="nothing()")
-    ctrl.resolve_all()  # settle：派生节点全部 valid/materialized，版本不空 bump
+    ctrl.resolve_all()  # settle：派生节点全部 valid/materialized，无积累事件不空 bump
     return ctrl
 
 
@@ -209,7 +209,7 @@ class TestControllerCrud:
                                 columns=[{"name": "x"}], extra={"k": 1})
         assert meta["type"] == "table"
         assert meta["name"] == "t1"
-        assert meta["version"] == 1
+        assert isinstance(meta["version"], int) and meta["version"] > 0  # 时间戳版本
         assert meta["valid"] is True
         assert meta["extra"] == {"k": 1}
         assert meta["columns"] == [{"name": "x"}]
@@ -236,26 +236,29 @@ class TestControllerCrud:
 
     def test_set_meta_extra_and_version(self, ctrl):
         TableHandler.add(ctrl, "t1")
+        v0 = TableHandler.meta(ctrl, "t1")["version"]
         m = TableHandler.set(ctrl, "t1", display_name="改名", source="manual",
                              unknown_key="x")
         assert m["display_name"] == "改名"
         assert m["source"] == "manual"
         assert m["extra"]["unknown_key"] == "x"
-        assert m["version"] == 2
-        assert "2" in m["version_list"]
+        assert m["version"] > v0  # 时间戳版本单调递增
+        assert str(m["version"]) in m["version_list"]
 
     def test_set_definition_invalidates_downstream(self, lineage):
-        # factor → sample → panel；改 panel keys 应令全部下游失效
+        # 链：index → ds1 → fs1 → sp1 → fac1；改 panel keys 应令全部下游失效
+        v0 = PanelHandler.meta(lineage, "ds1")["version"]
         m = PanelHandler.set(lineage, "ds1", definition=True, keys=["sym"])
-        assert m["version"] == 2
+        assert m["version"] > v0
         stale = {n["name"] for n in lineage.stale()}
         assert {"fs1", "sp1", "fac1"} <= stale
 
     def test_col_columns_and_fields(self, ctrl):
         TableHandler.add(ctrl, "t1", columns=[{"name": "x", "data_type": "String"}])
+        v0 = TableHandler.meta(ctrl, "t1")["version"]
         m = TableHandler.col(ctrl, "t1", "x", display_name="列X")
         assert m["columns"][0]["display_name"] == "列X"
-        assert m["version"] == 2
+        assert m["version"] > v0
         with pytest.raises(AssetNotFoundError):
             TableHandler.col(ctrl, "t1", "nope", display_name="?")
 
@@ -268,27 +271,28 @@ class TestControllerCrud:
         assert f2["fields"]["ma5"]["validated"] is False
 
     def test_delete_blocked_by_downstream(self, lineage):
-        # ds1 有下游（fs1/sp1/fac1）→ 禁止删除
+        # 链：index → ds1 → fs1 → sp1 → fac1；中间节点全部被下游挡住
         with pytest.raises(DependencyError):
             PanelHandler.delete(lineage, "ds1")
-        # sp1 有下游（fac1）→ 禁止删除
         with pytest.raises(DependencyError):
-            SampleHandler.delete(lineage, "sp1")
-        # fs1 是叶子（无下游）→ 可删
-        FieldsetHandler.delete(lineage, "fs1")
-        assert "fs1" not in [n["name"] for n in lineage.list("fieldset")]
+            FieldsetHandler.delete(lineage, "fs1")   # fs1 有下游 sp1
+        with pytest.raises(DependencyError):
+            SampleHandler.delete(lineage, "sp1")     # sp1 有下游 fac1
+        # fac1 是叶子 → 可删
+        FactorHandler.delete(lineage, "fac1")
+        assert "fac1" not in [n["name"] for n in lineage.list("factor")]
 
     def test_delete_ok_when_leaf(self, lineage):
-        # fac1 是叶子：删除后其上游（fs1/sp1/ma5f）失去下游
+        # fac1 是叶子：删除后 sp1 失去下游
         FactorHandler.delete(lineage, "fac1")
-        assert [d["id"] for d in lineage.downstream("fieldset", "fs1")] == []
-        # 叶子可删；fs1 无下游（fac1 已删）也可删
+        assert [d["id"] for d in lineage.downstream("sample", "sp1")] == []
+        # 逐层删叶子：sp1 → fs1
+        SampleHandler.delete(lineage, "sp1")
         FieldsetHandler.delete(lineage, "fs1")
         with pytest.raises(AssetNotFoundError):
             lineage.get("fieldset", "fs1")
-        # 仍有下游的节点继续被挡
-        with pytest.raises(DependencyError):
-            PanelHandler.delete(lineage, "ds1")
+        # ds1 仍有下游（fs1 已删 → 无下游，可删）
+        assert [d["id"] for d in lineage.downstream("panel", "ds1")] == []
 
     def test_delete_force(self, lineage):
         m = PanelHandler.delete(lineage, "ds1", force=True)
@@ -314,11 +318,12 @@ class TestControllerCrud:
 
 class TestEventFlow:
     def test_notify_change_versions_and_stale(self, lineage):
+        v0 = lineage.get("index", "index")["version"]
         r = IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
             action="upsert", symbol_scope=["000001.SZ"], datetime_scope=["2024-01-02"]))
         idx = lineage.get("index", "index")
-        assert idx["version"] == 2
-        assert idx["version_list"]["2"]["symbol_scope"] == ["000001.SZ"]
+        assert idx["version"] > v0  # 时间戳版本单调递增
+        assert idx["version_list"][str(idx["version"])]["symbol_scope"] == ["000001.SZ"]
         affected = {a.split(":", 1)[1] for a in r["affected"]}
         assert affected == {"ds1", "fs1", "sp1", "fac1"}
         # 下游全部失效
@@ -329,37 +334,45 @@ class TestEventFlow:
                                name)["valid"] is False
 
     def test_accumulated_after_change(self, lineage):
-        """积累事件沿链传播：index 变化 → ds1 重算后，fs1 才看得到。"""
+        """积累事件沿链传播：index 变化 → ds1 → fs1 → sp1 逐级消费。"""
         IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
             action="upsert", symbol_scope=["a"], datetime_scope=["d1"]))
         # ds1 未重算前，fs1 的直接依赖（ds1）version_list 无新事件
         assert FieldsetHandler.on_change(lineage, "fs1")["upsert"] is None
-        # ds1 重算（消费 index 事件并记入自身 version_list）后
+        # ds1 重算（消费 index 事件并记入自身 version_list）后 fs1 可见
         PanelHandler.update(lineage, "ds1")
         acc = FieldsetHandler.on_change(lineage, "fs1")
         assert acc["upsert"] is not None
         assert acc["upsert"].symbol_scope == ["a"]
         assert acc["delete"] is None
+        # 链式：fs1 重算后 sp1 才能看到
+        assert lineage.accumulated("sample", "sp1")["upsert"] is None
+        FieldsetHandler.materialize(lineage, "fs1")
+        acc2 = lineage.accumulated("sample", "sp1")
+        assert acc2["upsert"].symbol_scope == ["a"]
 
     def test_resolve_aligns_watermark(self, lineage):
+        v0 = PanelHandler.meta(lineage, "ds1")["version"]
         IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
             action="upsert", symbol_scope=["a"]))
+        idx_v = lineage.get("index", "index")["version"]
         m = PanelHandler.update(lineage, "ds1")
         assert m["valid"] is True and m["materialized"] is True
-        assert m["version"] == 2
+        assert m["version"] > v0
         edge = lineage.deps_of("panel", "ds1")[0]
-        assert edge["required_version"] == 2  # 对齐 index 当前版本
+        assert edge["required_version"] == idx_v  # 水位对齐 index 当前版本
         # index 的 version_list 事件进入 ds1 的 version_list
-        assert m["version_list"]["2"]["symbol_scope"] == ["a"]
+        assert m["version_list"][str(m["version"])]["symbol_scope"] == ["a"]
 
     def test_resolve_all_topo_order(self, lineage):
+        v0 = lineage.get("factor", "fac1")["version"]
         IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
             action="upsert", symbol_scope=["a"]))
         res = lineage.resolve_all()
         names = [n["name"] for n in res["resolved"]]
         assert names == ["ds1", "fs1", "sp1", "fac1"]  # 拓扑序（ma5f 已有效）
         assert lineage.stale() == []
-        assert lineage.get("factor", "fac1")["version"] == 2
+        assert lineage.get("factor", "fac1")["version"] > v0
 
     def test_multiple_changes_accumulate_once(self, lineage):
         """两次 notify 后一次 resolve：事件合并为一次重算。"""
@@ -369,9 +382,10 @@ class TestEventFlow:
             action="upsert", symbol_scope=["b"]))
         acc = lineage.accumulated("panel", "ds1")
         assert sorted(acc["upsert"].symbol_scope) == ["a", "b"]
+        before = len(PanelHandler.meta(lineage, "ds1")["version_list"])
         m = PanelHandler.update(lineage, "ds1")
-        assert m["version"] == 2  # 一次重算只 bump 一次
-        assert sorted(m["version_list"]["2"]["symbol_scope"]) == ["a", "b"]
+        assert len(m["version_list"]) == before + 1  # 一次重算只 bump 一次
+        assert sorted(m["version_list"][str(m["version"])]["symbol_scope"]) == ["a", "b"]
 
     def test_cycle_detected(self, ctrl):
         # 直接用 store 造环：a→b→a，且两者均失效
@@ -403,6 +417,9 @@ class TestHandlers:
         assert f["dataset"] == "panel:ds1"
         assert f["fields"]["ma5"]["formula"] == "price.rolling_mean(5)"
         assert f["fields"]["ma5"]["validated"] is False
+        s = SampleHandler.meta(lineage, "sp1")
+        assert s["fieldset"] == "fieldset:fs1"  # sample 基于 fieldset 衍生
+        assert s["formula"] == "(date >= '2024-01-01')"
         fa = FactorHandler.meta(lineage, "fac1")
         assert fa["feature"] == "feature:ma5f"
         assert fa["sample"] == "sample:sp1"
@@ -455,6 +472,10 @@ class TestHandlers:
         assert [u["id"] for u in g["upstream"]] == ["index:index", "table:m1"]
         assert {d["name"] for d in g["downstream"]} == {"fs1", "sp1", "fac1"}
         assert g["node"]["name"] == "ds1"
+        # 链式：fs1 的下游 = {sp1, fac1}
+        g2 = GraphHandler.get(lineage, "fieldset", "fs1")
+        assert {d["name"] for d in g2["downstream"]} == {"sp1", "fac1"}
+        assert [u["id"] for u in g2["upstream"]] == ["panel:ds1", "index:index", "table:m1"]
 
     def test_graph_handler_stale_and_scan(self, lineage):
         IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
@@ -463,9 +484,10 @@ class TestHandlers:
         assert GraphHandler.scan(lineage) == {"node_count": 7, "edge_count": 6}
 
     def test_delete_leaf_then_parent(self, lineage):
+        # 逐层删叶子（新链顺序：fac1 → sp1 → fs1 → ma5f → ds1 → m1 → index）
         FactorHandler.delete(lineage, "fac1")
-        FieldsetHandler.delete(lineage, "fs1")
         SampleHandler.delete(lineage, "sp1")
+        FieldsetHandler.delete(lineage, "fs1")
         FeatureHandler.delete(lineage, "ma5f")
         PanelHandler.delete(lineage, "ds1")
         TableHandler.delete(lineage, "m1")

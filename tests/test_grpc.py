@@ -377,17 +377,18 @@ def _seed_panel_chain(client, srv, x2_formula="x*2"):
     root = Path(srv.data_dir)
     d = root / "tables" / "idx"
     d.mkdir(parents=True)
-    pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0],
+    pl.DataFrame({"sym": ["a", "b"], "x": [1.0, 2.0],
                   "date": ["2026-01-01", "2026-01-02"]}).write_parquet(d / "data.parquet")
     m = root / "tables" / "mem"
     m.mkdir(parents=True)
-    pl.DataFrame({"k": ["a", "b"], "y": [10.0, 20.0]}).write_parquet(m / "data.parquet")
+    pl.DataFrame({"sym": ["a", "b"], "date": ["2026-01-01", "2026-01-02"],
+                  "y": [10.0, 20.0]}).write_parquet(m / "data.parquet")
 
     for src, action, args in [
         ("table", "add", ["idx"]),
         ("table", "add", ["mem"]),
         ("index", "add", ["idx"]),
-        ("panel", "add", ["ds", "idx", "mem", "--keys", "k"]),
+        ("panel", "add", ["ds", "idx", "mem"]),  # keys 由 index 推断 [sym, date]
         ("fieldset", "add", ["fs1", "--dataset", "ds"]),
         ("fieldset", "add", ["fs1", "x2", "--formula", x2_formula]),
     ]:
@@ -423,7 +424,7 @@ def test_execute_sample_add_check_get_delete(client, srv):
     assert len(tables) == 1
     meta = json.loads(tables[0].table.meta)
     assert meta["rows"] == 1  # 仅 x>=2.0 → b
-    assert [c["name"] for c in meta["columns"]] == ["k", "x", "date", "y", "x2"]
+    assert [c["name"] for c in meta["columns"]] == ["sym", "x", "date", "y", "x2"]
     assert meta["total"] == 1
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -451,7 +452,7 @@ def test_execute_fieldset_get_default_and_fields_only(client, srv):
     tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
     assert len(tables) == 1
     meta = json.loads(tables[0].table.meta)
-    assert [c["name"] for c in meta["columns"]] == ["k", "x", "date", "y", "x2"]
+    assert [c["name"] for c in meta["columns"]] == ["sym", "x", "date", "y", "x2"]
     assert meta["rows"] == 2
 
     # --fields-only：仅返回衍生数据（keys + 已校验指标）
@@ -460,7 +461,7 @@ def test_execute_fieldset_get_default_and_fields_only(client, srv):
     assert header.code == 0
     tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
     meta = json.loads(tables[0].table.meta)
-    assert [c["name"] for c in meta["columns"]] == ["k", "x2"]
+    assert [c["name"] for c in meta["columns"]] == ["sym", "date", "x2"]
 
 
 # ---------- Execute 版 feature ----------
@@ -526,7 +527,7 @@ def _seed_factor_chain(client, srv, ready=True):
         ("table", "add", ["idx"]),
         ("table", "add", ["mem"]),
         ("index", "add", ["idx"]),
-        ("panel", "add", ["ds", "idx", "mem", "--keys", "sym,date"]),
+        ("panel", "add", ["ds", "idx", "mem"]),  # keys 由 index 推断 [sym, date]
         ("fieldset", "add", ["fs1", "--dataset", "ds"]),
         ("fieldset", "add", ["fs1", "x2", "--formula", "x*2"]),
     ]:

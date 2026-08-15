@@ -440,8 +440,17 @@ class GraphService:
     # =====================================================================
 
     def panel_add(self, name: str, index: str, tables: list[str] | None = None,
-                  keys: list[str] | None = None, **kw) -> dict:
-        """panel add：index 为已注册 Index 节点，tables 为已注册 table 节点。"""
+                  **kw) -> dict:
+        """panel add：index 为已注册 Index 节点，tables 为已注册 table 节点。
+
+        keys 由 index 推断（symbol_col + datetime_col，去空去重；兜底 sym/date），
+        不再接受显式 ``--keys``（旧参数被忽略）。
+        """
+        idx_node = self._require_node("index", index)
+        keys = [c for c in (idx_node.get("symbol_col"), idx_node.get("datetime_col"))
+                if c]
+        keys = list(dict.fromkeys(keys)) or ["sym", "date"]
+        kw.pop("keys", None)  # 忽略旧 --keys 参数，以 index 推断为准
         return PanelHandler.add(self.graph, name, index,
                                 tables={t: "left_join" for t in (tables or [])},
                                 keys=keys, **kw)

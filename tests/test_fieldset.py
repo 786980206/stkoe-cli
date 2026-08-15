@@ -54,19 +54,21 @@ def _setup_source(tmp_path, index_rows=None, member_rows=None):
 
 
 def _gsetup(root, index_rows=None):
-    """graph 语义造数：idx/mem 表 → index → panel ds(keys=k)"""
+    """graph 语义造数：idx/mem 表 → index(sym/date) → panel ds（panel 已 update 就绪）"""
     index_rows = index_rows if index_rows is not None else pl.DataFrame({
-        "k": ["a", "b", "c"], "x": [1.0, 2.0, 3.0],
+        "sym": ["a", "b", "c"], "x": [1.0, 2.0, 3.0],
+        "date": ["2024-01-01", "2024-01-02", "2024-01-03"],
         "optime": ["2024-01-01 08:00:00"] * 3})
     _write(root, "idx", index_rows)
-    _write(root, "mem", pl.DataFrame({"k": ["a", "b", "c"]}))
+    _write(root, "mem", pl.DataFrame({
+        "sym": ["a", "b", "c"], "date": ["2024-01-01", "2024-01-02", "2024-01-03"]}))
     from stkoe.graph.service import GraphService
 
     svc = GraphService(data_dir=root)
     svc.table_add("idx")
     svc.table_add("mem")
     svc.index_add("idx")
-    svc.panel_add("ds", "idx", ["mem"], keys=["k"])
+    svc.panel_add("ds", "idx", ["mem"])  # keys 由 index 推断 [sym, date]
     svc.panel_update("ds")  # 上游就绪（update 语义）
     svc.close()
     return root
@@ -250,13 +252,13 @@ def test_task_framework_fieldset_handlers(mgr):
     t_get = mgr.submit("fieldset", "get", ["fs1"])
     _await(mgr, t_get)
     get_res = _mgr_result(mgr, t_get)
-    assert get_res["columns"] == ["k", "x", "optime", "x2"]  # panel 视图 + 衍生指标
+    assert get_res["columns"] == ["sym", "x", "date", "optime", "x2"]  # panel 视图 + 衍生指标
     assert get_res["result_ref"]
 
     # --fields-only 仅返回衍生数据（keys + 指标）
     t_get_fs = mgr.submit("fieldset", "get", ["fs1", "--fields-only"])
     _await(mgr, t_get_fs)
-    assert _mgr_result(mgr, t_get_fs)["columns"] == ["k", "x2"]
+    assert _mgr_result(mgr, t_get_fs)["columns"] == ["sym", "date", "x2"]
 
     # 引擎/测试任务
     t_test = mgr.submit("fieldset", "test", ["fs1", "--formula", "x+1"])

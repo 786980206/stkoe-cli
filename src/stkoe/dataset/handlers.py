@@ -42,13 +42,11 @@ class DatasetAddHandler(TaskHandler):
             raise ValueError("dataset add 需要 dataset 名、index 节点与至少一个成员表")
         flags = parse_flags(ctx.args)
         svc = _service(ctx)
-        keys = None
-        if flags.get("keys"):
-            keys = [k.strip() for k in flags["keys"].split(",") if k.strip()]
-        dm = await asyncio.to_thread(svc.panel_add, pos[0], pos[1], pos[2:],
-                                     keys=keys, **{
-                                         k: v for k, v in flags.items()
-                                         if k not in ("keys", "materialize")})
+        # keys 由 index 推断（symbol_col + datetime_col），不再接受显式 --keys
+        dm = await asyncio.to_thread(
+            svc.panel_add, pos[0], pos[1], pos[2:], **{
+                k: v for k, v in flags.items()
+                if k not in ("keys", "materialize")})
         return TaskResult(data=dumps_str(dm))
 
 

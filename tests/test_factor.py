@@ -52,18 +52,20 @@ def _setup_source(tmp_path):
 
 
 def _gsetup(root):
-    """graph 语义造数：idx/mem 表 → index → panel ds(keys=k) → sample sp1 → feature f1
+    """graph 语义造数：idx/mem 表 → index(sym/date) → panel ds → sample sp1 → feature f1
     （上游链依次 update 就绪）"""
     _write(root, "idx", pl.DataFrame({
-        "k": ["a", "b"], "x": [1.0, 2.0]}))
-    _write(root, "mem", pl.DataFrame({"k": ["a", "b"]}))
+        "sym": ["a", "b"], "x": [1.0, 2.0],
+        "date": ["2024-01-01", "2024-01-02"]}))
+    _write(root, "mem", pl.DataFrame({
+        "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"]}))
     from stkoe.graph.service import GraphService
 
     svc = GraphService(data_dir=root)
     svc.table_add("idx")
     svc.table_add("mem")
     svc.index_add("idx")
-    svc.panel_add("ds", "idx", ["mem"], keys=["k"])
+    svc.panel_add("ds", "idx", ["mem"])  # keys 由 index 推断 [sym, date]
     svc.fieldset_add("fs1", "ds")
     svc.sample_add("sp1", "fs1")
     svc.feature_add("f1", "x*2")
@@ -321,7 +323,7 @@ def test_task_framework_factor_handlers(mgr):
     t_get = mgr.submit("factor", "get", ["fac1"])
     _await(mgr, t_get)
     get_res = _mgr_result(mgr, t_get)
-    assert get_res["columns"] == ["k", "f1"]
+    assert get_res["columns"] == ["sym", "date", "f1"]
     assert get_res["result_ref"]
     assert get_res["rows"] == 2
 

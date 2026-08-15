@@ -186,6 +186,14 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 panel add 移除 keys 参数：keys 由 index 推断（symbol_col + datetime_col）
+
+- `panel add` / `dataset add` 不再接受 `--keys`：panel 的索引键 = index 节点的
+  `symbol_col + datetime_col`（去空去重，兜底 sym/date），由 `service.panel_add` 推断后
+  写入节点（PanelHandler 保留 keys 属性存储）；旧 `--keys` 参数被忽略
+- dispatch/任务版去掉 keys 解析；测试表统一为 sym/date 结构（k 单键表改为
+  symbol+datetime 双键），断言同步；全量 286 用例绿
+
 ### 2026-08 V3 语义修正：scan → update（上游传导就绪检查 + 物化/标记有效）
 
 - **scan 语义模糊 → 改称 update**（V3 handler 定义的 `update`/`materialize` 形态）：

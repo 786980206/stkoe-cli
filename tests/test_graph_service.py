@@ -69,7 +69,7 @@ class TestTableGraph:
     def test_scan_idempotent_then_change_bumps_and_propagates(self, svc):
         svc.table_add("m1")
         svc.index_add("index", symbol_col="sym", datetime_col="date")
-        svc.panel_add("ds1", "index", ["m1"], keys=["sym", "date"])
+        svc.panel_add("ds1", "index", ["m1"])
         svc.graph.resolve_all()  # settle
         v0 = svc.table_meta("m1")["version"]
 
@@ -141,7 +141,7 @@ class TestPanelGraph:
         svc.table_add("m1")
         svc.table_add("m2")
         svc.index_add("index")
-        p = svc.panel_add("ds1", "index", ["m1", "m2"], keys=["sym", "date"])
+        p = svc.panel_add("ds1", "index", ["m1", "m2"])
         assert p["name"] == "ds1"
         assert p["index"] == "index:index"
         assert p["tables"] == {"m1": "left_join", "m2": "left_join"}
@@ -154,7 +154,7 @@ class TestPanelGraph:
         svc.table_add("m1")
         svc.table_add("m2")
         svc.index_add("index")
-        svc.panel_add("ds1", "index", ["m1", "m2"], keys=["sym", "date"])
+        svc.panel_add("ds1", "index", ["m1", "m2"])
         df, total = svc.panel_get("ds1", count_total=True)
         assert df.height == 2 and total == 2
         assert df.columns == ["sym", "date", "code", "price", "vol"]
@@ -166,7 +166,7 @@ class TestPanelGraph:
     def test_panel_delete(self, svc):
         svc.table_add("m1")
         svc.index_add("index")
-        svc.panel_add("ds1", "index", ["m1"], keys=["sym"])
+        svc.panel_add("ds1", "index", ["m1"])
         svc.panel_delete("ds1")
         assert svc.store.get_node("panel:ds1") is None
 
@@ -178,7 +178,7 @@ class TestFactorGraph:
         svc.table_add("index")
         svc.table_add("m1")
         svc.index_add("index")
-        svc.panel_add("ds1", "index", ["m1"], keys=["sym", "date"])
+        svc.panel_add("ds1", "index", ["m1"])
         svc.fieldset_add("fs1", "ds1")
         svc.fieldset_add_field("fs1", "x2", "code * 2")
         svc.fieldset_check("fs1", "x2")
@@ -257,7 +257,7 @@ class TestTesterGraph:
         svc.table_add("index")
         svc.table_add("m1")
         svc.index_add("index")
-        svc.panel_add("ds1", "index", ["m1"], keys=["sym", "date"])
+        svc.panel_add("ds1", "index", ["m1"])
         svc.fieldset_add("fs1", "ds1")
         svc.fieldset_add_field("fs1", "x2", "code * 2")
         svc.fieldset_check("fs1", "x2")

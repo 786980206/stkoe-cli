@@ -409,11 +409,8 @@ def _panel_add(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("panel add 需要 panel 名、index 节点与至少一个成员表")
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
-    keys = None
-    if flags.get("keys"):
-        keys = [k.strip() for k in flags["keys"].split(",") if k.strip()]
-    dm = svc.panel_add(pos[0], pos[1], pos[2:], keys=keys, **{
-        k: v for k, v in flags.items() if k != "keys"})
+    # keys 由 index 推断（symbol_col + datetime_col），不再接受显式 --keys
+    dm = svc.panel_add(pos[0], pos[1], pos[2:], **flags)
     return [Result.json("panel", dm)]
 
 

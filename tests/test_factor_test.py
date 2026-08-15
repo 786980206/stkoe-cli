@@ -100,7 +100,7 @@ def _gsetup(tmp_path):
     svc.table_add("idx")
     svc.table_add("mem")
     svc.index_add("idx", symbol_col="sym", datetime_col="date")
-    svc.panel_add("ds", "idx", ["mem"], keys=["sym", "date"])
+    svc.panel_add("ds", "idx", ["mem"])  # keys 由 index 推断
     svc.fieldset_add("fs1", "ds")
     svc.fieldset_add_field("fs1", "x2", "x*2")
     svc.fieldset_check("fs1", "x2")

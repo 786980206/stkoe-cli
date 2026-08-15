@@ -53,20 +53,21 @@ def _setup_source(tmp_path):
 
 
 def _gsetup(root):
-    """graph 语义造数：idx/mem 表 → index → panel ds(keys=k) → fieldset fs1 → sample sp1"""
+    """graph 语义造数：idx/mem 表 → index(sym/date) → panel ds → fieldset fs1 → sample sp1"""
     _write(root, "idx", pl.DataFrame({
-        "k": ["a", "b", "c"],
+        "sym": ["a", "b", "c"],
         "x": [1.0, 2.0, 3.0],
         "date": ["2026-01-01", "2026-01-02", "2026-01-03"],
     }))
-    _write(root, "mem", pl.DataFrame({"k": ["a", "b", "c"]}))
+    _write(root, "mem", pl.DataFrame({
+        "sym": ["a", "b", "c"], "date": ["2026-01-01", "2026-01-02", "2026-01-03"]}))
     from stkoe.graph.service import GraphService
 
     svc = GraphService(data_dir=root)
     svc.table_add("idx")
     svc.table_add("mem")
     svc.index_add("idx")
-    svc.panel_add("ds", "idx", ["mem"], keys=["k"])
+    svc.panel_add("ds", "idx", ["mem"])  # keys 由 index 推断 [sym, date]
     svc.fieldset_add("fs1", "ds")
     svc.sample_add("sp1", "fs1")
     svc.close()

@@ -48,20 +48,21 @@ def _setup_source(tmp_path):
 
 
 def _gsetup(root):
-    """graph 语义造数：idx/mem 表 → index → panel ds(keys=k) → fieldset fs1(x2 校验通过)"""
+    """graph 语义造数：idx/mem 表 → index(sym/date) → panel ds → fieldset fs1(x2 校验通过)"""
     _write(root, "idx", pl.DataFrame({
-        "k": ["a", "b", "c"],
+        "sym": ["a", "b", "c"],
         "x": [1.0, 2.0, 3.0],
         "date": ["2026-01-01", "2026-01-02", "2026-01-03"],
     }))
-    _write(root, "mem", pl.DataFrame({"k": ["a", "b", "c"]}))
+    _write(root, "mem", pl.DataFrame({
+        "sym": ["a", "b", "c"], "date": ["2026-01-01", "2026-01-02", "2026-01-03"]}))
     from stkoe.graph.service import GraphService
 
     svc = GraphService(data_dir=root)
     svc.table_add("idx")
     svc.table_add("mem")
     svc.index_add("idx")
-    svc.panel_add("ds", "idx", ["mem"], keys=["k"])
+    svc.panel_add("ds", "idx", ["mem"])  # keys 由 index 推断 [sym, date]
     svc.fieldset_add("fs1", "ds")
     svc.fieldset_add_field("fs1", "x2", "x*2")
     svc.fieldset_check("fs1", "x2")
@@ -232,7 +233,7 @@ def test_task_framework_sample_handlers(mgr):
     t_get = mgr.submit("sample", "get", ["s1"])
     _await(mgr, t_get)
     get_res = _mgr_result(mgr, t_get)
-    assert get_res["columns"] == ["k", "x", "date", "x2"]
+    assert get_res["columns"] == ["sym", "x", "date", "x2"]
     assert get_res["result_ref"]
 
     t_set = mgr.submit("sample", "set", ["s1", "--formula", "x==1.0"])

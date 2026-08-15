@@ -56,7 +56,7 @@ def _gsetup(root):
     svc.table_add("index")
     svc.table_add("m1")
     svc.index_add("index")
-    svc.panel_add("ds1", "index", ["m1"], keys=["sym", "date"])
+    svc.panel_add("ds1", "index", ["m1"])  # keys 由 index 推断
     svc.close()
     return root
 

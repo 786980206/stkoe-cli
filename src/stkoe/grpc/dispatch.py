@@ -567,7 +567,10 @@ def _index_scan(args: list[str], data_dir=None) -> list[Result]:
 @handler("index", "list")
 @handler("index", "")
 def _index_list(args: list[str], data_dir=None) -> list[Result]:
+    flags = parse_flags(args)
     svc = _graph_service(data_dir)
+    if flags.get("candidate"):
+        return [Result.json("candidates", svc.index_list(candidate=True))]
     return [Result.json("indexes", svc.index_list())]
 
 

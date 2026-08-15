@@ -171,6 +171,19 @@ class TestPanelGraph:
         assert svc.store.get_node("panel:ds1") is None
 
 
+class TestIndexGraph:
+    def test_index_list_candidate(self, svc):
+        """index list --candidate：未登记为 index 但含 parquet 的目录（可同时已登记 table）"""
+        svc.table_add("m1")       # 只登记 table，不 index
+        svc.table_add("m2")       # 只登记 table，不 index
+        svc.index_add("index")    # 登记 index（index:index）
+        cands = svc.index_list(candidate=True)
+        assert "m1" in cands and "m2" in cands
+        assert "index" not in cands  # 已登记 index 的不作候选
+        listed = svc.index_list()
+        assert [i["name"] for i in listed] == ["index"]
+
+
 class TestFactorGraph:
     """factor：feature 公式 + sample 视图 + pipeline 算子链（graph 登记，scan 物化）。"""
 

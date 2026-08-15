@@ -401,7 +401,17 @@ class GraphService:
     def index_meta(self, name: str) -> dict:
         return self._meta_dict("index", name)
 
-    def index_list(self) -> list:
+    def index_list(self, *, candidate: bool = False) -> list:
+        """index 清单；candidate=True 返回未登记为 index 但含 parquet 的表目录。"""
+        if candidate:
+            if not self.tables_root.exists():
+                return []
+            out = []
+            for d in sorted(x for x in self.tables_root.iterdir() if x.is_dir()):
+                if self.store.get_node(node_id("index", d.name)) is None \
+                        and any(d.rglob("*.parquet")):
+                    out.append(d.name)
+            return out
         return [self._meta_dict("index", n["name"]) for n in self.graph.list("index")]
 
     def index_set(self, name: str, **kw) -> dict:

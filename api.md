@@ -93,7 +93,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | index | `add` | `<name>` | `--symbol-col <col>`（默认 `sym`） `--datetime-col <col>`（默认 `date`） `--materialize-partition <v>`（默认 `yearly`）+ 元数据键 | JsonData（TableScanReport，type="index"） |
 | index | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | index | `meta` | `<name>` | — | JsonData（IndexMeta） |
-| index | `list` | — | — | JsonData（IndexMeta[]） |
+| index | `list` | — | `--candidate`（返回未登记 index 但含 parquet 的表目录候选） | JsonData（IndexMeta[] 或 候选名[]） |
 | index | `set` | `<name>` | `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（IndexMeta） |
 | index | `col` | `<name> <column>` | `--display_name/--description/--unit/--formula/--tags <v>` | JsonData（IndexMeta） |
 | index | `scan`/`update` | `<name>` | `--all` | JsonData（TableScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名） |

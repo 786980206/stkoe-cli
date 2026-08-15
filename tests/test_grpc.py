@@ -368,6 +368,33 @@ def _json_names(datas):
     return []
 
 
+def test_execute_index_list_candidate(client, srv, tmp_path):
+    """e:index list --candidate：未登记 index 但含 parquet 的表目录候选"""
+    import polars as pl
+
+    root = Path(srv.data_dir) / "tables"
+    (root / "reg").mkdir(parents=True)
+    pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"]}).write_parquet(root / "reg" / "p.parquet")
+    header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="index", action="add", args=["reg"])))
+    assert header.code == 0
+    (root / "cand").mkdir(parents=True)
+    pl.DataFrame({"sym": ["b"], "date": ["2024-01-02"]}).write_parquet(root / "cand" / "p.parquet")
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="index", action="list", args=["--candidate"])))
+    assert header.code == 0
+    cands = next((json.loads(d.json.data) for d in datas
+                  if d.WhichOneof("type") == "json" and d.json.name == "candidates"), None)
+    assert cands == ["cand"]
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="index", action="list")))
+    assert header.code == 0
+    names = [i["name"] for i in _json(datas, "indexes")]
+    assert names == ["reg"]
+
+
 # ---------- Execute 版 sample ----------
 
 def _seed_panel_chain(client, srv, x2_formula="x*2"):

@@ -171,6 +171,26 @@ src/stkoe/
 
 ## 近期变更记录
 
+### 2026-08 tools/graph-viewer：Cytoscape.js 血缘可视化工具
+
+- **新增 `tools/graph-viewer/`**（详见其 README.md）：
+  - `export.py`：把 graphqlite 图数据库导出为 Cytoscape elements JSON ——
+    `python tools/graph-viewer/export.py <graph.db> [--node <type:name>] [--depth N]
+    [--output] [--pretty] [--no-meta]`；全图或中心节点上下游子图均可
+  - `index.html`：Cytoscape.js 交互式探索页（前端库本地化于 vendor/，离线可用）——
+    类型着色（源头 table/index 为八角形）、图例可隐藏类型、单击看详情（meta/版本/
+    有效态/事件数）、选中节点高亮**上游（琥珀）/下游（青）**、聚焦子图、搜索定位、
+    dagre/cose/breadthfirst/concentric/grid 多布局；数据加载支持 URL `?data=`、
+    拖拽 JSON、粘贴 JSON（file:// 直接打开会提示用静态服务）
+  - `vendor/`：cytoscape 3.34.1 / dagre 0.8.5 / cytoscape-dagre 4.0.0（npmmirror 下载，
+    MIT，见 VENDOR.md）
+- **graph 初始版本补为时间戳**：`GraphController.add` 的初始 version 原为写死 1，
+  改为 `new_version()`（与 _bump 一致）
+- **数据约定**：节点 `id` = `<type>:<name>`；边方向 = 依赖方向，`role` 表示角色，
+  `join` 仅 table → panel 边带
+- 验证：export.py 全图/子图/缺库路径 + JSON 结构校验（无悬空边、join 位置正确）+
+  node 无头渲染冒烟（8 节点/7 边，上游下游查询正确）；全量 263 用例绿
+
 ### 2026-08 graph 设计修正（评审反馈）：时间戳版本 + 血缘方向
 
 - **版本号改为高精度时间戳**：`graph/version.py` 新增 `new_version()` ——

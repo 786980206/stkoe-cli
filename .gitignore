@@ -13,3 +13,6 @@ stkoe.json
 # example.md 演练产物
 example-data/
 stkoe.example.json
+
+# graph-viewer 导出产物
+tools/graph-viewer/graph-data.json

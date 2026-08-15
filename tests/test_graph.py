@@ -305,8 +305,9 @@ class TestControllerCrud:
     def test_link_unlink(self, ctrl):
         TableHandler.add(ctrl, "t1")
         FeatureHandler.add(ctrl, "f1", "x*2")
+        tgt_v = TableHandler.meta(ctrl, "t1")["version"]
         e = ctrl.link("feature", "f1", "table", "t1", detail={"role": "src"})
-        assert e["required_version"] == 1
+        assert e["required_version"] == tgt_v  # 默认水位 = 被依赖方当前版本
         assert ctrl.deps_of("feature", "f1")[0]["target"] == "table:t1"
         ctrl.unlink("feature", "f1", "table", "t1")
         assert ctrl.deps_of("feature", "f1") == []

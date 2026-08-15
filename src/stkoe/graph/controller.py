@@ -143,7 +143,7 @@ class GraphController:
             "description": description,
             "tags": list(tags or ()),
             "source": source,
-            "version": 1,
+            "version": new_version(),  # 初始版本同样是高精度时间戳
             "version_list": {},
             "materialized": False,
             "valid": asset_type in ("table", "index"),

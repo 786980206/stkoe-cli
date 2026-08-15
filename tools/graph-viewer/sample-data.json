@@ -1,0 +1,399 @@
+{
+  "graph": {
+    "exported_at": "2026-08-15 16:24:41",
+    "source_db": "C:\\Users\\winds\\AppData\\Local\\Temp\\gql_demo\\graph.db",
+    "center": null,
+    "node_count": 8,
+    "edge_count": 7,
+    "types": [
+      "factor",
+      "feature",
+      "fieldset",
+      "index",
+      "panel",
+      "sample",
+      "table"
+    ]
+  },
+  "elements": {
+    "nodes": [
+      {
+        "data": {
+          "id": "index:index",
+          "type": "index",
+          "name": "index",
+          "label": "index",
+          "version": 1786782077629244200,
+          "valid": true,
+          "materialized": false,
+          "meta": {
+            "name": "index",
+            "display_name": "index",
+            "description": "",
+            "tags": [],
+            "source": "local",
+            "version": 1786782077629244200,
+            "version_list": {},
+            "materialized": false,
+            "valid": true,
+            "create_time": "2026-08-15 16:21:17",
+            "update_time": "2026-08-15 16:21:17",
+            "extra": {},
+            "columns": [
+              {
+                "name": "sym",
+                "data_type": "String"
+              },
+              {
+                "name": "date",
+                "data_type": "Date"
+              }
+            ],
+            "symbol_col": "sym",
+            "datetime_col": "date",
+            "materialize_partition": "yearly",
+            "type": "index"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "table:m1",
+          "type": "table",
+          "name": "m1",
+          "label": "m1",
+          "version": 1786782077638839900,
+          "valid": true,
+          "materialized": false,
+          "meta": {
+            "name": "m1",
+            "display_name": "m1",
+            "description": "",
+            "tags": [],
+            "source": "local",
+            "version": 1786782077638839900,
+            "version_list": {},
+            "materialized": false,
+            "valid": true,
+            "create_time": "2026-08-15 16:21:17",
+            "update_time": "2026-08-15 16:21:17",
+            "extra": {},
+            "columns": [
+              {
+                "name": "sym"
+              },
+              {
+                "name": "date"
+              },
+              {
+                "name": "price",
+                "data_type": "Float"
+              }
+            ],
+            "type": "table"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "table:m2",
+          "type": "table",
+          "name": "m2",
+          "label": "m2",
+          "version": 1786782077648017300,
+          "valid": true,
+          "materialized": false,
+          "meta": {
+            "name": "m2",
+            "display_name": "m2",
+            "description": "",
+            "tags": [],
+            "source": "local",
+            "version": 1786782077648017300,
+            "version_list": {},
+            "materialized": false,
+            "valid": true,
+            "create_time": "2026-08-15 16:21:17",
+            "update_time": "2026-08-15 16:21:17",
+            "extra": {},
+            "columns": [
+              {
+                "name": "sym"
+              },
+              {
+                "name": "date"
+              },
+              {
+                "name": "vol",
+                "data_type": "Int64"
+              }
+            ],
+            "type": "table"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "panel:ds1",
+          "type": "panel",
+          "name": "ds1",
+          "label": "ds1",
+          "version": 1786782077658351400,
+          "valid": true,
+          "materialized": true,
+          "meta": {
+            "name": "ds1",
+            "display_name": "ds1",
+            "description": "",
+            "tags": [],
+            "source": "local",
+            "version": 1786782077658351400,
+            "version_list": {},
+            "materialized": true,
+            "valid": true,
+            "create_time": "2026-08-15 16:21:17",
+            "update_time": "2026-08-15 16:21:17",
+            "extra": {},
+            "index": "index:index",
+            "tables": {
+              "m1": "left_join",
+              "m2": "asof_join"
+            },
+            "keys": [
+              "sym",
+              "date"
+            ],
+            "type": "panel"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "fieldset:fs1",
+          "type": "fieldset",
+          "name": "fs1",
+          "label": "fs1",
+          "version": 1786782077691301000,
+          "valid": true,
+          "materialized": true,
+          "meta": {
+            "name": "fs1",
+            "display_name": "fs1",
+            "description": "",
+            "tags": [],
+            "source": "local",
+            "version": 1786782077691301000,
+            "version_list": {
+              "1786782077684359400": {
+                "action": "upsert",
+                "field_scope": [
+                  "fields"
+                ],
+                "symbol_scope": null,
+                "datetime_scope": null
+              },
+              "1786782077691301000": {
+                "action": "upsert",
+                "field_scope": [
+                  "fields"
+                ],
+                "symbol_scope": null,
+                "datetime_scope": null
+              }
+            },
+            "materialized": true,
+            "valid": true,
+            "create_time": "2026-08-15 16:21:17",
+            "update_time": "2026-08-15 16:21:17",
+            "extra": {},
+            "dataset": "panel:ds1",
+            "engine": "polars",
+            "fields": {
+              "ma5": {
+                "name": "ma5",
+                "formula": "price.rolling_mean(5)",
+                "display_name": "",
+                "description": "",
+                "unit": null,
+                "tags": [],
+                "validated": false,
+                "engine": "polars"
+              },
+              "ma20": {
+                "name": "ma20",
+                "formula": "price.rolling_mean(20)",
+                "display_name": "",
+                "description": "",
+                "unit": null,
+                "tags": [],
+                "validated": false,
+                "engine": "polars"
+              }
+            },
+            "type": "fieldset"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "sample:sp1",
+          "type": "sample",
+          "name": "sp1",
+          "label": "sp1",
+          "version": 1786782077698107800,
+          "valid": true,
+          "materialized": true,
+          "meta": {
+            "name": "sp1",
+            "display_name": "sp1",
+            "description": "",
+            "tags": [],
+            "source": "local",
+            "version": 1786782077698107800,
+            "version_list": {},
+            "materialized": true,
+            "valid": true,
+            "create_time": "2026-08-15 16:21:17",
+            "update_time": "2026-08-15 16:21:17",
+            "extra": {},
+            "engine": "polars",
+            "fieldset": "fieldset:fs1",
+            "formula": "(date >= '2024-01-01')",
+            "type": "sample"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "feature:ma5f",
+          "type": "feature",
+          "name": "ma5f",
+          "label": "ma5f",
+          "version": 1786782077710536500,
+          "valid": true,
+          "materialized": true,
+          "meta": {
+            "name": "ma5f",
+            "display_name": "ma5f",
+            "description": "",
+            "tags": [],
+            "source": "local",
+            "version": 1786782077710536500,
+            "version_list": {},
+            "materialized": true,
+            "valid": true,
+            "create_time": "2026-08-15 16:21:17",
+            "update_time": "2026-08-15 16:21:17",
+            "extra": {},
+            "engine": "polars",
+            "formula": "price.rolling_mean(5)",
+            "type": "feature"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "factor:fac1",
+          "type": "factor",
+          "name": "fac1",
+          "label": "fac1",
+          "version": 1786782077721252800,
+          "valid": true,
+          "materialized": true,
+          "meta": {
+            "name": "fac1",
+            "display_name": "fac1",
+            "description": "",
+            "tags": [],
+            "source": "local",
+            "version": 1786782077721252800,
+            "version_list": {},
+            "materialized": true,
+            "valid": true,
+            "create_time": "2026-08-15 16:21:17",
+            "update_time": "2026-08-15 16:21:17",
+            "extra": {},
+            "engine": "polars",
+            "feature": "feature:ma5f",
+            "sample": "sample:sp1",
+            "pipeline": "nothing()|standardlize()",
+            "factor_col": "ma5f",
+            "type": "factor"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "data": {
+          "id": "panel:ds1->index:index",
+          "source": "panel:ds1",
+          "target": "index:index",
+          "role": "index",
+          "join": null,
+          "required_version": 1786782077629244200
+        }
+      },
+      {
+        "data": {
+          "id": "panel:ds1->table:m1",
+          "source": "panel:ds1",
+          "target": "table:m1",
+          "role": "member",
+          "join": "left_join",
+          "required_version": 1786782077638839900
+        }
+      },
+      {
+        "data": {
+          "id": "panel:ds1->table:m2",
+          "source": "panel:ds1",
+          "target": "table:m2",
+          "role": "member",
+          "join": "asof_join",
+          "required_version": 1786782077648017300
+        }
+      },
+      {
+        "data": {
+          "id": "fieldset:fs1->panel:ds1",
+          "source": "fieldset:fs1",
+          "target": "panel:ds1",
+          "role": "dataset",
+          "join": null,
+          "required_version": 1786782077658351400
+        }
+      },
+      {
+        "data": {
+          "id": "sample:sp1->fieldset:fs1",
+          "source": "sample:sp1",
+          "target": "fieldset:fs1",
+          "role": "fieldset",
+          "join": null,
+          "required_version": 1786782077691301000
+        }
+      },
+      {
+        "data": {
+          "id": "factor:fac1->feature:ma5f",
+          "source": "factor:fac1",
+          "target": "feature:ma5f",
+          "role": "feature",
+          "join": null,
+          "required_version": 1786782077710536500
+        }
+      },
+      {
+        "data": {
+          "id": "factor:fac1->sample:sp1",
+          "source": "factor:fac1",
+          "target": "sample:sp1",
+          "role": "sample",
+          "join": null,
+          "required_version": 1786782077698107800
+        }
+      }
+    ]
+  }
+}

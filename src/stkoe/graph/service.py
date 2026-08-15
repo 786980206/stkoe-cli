@@ -59,10 +59,23 @@ class GraphService:
             data_dir = load_config().data_dir
         self.data_dir = Path(data_dir).expanduser()
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.store = GraphStore(str(self.data_dir / "graph.db"))
+        self.store = GraphStore(str(self._db_path(self.data_dir)))
         self.graph = GraphController(self.store)
         self.tables_root = self.data_dir / "tables"
         self.ignore_cols = set(DEFAULT_IGNORE_COLS)
+
+    @classmethod
+    def _db_path(cls, data_dir: Path) -> Path:
+        """资产库文件：统一 ``catalog.db``（新结构：图节点/边 + 物理指纹普通表）。
+
+        兼容旧名 ``graph.db``：文件存在时回退读取（保护已入库数据，写入恒走 catalog.db）。
+        """
+        db = data_dir / "catalog.db"
+        if not db.exists():
+            old = data_dir / "graph.db"
+            if old.exists():
+                return old
+        return db
 
     def close(self) -> None:
         self.store.close()

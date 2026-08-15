@@ -41,7 +41,7 @@ from stkoe.graph.export import build_payload  # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="导出 stkoe 血缘图数据为 Cytoscape elements JSON")
-    ap.add_argument("db", help="graphqlite 图数据库文件路径（如 <data-dir>/graph.db）")
+    ap.add_argument("db", help="graphqlite 图数据库文件路径（如 <data-dir>/catalog.db）")
     ap.add_argument("--node", help="中心节点（type:name），导出其上下游子图")
     ap.add_argument("--depth", type=int, default=None, help="上下游深度")
     ap.add_argument("--output", default="graph-data.json", help="输出文件")

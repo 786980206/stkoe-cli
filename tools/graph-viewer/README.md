@@ -8,10 +8,10 @@
 
 ```bash
 # 1. 导出图数据（全图）
-python tools/graph-viewer/export.py <data-dir>/graph.db --output tools/graph-viewer/graph-data.json
+python tools/graph-viewer/export.py <data-dir>/catalog.db --output tools/graph-viewer/graph-data.json
 
 #    或只导出某个节点的上下游子图（深度可选）
-python tools/graph-viewer/export.py <data-dir>/graph.db --node panel:ds1 --depth 3 --output tools/graph-viewer/graph-data.json
+python tools/graph-viewer/export.py <data-dir>/catalog.db --node panel:ds1 --depth 3 --output tools/graph-viewer/graph-data.json
 
 # 2. 启动静态服务
 python -m http.server 8080 --directory tools/graph-viewer

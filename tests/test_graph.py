@@ -524,9 +524,9 @@ class TestStorageHook:
 # =====================================================================
 
 def _make_graph_db(base_dir: str) -> GraphController:
-    """在 base_dir 建 graph.db（index/m1 → panel → fieldset → sample → factor）。"""
+    """在 base_dir 建 catalog.db（index/m1 → panel → fieldset → sample → factor）。"""
     os.makedirs(base_dir, exist_ok=True)
-    ctrl = GraphController(GraphStore(os.path.join(base_dir, "graph.db")))
+    ctrl = GraphController(GraphStore(os.path.join(base_dir, "catalog.db")))
     IndexHandler.add(ctrl, "index", symbol_col="sym", datetime_col="date",
                      columns=[{"name": "sym"}, {"name": "date"}])
     TableHandler.add(ctrl, "m1", columns=[{"name": "sym"}, {"name": "price"}])

@@ -175,7 +175,7 @@ src/stkoe/
 
 **当前**：V3.0 图重构完成——table/index/panel（原 dataset）/fieldset/sample/feature/factor/test
 全部基于 graph 实现（`graph/service.py` 的 GraphService），Execute 与 SubmitTask 三路径统一；
-旧 catalog.db 废弃（登记/依赖/版本进 graph 节点/边，物理指纹表迁入 graph.db 普通表；
+旧 catalog.db 废弃（登记/依赖/版本进 graph 节点/边，物理指纹表迁入 catalog.db 普通表；
 tasks.db 独立保留）；`graph lineage/nodes/stats` 已接入 gRPC Execute 通道，
 portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-design.md §6-7）。
 
@@ -216,7 +216,7 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
     （缺 node 全图；库不存在返回空图）
   - `e:graph nodes [--type <t>]` → 节点摘要列表（中心节点选择器用）
   - `e:graph stats` → 节点/边统计
-  - 数据源 `<data-dir>/graph.db`（graphqlite），按 data_dir 透传打开
+  - 数据源 `<data-dir>/catalog.db`（graphqlite），按 data_dir 透传打开
 - **抽 `graph/export.py` 纯函数**：`build_payload` / `node_summaries`（供 dispatch、
   tools/graph-viewer/export.py 复用；tools 版已改为薄 CLI 包装，去掉重复实现）
 - **portal 集成**：前端右上角"血缘关系"按钮 → 右侧抽屉（Cytoscape.js 渲染）；
@@ -229,7 +229,7 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 - **新增 `tools/graph-viewer/`**（详见其 README.md）：
   - `export.py`：把 graphqlite 图数据库导出为 Cytoscape elements JSON ——
-    `python tools/graph-viewer/export.py <graph.db> [--node <type:name>] [--depth N]
+    `python tools/graph-viewer/export.py <catalog.db> [--node <type:name>] [--depth N]
     [--output] [--pretty] [--no-meta]`；全图或中心节点上下游子图均可
   - `index.html`：Cytoscape.js 交互式探索页（前端库本地化于 vendor/，离线可用）——
     类型着色（源头 table/index 为八角形）、图例可隐藏类型、单击看详情（meta/版本/

@@ -105,10 +105,10 @@ class TestTableGraph:
         assert svc.store.fingerprint_get("table:m1") == {}
 
     def test_old_catalog_db_not_created(self, svc):
-        """登记全部进 graph.db：data_dir 下不再出现 catalog.db。"""
+        """登记全部进 catalog.db（新结构：图节点/边 + 物理指纹表），旧 graph.db 名不再产生。"""
         svc.table_add("m1")
-        assert not (svc.data_dir / "catalog.db").exists()
-        assert (svc.data_dir / "graph.db").exists()
+        assert (svc.data_dir / "catalog.db").exists()
+        assert not (svc.data_dir / "graph.db").exists()
 
 
 class TestIndexGraph:

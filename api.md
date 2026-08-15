@@ -334,7 +334,7 @@ V3.0 panel（原 dataset）为**实时 join 视图**，无物化分区策略（�
 
 ### 3.13 `graph` 血缘图（V3.0 graphqlite 图数据，仅 Execute）
 
-- **数据来源**：`<data-dir>/graph.db`（graphqlite 嵌入式图库，资产血缘 DEPENDS 边，
+- **数据来源**：`<data-dir>/catalog.db`（graphqlite 嵌入式图库，资产血缘 DEPENDS 边，
   见 graph-design.md）；库不存在时返回空图（`node_count=0`）
 - **`graph lineage`** 返回 Cytoscape.js elements payload（前端可直接渲染）：
 
@@ -494,7 +494,7 @@ t:<task_id>
 ```
 <data-dir>/
 ├── stkoe.json                 # 配置（可放 cwd）
-├── graph.db                   # V3.0 资产库：图节点/边（登记/依赖/版本/血缘）+ 物理指纹普通表
+├── catalog.db                   # V3.0 资产库：图节点/边（登记/依赖/版本/血缘）+ 物理指纹普通表
 │                              #   （stkoe_data_files / stkoe_file_stats，原 catalog.db 表迁移至此）
 ├── tasks.db                   # 任务库（TaskStore / EventStore），独立保留
 ├── tasks/<task_id>/           # 任务日志 task.log + 结果文件（ResultStore）
@@ -504,10 +504,10 @@ t:<task_id>
 └── stats/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 graph）
 ```
 
-- **graph.db vs tasks.db 分离**：graph.db 管资产（图节点/边 + 物理指纹表，单文件同事务），
+- **catalog.db vs tasks.db 分离**：catalog.db 管资产（图节点/边 + 物理指纹表，单文件同事务），
   tasks.db 管任务与事件流（高频写与资产低频强一致分开，避免写锁竞争与 WAL checkpoint 干扰）
 - **catalog.db 已废弃**：不再产生；原 stkoe_objects/stkoe_depends 由 graph 节点/边承载，
-  stkoe_data_files/stkoe_file_stats 迁入 graph.db 普通表（同文件同事务可回滚）
+  stkoe_data_files/stkoe_file_stats 迁入 catalog.db 普通表（同文件同事务可回滚）
 - **表删除只删登记（graph 节点/指纹），绝不删用户 parquet**（可重新 `add` 发现）
 - **stat 资产不进 graph**：文件夹存在即已扫描，`meta`/`list` 读目录
 - **sample 无物化产物**：只登记于 graph（依赖 fieldset），读取动态构造 fieldset 视图 + 过滤

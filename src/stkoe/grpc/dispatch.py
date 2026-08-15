@@ -1174,15 +1174,19 @@ def _mock_gen(args: list[str], data_dir=None) -> list[Result]:
 # ---------------------------------------------------------------------------
 
 def _graph_store(data_dir):
-    """按 data_dir 打开血缘图库（<data_dir>/graph.db；不存在返回 None，命令返回空图）"""
+    """按 data_dir 打开资产图库（<data_dir>/catalog.db；兼容旧名 graph.db；
+    不存在返回 None，命令返回空图）"""
     from ..graph.store import GraphStore
 
     if not data_dir:
         return None
     import os
 
-    path = os.path.join(data_dir, "graph.db")
-    return GraphStore(path) if os.path.exists(path) else None
+    for name in ("catalog.db", "graph.db"):
+        path = os.path.join(data_dir, name)
+        if os.path.exists(path):
+            return GraphStore(path)
+    return None
 
 
 @handler("graph", "lineage")

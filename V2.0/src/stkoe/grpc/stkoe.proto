@@ -1,0 +1,135 @@
+// stkoe gRPC 协议：stkoe 数据服务
+//
+// 约定：
+// - 所有请求均采用 `<source> <action> <args...>` 形态（等价于
+//   `stkoe <source> <action> <args...>` 位置参数），args 是 action 之后的位置参数
+// - source：table / dataset / stat / fieldset / sample / feature / factor / test / config / task / mock / version
+// - action：add / get / del / set / list / meta / check / test / scan / ... 等子命令动词
+// - Execute：服务端流式。第一条消息恒为 DataHeader（code=0 成功 / 非 0 业务错误），
+//   成功后按需跟随 JsonData（小结果 JSON）或 ArrowTable（表格数据 Arrow IPC）
+// - SubmitTask / SubscribeTask：长任务提交与事件订阅
+// - 存活探活走 Health
+syntax = "proto3";
+
+package stkoe;
+
+import "google/protobuf/timestamp.proto";
+
+// stkoe 数据服务
+service StkoeService {
+  // 命令执行：元数据/列表/状态等小结果 JSON，或表格数据 Arrow IPC；
+  // 服务端流式返回，首条恒为 DataHeader
+  rpc Execute(ExecuteRequest) returns (stream ExecuteResponse);
+  // 后台任务：提交长任务（物化/统计/公式）立即返回 task_id
+  rpc SubmitTask(SubmitTaskRequest) returns (SubmitTaskResponse);
+  // 任务订阅：按 task_id 订阅任务事件流（进度/日志/状态/结果）
+  rpc SubscribeTask(SubscribeTaskRequest) returns (stream SubscribeTaskResponse);
+  // 任务操作
+  rpc TaskControl(TaskControlRequest) returns (TaskControlResponse);
+  // 服务存活探活 + 版本
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message ExecuteRequest {
+  // source：table/dataset/stat/fieldset/sample/feature/factor/test/config/task/mock/version
+  string source = 1;
+  // action: add/get/del/set/list/meta 等
+  string action = 2;
+  // args（等价于 `stkoe <source> <action> <args...>` 位置参数）
+  repeated string args = 3;
+}
+
+message DataHeader {
+  // 0 = 成功；非 0 = 业务错误
+  int32 code = 1;
+  // 业务错误原因
+  string message = 2;
+}
+
+message JsonData {
+  // 数据名称或唯一标识（便于客户端区分）
+  string name = 1;
+  // JSON 数据
+  string data = 2;
+}
+
+message ArrowTable {
+  // 表格名称或唯一标识（便于客户端区分）
+  string name = 1;
+  // Arrow IPC Stream
+  bytes data = 2;
+  // 元信息 JSON, 非自带 schema, 例如: {"num_rows": n, "columns": [{"name","dtype"}]}
+  string meta = 3;
+}
+
+message ExecuteResponse {
+  oneof type {
+    DataHeader header = 1;
+    JsonData json = 2;
+    ArrowTable table = 3;
+  }
+}
+
+message SubmitTaskRequest {
+  // source：table/dataset/stat/fieldset/sample/feature/factor/test/config/task/mock/version
+  string source = 1;
+  // action: add/get/del/set/list/meta 等
+  string action = 2;
+  // args（等价于 `stkoe <source> <action> <args...>` 位置参数）
+  repeated string args = 3;
+}
+
+message SubmitTaskResponse {
+  DataHeader header = 1;
+  string task_id = 2;
+}
+
+message SubscribeTaskRequest {
+  // 任务 ID
+  string task_id = 1;
+  // 是否回放
+  bool replay = 2;
+}
+
+message TaskEvent {
+  // 消息序列
+  int64 seq = 1;
+  // 时间
+  google.protobuf.Timestamp time = 2;
+  // 进度: 0 ~ 1
+  float progress = 3;
+  // 消息
+  string message = 4;
+  // 数据: 随消息可能附带的数据
+  string data = 5;
+  // 状态: pending/running/succeeded/failed/cancelled
+  string state = 6;
+}
+
+message SubscribeTaskResponse {
+  oneof type {
+    DataHeader header = 1;
+    TaskEvent event = 2;
+  }
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  // "ok" = 服务可用
+  string status = 1;
+  // stkoe 包版本
+  string version = 2;
+}
+
+message TaskControlRequest {
+  // 任务 ID
+  string task_id = 1;
+  // cancel/pause/resume
+  string action = 2;
+}
+
+message TaskControlResponse {
+  DataHeader header = 1;
+  string task_id = 2;
+}

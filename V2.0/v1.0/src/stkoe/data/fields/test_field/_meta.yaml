@@ -1,0 +1,11 @@
+display_name: test_field
+description: can be modified by user
+data_type: null
+unit: null
+tags: []
+dataset: test_success
+formula: null
+materialized: false
+materialized_time: null
+create_time: '2026-08-04 16:40:20'
+update_time: '2026-08-04 16:40:20'

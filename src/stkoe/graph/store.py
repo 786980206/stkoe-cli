@@ -1,0 +1,314 @@
+"""GraphStore：graphqlite 存储层封装（节点/边 CRUD + 血缘遍历）。
+
+graphqlite = SQLite 扩展（Cypher 查询）。本层约定：
+- 节点 label = 资产类型，``id`` 属性 = ``"<type>:<name>"``；``type`` 恒由 label 推导；
+- 属性值原生存储：标量（int/str/bool）与复杂值（dict/list）均以原生形态经
+  ``$param`` 写入；``RETURN n`` 整节点读取返回忠实存储值；
+- **非 ASCII 参数**：graphqlite 的 ``connection.cypher`` 用 ``json.dumps(ensure_ascii=True)``
+  序列化参数，会把中文等字符损坏（实测 ``改名`` → ``u6539u540d``）。本层自带
+  ``_cypher``（ensure_ascii=False）规避；
+- 多语句写入用 ``txn()`` 包裹原生 SQL ``BEGIN/COMMIT/ROLLBACK`` 保证原子性
+  （实测 Cypher 内不支持事务语句，但 SQL 级事务可整体回滚 cypher 写入）。
+"""
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+import time
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
+
+import graphqlite
+
+from .errors import EdgeNotFoundError
+from .model import split_node_id
+
+_PROP_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_key(key: str) -> str:
+    """属性键白名单：只允许合法 Cypher 标识符，防止注入。"""
+    if not _PROP_NAME.match(key):
+        raise ValueError(f"非法属性键: {key!r}")
+    return key
+
+
+class GraphStore:
+    """graphqlite 图存储：节点/边/遍历原语。"""
+
+    def __init__(self, db_path: str = ":memory:"):
+        self._conn: sqlite3.Connection = sqlite3.connect(db_path)
+        graphqlite.load(self._conn)
+        self._txn_depth = 0
+
+    # ---------- 连接 ----------
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        return self._conn
+
+    def _cypher(self, query: str, params: dict | None = None) -> list[dict]:
+        """执行 Cypher 并解析结果（参数 ensure_ascii=False，中文安全）。"""
+        try:
+            if params:
+                params_json = json.dumps(params, ensure_ascii=False)
+                cursor = self._conn.execute("SELECT cypher(?, ?)", (query, params_json))
+            else:
+                cursor = self._conn.execute("SELECT cypher(?)", (query,))
+        except sqlite3.Error as e:
+            err_str = str(e)
+            try:
+                err_data = json.loads(err_str)
+                if isinstance(err_data, dict) and "error" in err_data:
+                    raise sqlite3.Error(err_data["error"]) from None
+            except (json.JSONDecodeError, TypeError):
+                pass
+            raise
+
+        row = cursor.fetchone()
+        if row is None or row[0] is None:
+            return []
+        result_str = row[0]
+        try:
+            data = json.loads(result_str)
+        except json.JSONDecodeError:
+            if result_str.startswith("Error") or result_str.startswith('{"error"'):
+                raise sqlite3.Error(result_str)
+            return [{"result": result_str}]
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data
+        if isinstance(data, dict):
+            return [data]
+        return [{"result": result_str}]
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> "GraphStore":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    @contextmanager
+    def txn(self) -> Iterator[None]:
+        """SQL 级事务上下文：最外层 BEGIN/COMMIT/ROLLBACK，支持嵌套。"""
+        if self._txn_depth > 0:
+            self._txn_depth += 1
+            try:
+                yield
+            finally:
+                self._txn_depth -= 1
+            return
+        self._txn_depth = 1
+        self._conn.execute("BEGIN")
+        try:
+            yield
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+        finally:
+            self._txn_depth = 0
+
+    # ---------- 节点 CRUD ----------
+
+    def create_node(self, node_id: str, label: str, props: dict[str, Any]) -> None:
+        """创建节点（已存在则覆盖属性；属性键受白名单约束）。"""
+        self._cypher(f"CREATE (n:{label} {{id: $id}})", {"id": node_id})
+        for k, v in props.items():
+            self._cypher(
+                f"MATCH (n {{id: $id}}) SET n.{_safe_key(k)} = $v",
+                {"id": node_id, "v": v},
+            )
+
+    def has_node(self, node_id: str) -> bool:
+        r = self._cypher("MATCH (n {id: $id}) RETURN count(n) AS c", {"id": node_id})
+        return bool(r[0].get("c", 0)) if r else False
+
+    @staticmethod
+    def _normalize(node: dict | None) -> dict | None:
+        if not node:
+            return None
+        props = dict(node.get("properties") or {})
+        labels = node.get("labels") or []
+        if labels:
+            props["type"] = labels[0].lower()  # type 恒由 label 推导
+        return props
+
+    def get_node(self, node_id: str) -> dict | None:
+        """返回节点属性 dict（含 ``type`` 归一），不存在返回 None。"""
+        r = self._cypher("MATCH (n {id: $id}) RETURN n", {"id": node_id})
+        if not r or "n" not in r[0]:
+            return None
+        return self._normalize(r[0].get("n"))
+
+    def patch_node(self, node_id: str, **props: Any) -> None:
+        """就地更新节点属性（仅更新给定键）。"""
+        for k, v in props.items():
+            self._cypher(
+                f"MATCH (n {{id: $id}}) SET n.{_safe_key(k)} = $v",
+                {"id": node_id, "v": v},
+            )
+
+    def delete_node(self, node_id: str, detach: bool = True) -> None:
+        """删除节点（detach=True 连带删除所有边，用于 force 路径）。"""
+        if detach:
+            self._cypher("MATCH (n {id: $id}) DETACH DELETE n", {"id": node_id})
+        else:
+            self._cypher("MATCH (n {id: $id}) DELETE n", {"id": node_id})
+
+    def list_nodes(self, label: str | None = None) -> list[dict]:
+        """按 label 列出全部节点属性（不含边）。"""
+        if label:
+            r = self._cypher(f"MATCH (n:{label}) RETURN n")
+        else:
+            r = self._cypher("MATCH (n) RETURN n")
+        out = []
+        for row in r:
+            node = self._normalize(row.get("n"))
+            if node is not None:
+                out.append(node)
+        return out
+
+    def stale_nodes(self) -> list[dict]:
+        """全部 ``valid=false`` 的节点（待重算清单）。"""
+        return [n for n in self.list_nodes() if not n.get("valid", True)]
+
+    # ---------- 边 CRUD ----------
+
+    @staticmethod
+    def _edge_props(r: Any) -> dict | None:
+        if r is None:
+            return None
+        if isinstance(r, dict) and isinstance(r.get("properties"), dict):
+            return r["properties"]
+        if isinstance(r, dict):
+            return r
+        return None
+
+    def create_edge(self, src_id: str, tgt_id: str, rel_type: str, props: dict) -> None:
+        """建边（MERGE 幂等：同类型边已存在则更新属性）。"""
+        self._cypher(
+            f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) MERGE (a)-[r:{rel_type}]->(b)",
+            {"src": src_id, "tgt": tgt_id},
+        )
+        for k, v in props.items():
+            self._cypher(
+                f"MATCH (a {{id: $src}})-[r:{rel_type}]->(b {{id: $tgt}}) "
+                f"SET r.{_safe_key(k)} = $v",
+                {"src": src_id, "tgt": tgt_id, "v": v},
+            )
+
+    def get_edge(self, src_id: str, tgt_id: str, rel_type: str = "DEPENDS") -> dict | None:
+        r = self._cypher(
+            f"MATCH (a {{id: $src}})-[r:{rel_type}]->(b {{id: $tgt}}) RETURN r",
+            {"src": src_id, "tgt": tgt_id},
+        )
+        if not r:
+            return None
+        return self._edge_props(r[0].get("r"))
+
+    def patch_edge(self, src_id: str, tgt_id: str, rel_type: str, **props: Any) -> None:
+        for k, v in props.items():
+            self._cypher(
+                f"MATCH (a {{id: $src}})-[r:{rel_type}]->(b {{id: $tgt}}) "
+                f"SET r.{_safe_key(k)} = $v",
+                {"src": src_id, "tgt": tgt_id, "v": v},
+            )
+
+    def delete_edge(self, src_id: str, tgt_id: str, rel_type: str = "DEPENDS") -> None:
+        self._cypher(
+            f"MATCH (a {{id: $src}})-[r:{rel_type}]->(b {{id: $tgt}}) DELETE r",
+            {"src": src_id, "tgt": tgt_id},
+        )
+
+    def _edge_rows(self, r: list[dict]) -> list[dict]:
+        out = []
+        for row in r:
+            edge = self._edge_props(row.get("r"))
+            if edge is None:
+                continue
+            out.append({"source": row.get("source"), "target": row.get("target"), **edge})
+        return out
+
+    def deps_of(self, node_id: str, rel_type: str = "DEPENDS") -> list[dict]:
+        """出边：节点 → 其依赖的上游（含边属性）。"""
+        r = self._cypher(
+            f"MATCH (a {{id: $id}})-[r:{rel_type}]->(b) "
+            f"RETURN a.id AS source, b.id AS target, r",
+            {"id": node_id},
+        )
+        return self._edge_rows(r)
+
+    def dependents(self, node_id: str, rel_type: str = "DEPENDS") -> list[dict]:
+        """入边：依赖该节点的下游（含边属性）。"""
+        r = self._cypher(
+            f"MATCH (a)-[r:{rel_type}]->(b {{id: $id}}) "
+            f"RETURN a.id AS source, b.id AS target, r",
+            {"id": node_id},
+        )
+        return self._edge_rows(r)
+
+    def has_incoming(self, node_id: str) -> bool:
+        return bool(self.dependents(node_id))
+
+    # ---------- 血缘遍历 ----------
+
+    def _walk(self, start: str, outgoing: bool, depth: int | None) -> list[dict]:
+        """BFS 血缘遍历（带环保护）。
+
+        outgoing=True → 上游（依赖链）：沿出边；outgoing=False → 下游（影响链）：沿入边。
+        返回 [{id, type, name, depth, required_version}]，按深度升序。
+        """
+        seen: set[str] = set()
+        out: list[dict] = []
+        level: list[tuple[str, int]] = [(start, 0)]
+        max_depth = depth if depth is not None else 1 << 30
+        while level:
+            nxt = []
+            for nid, dist in level:
+                edges = self.deps_of(nid) if outgoing else self.dependents(nid)
+                for e in edges:
+                    other = e["target"] if outgoing else e["source"]
+                    if other in seen:
+                        continue
+                    seen.add(other)
+                    t, name = split_node_id(other)
+                    out.append({
+                        "id": other,
+                        "type": t,
+                        "name": name,
+                        "depth": dist + 1,
+                        "required_version": e.get("required_version", 0),
+                    })
+                    if dist + 1 < max_depth:
+                        nxt.append((other, dist + 1))
+            level = nxt
+        return out
+
+    def upstream(self, node_id: str, depth: int | None = None) -> list[dict]:
+        """上游血缘：传递依赖（出边方向）。"""
+        return self._walk(node_id, outgoing=True, depth=depth)
+
+    def downstream(self, node_id: str, depth: int | None = None) -> list[dict]:
+        """下游血缘：传递影响（入边方向）。"""
+        return self._walk(node_id, outgoing=False, depth=depth)
+
+    # ---------- 统计 ----------
+
+    def stats(self) -> dict:
+        nodes = self._cypher("MATCH (n) RETURN count(n) AS c")
+        edges = self._cypher("MATCH ()-[r]->() RETURN count(r) AS c")
+        return {
+            "node_count": int(nodes[0]["c"] or 0) if nodes else 0,
+            "edge_count": int(edges[0]["c"] or 0) if edges else 0,
+        }
+
+
+__all__ = ["GraphStore"]

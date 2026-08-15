@@ -8,12 +8,18 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "graphqlite>=0.6.0",
     "grpcio>=1.83.0",
     "numpy>=2.5.2",
     "orjson>=3.11.9",
     "polars>=1.43.2",
     "pyarrow>=25.0.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["V2.0", "v1.0", ".venv", "build", "dist"]
+addopts = ["-p", "no:cacheprovider"]
 
 [project.scripts]
 stkoe = "stkoe:main"

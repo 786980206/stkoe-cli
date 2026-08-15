@@ -87,6 +87,13 @@ src/stkoe/
 ├── mock/              # 演示数据生成（stkoe mock demo/gen，替代 scripts/gen_example_data.py）
 │   ├── gen.py         # 生成器（tdcal/common/index/feature/klday/m1 + demo）+ write（只写盘不注册）
 │   └── handlers.py    # 任务版 Handler（source="mock"，注册进 TaskRegistry）
+├── graph/             # V3.0 资产血缘图（graphqlite 嵌入式图数据库，见 graph-design.md）
+│   ├── model.py       # DataChangeEvent / ColumnMeta / FieldMeta / AssetMeta / DependencyEdge
+│   ├── store.py       # GraphStore：节点/边 CRUD + 血缘遍历（BFS，带环保护）
+│   ├── events.py      # 事件合并（symbol/datetime 并集、field 交集）与积累（水位线）
+│   ├── controller.py  # GraphController：资产 CRUD + 依赖约束 + notify_change/resolve(_all)
+│   ├── handlers.py    # 各资产 Handler（v3.0-def.py 形态：table/index/panel/fieldset/…/graph）
+│   └── errors.py      # AssetNotFound/Exists、DependencyError、CycleError 等
 └── task/              # 任务框架
     ├── model.py       # Task / TaskEvent / TaskResult / TaskContext
     ├── manager.py     # TaskManager 编排核心（cancel/subscribe 语义见下）
@@ -163,6 +170,40 @@ src/stkoe/
 - 全量 220 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
 ## 近期变更记录
+
+### 2026-08 V3.0 图数据库血缘重构（graphqlite 落地：图 CRUD + 事件响应全流程）
+
+- **V2.0 全量备份**：现有代码/测试/文档（src、tests、scripts、api.md、example.md、
+  README、gclient.py、pyproject 等）拷贝至仓库根 `V2.0/`，作为重构基线
+- **graphqlite 选型落地**：嵌入式图数据库（SQLite 扩展，Cypher 查询 + 图算法），
+  PyPI `graphqlite>=0.6.0` 已入 pyproject 依赖；Windows + CPython 3.13 实测可用。
+  关键实测结论：① 变长路径遍历 `-[:DEPENDS*1..N]->` 可用（血缘上下游）；② Cypher
+  内不支持事务语句，但用原生 SQL `BEGIN/COMMIT/ROLLBACK` 包裹多语句 cypher 写入
+  可整体回滚（控制器 `txn()` 依赖此保证「建节点+建边」原子性）；③ graphqlite
+  `connection.cypher` 参数 JSON 用 ensure_ascii=True，**非 ASCII 参数会被损坏**
+  （`改名` → `u6539u540d`），`GraphStore._cypher` 自实现 ensure_ascii=False 规避
+- **新增 `graph` 模块**（详见仓库根 `graph-design.md`）：
+  - `model.py`：DataChangeEvent / ColumnMeta / FieldMeta / AssetMeta / DependencyEdge，
+    节点 label = 资产类型（table/index/panel/fieldset/sample/feature/factor/tester/
+    model/stat），id = `"<type>:<name>"`；`version` + `version_list`（version →
+    DataChangeEvent）记录版本事件日志
+  - `store.py`：GraphStore（节点/边 CRUD、`deps_of`/`dependents` 出/入边、BFS 血缘
+    遍历带环保护、txn 事务、`_cypher` 中文安全）
+  - `events.py`：事件合并（symbol/datetime scope 并集、field scope 交集；None=全集）
+    与积累（`required_version` 水位线之后的事件）
+  - `controller.py`：GraphController 资产 CRUD + 依赖约束（**无下游才可删除**，
+    force 绕过）+ `notify_change`（铸版本 + BFS 下游置脏）+ `resolve`/`resolve_all`
+    （拓扑重算：积累事件 → storage 钩子 → 版本递增 + 出边水位对齐）；成环抛
+    `CycleError`；物理数据存储暂未接入（`NullStorage` no-op 钩子，后续替换）
+  - `handlers.py`：v3.0-def.py 形态的 10 类资产 Handler + GraphHandler（list/get/
+    upstream/downstream/stale/scan）
+- **pyproject**：加 `graphqlite>=0.6.0` 依赖 + `[tool.pytest.ini_options]`
+  `testpaths=["tests"]`（防止收集 V2.0/tests）+ `norecursedirs` + `-p no:cacheprovider`
+  （本机 .pytest_cache ACL 异常，绕开缓存写入）
+- **测试**：新增 `tests/test_graph.py` 40 例（事件合并/存储层/CRUD/依赖约束/血缘
+  传播/拓扑重算/handler 全链路/持久化），全量 263 用例绿
+- 注：uv.lock 未含 graphqlite（沙箱内 uv 不可用），本机 `.venv` 已手动装入 wheel；
+  真机 `uv sync` 会补锁
 
 ### 2026-08 table `--type` 表类型 + dataset index_table 约束
 

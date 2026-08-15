@@ -67,6 +67,7 @@ def _gsetup(root, index_rows=None):
     svc.table_add("mem")
     svc.index_add("idx")
     svc.panel_add("ds", "idx", ["mem"], keys=["k"])
+    svc.panel_update("ds")  # 上游就绪（update 语义）
     svc.close()
     return root
 

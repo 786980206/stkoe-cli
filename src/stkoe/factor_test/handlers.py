@@ -174,5 +174,6 @@ def register(registry) -> None:
     registry.register("test", "set", TestSetHandler())
     registry.register("test", "check", TestCheckHandler())
     registry.register("test", "scan", TestScanHandler())
+    registry.register("test", "update", TestScanHandler())
     registry.register("test", "delete", TestDeleteHandler())
     registry.register("test", "del", TestDeleteHandler())

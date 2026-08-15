@@ -153,5 +153,6 @@ def register(registry) -> None:
     registry.register("factor", "set", FactorSetHandler())
     registry.register("factor", "check", FactorCheckHandler())
     registry.register("factor", "scan", FactorScanHandler())
+    registry.register("factor", "update", FactorScanHandler())
     registry.register("factor", "delete", FactorDeleteHandler())
     registry.register("factor", "del", FactorDeleteHandler())

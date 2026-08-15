@@ -107,6 +107,10 @@ def _gsetup(tmp_path):
     svc.sample_add("sp1", "fs1")
     svc.feature_add("f1", "x*2")
     svc.factor_add("fac1", "f1", "sp1")
+    # update 语义：上游链依次就绪（panel → fieldset → sample → feature → factor）
+    for t, n in [("panel", "ds"), ("fieldset", "fs1"), ("sample", "sp1"),
+                 ("feature", "f1"), ("factor", "fac1")]:
+        getattr(svc, f"{t}_update")(n)
     svc.close()
     return root
 

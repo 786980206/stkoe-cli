@@ -186,6 +186,22 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 V3 语义修正：scan → update（上游传导就绪检查 + 物化/标记有效）
+
+- **scan 语义模糊 → 改称 update**（V3 handler 定义的 `update`/`materialize` 形态）：
+  服务层各资产新增 `xxx_update`；`xxx_scan` 保留为旧名别名（同实现）
+- **update 的传导就绪检查**：`GraphController.assert_ready` —— BFS 递归检查该节点**全部
+  上游链**（不只直接依赖）必须 valid；任一上游未就绪 → `DependencyError`（指出先 update 谁），
+  只有上游完全就绪才执行更新/物化——为后续 graph 任务 pipeline（统一构建依赖任务列表）打基础
+- **资产物化语义**：源头（table/index）天然 valid，update=重扫对账；物化资产
+  （fieldset/factor/test）update=校验+落盘并置 valid；无物化资产（panel/sample/feature）
+  update=传导检查就绪后置 valid；上游变化 → 全链置脏（valid=False）→ 只能经 update 依次
+  恢复有效
+- **修 review §1 数据过期 bug**：factor/test 物化幂等仅当节点 valid 时生效；上游置脏
+  （valid=False）后 update 强制重建（hash 依赖版本不变，靠 valid 标志驱动重建）
+- 测试：test_graph_service.py 补传导拦截用例；各模块 `_gsetup` 建链后依次 update 就绪；
+  api.md/example.md 命令主推 update（scan 标注旧名别名）；全量 286 用例绿
+
 ### 2026-08 V3.0 全面切 graph：table/index/panel/fieldset/sample/feature/factor/test 三路径统一走 GraphService + catalog.db 废弃
 
 - **GraphService 新增 factor/test 方法**：factor 实时计算（sample 视图求 feature 公式 →

@@ -504,9 +504,10 @@ def test_execute_feature_add_test_list_delete(client, srv):
 
 # ---------- Execute 版 factor ----------
 
-def _seed_factor_chain(client, srv):
+def _seed_factor_chain(client, srv, ready=True):
     """graph 语义造数：table idx/mem → index → panel ds([sym,date]) → fieldset fs1
-    → sample sp1 → feature f1（test 必需列 date/sym/r/ic/fv 齐备）"""
+    → sample sp1 → feature f1（test 必需列 date/sym/r/ic/fv 齐备）；
+    ready=True 时依次 update 上游链（panel/fieldset/sample/feature）"""
     import polars as pl
 
     root = Path(srv.data_dir)
@@ -545,6 +546,18 @@ def _seed_factor_chain(client, srv):
         header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
             source=src, action=action, args=args)))
         assert header.code == 0, (src, action, args, header.message)
+
+    if ready:
+        # update 语义：上游依次就绪（panel → fieldset → sample → feature）
+        for src, action, args in [
+            ("panel", "update", ["ds"]),
+            ("fieldset", "update", ["fs1"]),
+            ("sample", "update", ["sp1"]),
+            ("feature", "update", ["f1"]),
+        ]:
+            header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+                source=src, action=action, args=args)))
+            assert header.code == 0, (src, action, args, header.message)
 
 
 def test_execute_factor_add_get_check_scan_delete(client, srv):
@@ -596,6 +609,9 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="factor", action="add", args=["fac1", "--feature", "f1",
                                              "--sample", "sp1"])))
+    assert header.code == 0
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="factor", action="update", args=["fac1"])))
     assert header.code == 0
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(

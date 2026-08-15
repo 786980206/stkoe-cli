@@ -152,6 +152,7 @@ def register(registry) -> None:
     registry.register("table", "add", TableAddHandler())
     registry.register("table", "get", TableGetHandler())
     registry.register("table", "scan", TableScanHandler())
+    registry.register("table", "update", TableScanHandler())
     registry.register("table", "delete", TableDeleteHandler())
     registry.register("table", "del", TableDeleteHandler())
     registry.register("table", "list", TableListHandler())

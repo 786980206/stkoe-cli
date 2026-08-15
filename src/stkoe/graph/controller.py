@@ -27,6 +27,7 @@ from .model import (
     AssetMeta,
     DataChangeEvent,
     node_id,
+    split_node_id,
 )
 from .store import GraphStore, _now_iso
 from .version import new_version
@@ -335,6 +336,35 @@ class GraphController:
     def stale(self) -> list[dict]:
         """全部失效（待重算）节点。"""
         return [self._meta(p) for p in self._store.stale_nodes()]
+
+    def assert_ready(self, asset_type: str, name: str) -> None:
+        """传导检查：该节点**全部上游链**必须已就绪（valid=True）。
+
+        - 递归遍历 deps_of（BFS，带环保护），任一上游 valid=False → 抛
+          ``DependencyError``（指出最先未就绪的节点）；
+        - 供 ``update`` 前调用：只有上游完全就绪，资产才能更新（物化）。
+          为后续 graph 任务 pipeline（统一构建依赖任务列表）打基础。
+        """
+        nid = node_id(asset_type, name)
+        self._require(asset_type, name)
+        seen: set[str] = set()
+        pending = [nid]
+        while pending:
+            cur = pending.pop()
+            for dep in self._store.deps_of(cur):
+                target = dep["target"]
+                if target in seen:
+                    continue
+                seen.add(target)
+                t, n = split_node_id(target)
+                node = self._store.get_node(target)
+                if node is None:
+                    raise AssetNotFoundError(f"依赖节点不存在: {target}")
+                if not node.get("valid"):
+                    raise DependencyError(
+                        f"上游未就绪，无法 update: {target}"
+                        f"（请先 update {t} {n} 或其上游）")
+                pending.append(target)
 
     def stats(self) -> dict:
         return self._store.stats()

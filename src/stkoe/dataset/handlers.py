@@ -110,6 +110,16 @@ class DatasetSetHandler(TaskHandler):
         return TaskResult(data=dumps_str(dm))
 
 
+class DatasetUpdateHandler(TaskHandler):
+    async def run(self, ctx) -> TaskResult:
+        pos = _positional(ctx.args)
+        if not pos:
+            raise ValueError("dataset update 需要 dataset 名")
+        svc = _service(ctx)
+        out = await asyncio.to_thread(svc.panel_update, pos[0])
+        return TaskResult(data=dumps_str(out))
+
+
 class DatasetDeleteHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
@@ -129,5 +139,6 @@ def register(registry) -> None:
     registry.register("dataset", "list", DatasetListHandler())
     registry.register("dataset", "", DatasetListHandler())
     registry.register("dataset", "set", DatasetSetHandler())
+    registry.register("dataset", "update", DatasetUpdateHandler())
     registry.register("dataset", "delete", DatasetDeleteHandler())
     registry.register("dataset", "del", DatasetDeleteHandler())

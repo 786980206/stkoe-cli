@@ -10,22 +10,18 @@
 
 ## 一、🔴 正确性问题（当前就存在的 bug）
 
-### 1. 失效传播断裂 → 上游变化不会让 factor/test 物化重建（数据过期）
+### 1. ~~失效传播断裂 → 上游变化不会让 factor/test 物化重建（数据过期）~~ ✅ 已修复（update 语义）
 
-- `GraphController._propagate_stale` 只做 BFS 下游**置脏**（`valid=False, materialized=False`），
-  **不 bump 下游版本**（controller.py `_mark_stale`）。
-- 但 GraphService 的物化幂等签名**完全依赖上游版本**：
-  - `_factor_hash` = `feature.version` + `sample.version` + engine/pipeline/factor_col
-  - `_test_hash` = `_factor_hash(factor)` + spec + 测试列名
-- 传播链：table/index 物理变化 → `notify_change`（**表自身铸版本** + panel/fieldset/sample/factor
-  置脏）→ `sample.version` **不变** → `_factor_hash` 不变 → `factor scan` 幂等判定"无变化"跳过
-  → **物化数据是旧的**。fieldset 定义变化（set/add_field/check）同理。
-- `fieldset_scan` 走了 `graph.resolve`（有积累事件才 bump），但 factor/test 的 scan 不 resolve，
-  且 sample/feature 的版本在纯置脏路径下永远不会被 bump。
-- **修法方向**（选一）：
-  a) `_propagate_stale` 置脏时连 bump 版本（需避免 version_list 膨胀，可只 bump 不记事件）；
-  b) 物化 hash 加入"脏标记"或事件水位（`required_version` 消费水位，见设计 §4.2）；
-  c) `factor_scan`/`test_scan` 前置 `resolve` 上游链（当前只有 fieldset_scan 这么做）。
+- ~~`GraphController._propagate_stale` 只做 BFS 下游**置脏**（`valid=False, materialized=False`），
+  **不 bump 下游版本**（controller.py `_mark_stale`）。~~
+- ~~但 GraphService 的物化幂等签名**完全依赖上游版本**...~~
+- **修复方式（已落地）**：引入 `update` 语义 + `assert_ready` 传导检查——
+  a) 上游变化 → 全链置脏（valid=False，`_propagate_stale` 为 BFS 全链）；
+  b) `factor/test` 物化幂等仅当节点 `valid=True` 时生效——置脏后 update **强制重建**
+     （不再依赖上游版本 hash 判定，见 `_factor_scan_one`/`_test_scan_one`）；
+  c) update 前 `assert_ready` 递归检查全部上游 valid，未就绪直接拒绝（`DependencyError`）；
+  d) 无物化资产（panel/sample/feature）update = 传导就绪后置 valid。
+  `fieldset_scan` 仍走 `graph.resolve`（有积累事件才 bump），剩余版本事件语义见 §5。
 
 ### 2. meta 形态双轨 → V2.0 客户端（portal）按旧形态解析会失败
 

@@ -84,7 +84,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | mock | `gen` | `<name>` | `--kind <kind>`（默认 index；`tdcal/common/index/feature/klday/m1`） `--n-syms N` `--n-days N` `--start S` `--end E` `--seed N` `--col C` | JsonData（单表写入清单） |
 | table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键（`--type` 为旧概念，进 extra；类型由 label 承载，table 恒 "table"） | JsonData（TableScanReport） |
 | table | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
-| table | `scan` | `<name>` | `--all` | JsonData（TableScanReport 或 []） |
+| table | `scan`/`update` | `<name>` | `--all` | JsonData（TableScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名） |
 | table | `list` | — | `--candidate` | JsonData（TableMeta[] 或 候选名[]） |
 | table | `meta` | `<name>` | — | JsonData（TableMeta） |
 | table | `set` | `<name>` | `--display_name/--description/--source/--tags <v>` + 任意键（`--type` 进 extra） | JsonData（TableMeta） |
@@ -96,13 +96,14 @@ HealthRequest {}                                   HealthResponse { status, vers
 | index | `list` | — | — | JsonData（IndexMeta[]） |
 | index | `set` | `<name>` | `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（IndexMeta） |
 | index | `col` | `<name> <column>` | `--display_name/--description/--unit/--formula/--tags <v>` | JsonData（IndexMeta） |
-| index | `scan` | `<name>` | `--all` | JsonData（TableScanReport 或 []） |
+| index | `scan`/`update` | `<name>` | `--all` | JsonData（TableScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名） |
 | index | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | panel | `add` | `<name> <index> [member...]` | `--keys k1,k2` + 元数据键（index 为已注册 index 资产，member 为已注册 table） | JsonData（PanelMeta） |
 | panel | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--limit N` `--offset N` | **ArrowTable**（无 JsonData；实时 join 视图） |
 | panel | `meta` | `<name>` | — | JsonData（PanelMeta） |
 | panel | `list` | — | — | JsonData（PanelMeta[]） |
 | panel | `set` | `<name>` | `--display_name/--description/--tags <v>` + 任意键 | JsonData（PanelMeta） |
+| panel | `update` | `<name>` | — | JsonData（PanelMeta；传导检查上游 index/成员表就绪后标记有效，无物化） |
 | panel | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | dataset | `add` 等 | — | **旧别名**：转发到 panel 同一实现（返回 name 用 "panel"），保持兼容 | JsonData（PanelMeta） |
 | stat | `scan` | `<table\|dataset\|test> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic`）；`<name>` 单位置 + `--kind <测试器>` 简写 → test 目标 | JsonData（StatScanReport） |
@@ -120,7 +121,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | fieldset | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | fieldset | `delete`/`del` | `<name> <field>` | — | JsonData（FieldsetMeta） |
 | fieldset | `list` | — | — | JsonData（FieldsetMeta[]） |
-| fieldset | `scan` | `<name>` | `--all` `--resync` | JsonData（FieldsetScanReport 或 []） |
+| fieldset | `scan`/`update` | `<name>` | `--all` `--resync` | JsonData（FieldsetScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名；传导检查上游 panel 就绪） |
 | fieldset | `check` | `<name> <field>` | `--all` | JsonData（FieldsetCheckResult[]） |
 | fieldset | `test` | `<name>` | `--formula <表达式>`（必选） | JsonData `{"ok",...}` + ArrowTable（成功时） |
 | sample | `add` | `<name>` | `--fieldset <f>`（必选，已注册 fieldset） `--engine <e>`（默认 polars） `--formula <表达式>`（可为空） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（SampleMeta） |
@@ -128,6 +129,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | sample | `meta` | `<name>` | — | JsonData（SampleMeta） |
 | sample | `list` | — | — | JsonData（SampleMeta[]） |
 | sample | `set` | `<name>` | `--engine <e>` `--formula <表达式>` `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（SampleMeta） |
+| sample | `update` | `<name>` | — | JsonData（SampleMeta；传导检查上游 fieldset 链就绪后标记有效，无物化） |
 | sample | `check` | `<name>` | — | JsonData（SampleCheckResult） |
 | sample | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | feature | `add` | `<name>` | `--engine <e>`（默认 polars） `--formula <表达式>`（必填） `--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
@@ -135,6 +137,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | feature | `meta` | `<name>` | — | JsonData（FeatureMeta） |
 | feature | `list` | — | — | JsonData（FeatureMeta[]） |
 | feature | `delete`/`del` | `<name>` | `--force`（下游 factor 依赖存在时） | JsonData `{"deleted"}` |
+| feature | `update` | `<name>` | — | JsonData（FeatureMeta；纯定义资产，标记有效） |
 | feature | `test` | `<name>` | `--sample <s>`（必选，样本池名） | JsonData（FeatureTestResult）+ ArrowTable（有结果时） |
 | factor | `add` | `<name>` | `--feature <f>`（必选，已注册因子公式） `--sample <s>`（必选，已注册样本池） `--engine <e>`（默认 polars） `--pipeline <算子链>`（默认 `nothing()`，`\|` 分隔） `--factor_col <列名>`（默认 = feature 名） + 元数据键 | JsonData（FactorMeta） |
 | factor | `get` | `<name>` | `--where <谓词>` `--partition <p>` `--limit N` `--offset N` | **ArrowTable**（§3.2 约定；列 = 样本索引 + 1 因子列） |
@@ -142,7 +145,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | factor | `meta` | `<name>` | — | JsonData（FactorMeta） |
 | factor | `list` | — | — | JsonData（FactorMeta[]） |
 | factor | `check` | `<name>` | — | JsonData（FactorCheckResult） |
-| factor | `scan` | `<name>` | `--all` `--resync` | JsonData（FactorScanReport 或 []） |
+| factor | `scan`/`update` | `<name>` | `--all` `--resync` | JsonData（FactorScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名；传导检查上游 sample/feature 全链就绪，未就绪拒绝更新） |
 | factor | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | test | `add` | `<name>` | `--factor <f>`（必选，已注册因子） `--returns <col>`（默认 `r`） `--groupby <col>`（默认 `ic`） `--marketcap <col>`（默认 `fv`） `--factor_col <col>`（默认 = factor 的 factor_col） `--by_group` `--quantiles N`（默认 5） `--periods p1,p2,..`（默认 `1,5,10`） `--date_range start,end`（默认 `2023-01-01,2026-01-01`） `--rolling_window N`（默认 252） + 元数据键 | JsonData（FactorTestMeta）；sample 缺 date/sym/returns/groupby/marketcap 列 → 报错 |
 | test | `get` | `<name>` | `--where <谓词>` `--limit N` `--offset N` | **ArrowTable**（测试数据集：date/sym/sample/returns/group/marketcap/factor/d{no}/factor_quantile） |
@@ -150,7 +153,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | test | `meta` | `<name>` | — | JsonData（FactorTestMeta） |
 | test | `list` | — | — | JsonData（FactorTestMeta[]） |
 | test | `check` | `<name>` | — | JsonData（FactorTestCheckResult） |
-| test | `scan` | `<name>` | `--all` `--resync` | JsonData（FactorTestScanReport 或 []） |
+| test | `scan`/`update` | `<name>` | `--all` `--resync` | JsonData（FactorTestScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名；传导检查上游 factor 全链就绪） |
 | test | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | graph | `lineage` | — | `--node <type:name>` `--depth N` | JsonData（Cytoscape elements payload，见 §3.13；缺 `--node` 为全图） |
 | graph | `nodes` | — | `--type <t>` | JsonData（节点摘要列表：id/type/name/display_name/version/valid/materialized） |

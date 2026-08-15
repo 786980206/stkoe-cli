@@ -108,12 +108,23 @@ class FeatureTestHandler(TaskHandler):
         return TaskResult(data=dumps_str(data))
 
 
+class FeatureUpdateHandler(TaskHandler):
+    async def run(self, ctx) -> TaskResult:
+        pos = _positional(ctx.args)
+        if not pos:
+            raise ValueError("feature update 需要因子名")
+        svc = _service(ctx)
+        out = await asyncio.to_thread(svc.feature_update, pos[0])
+        return TaskResult(data=dumps_str(out))
+
+
 def register(registry) -> None:
     registry.register("feature", "add", FeatureAddHandler())
     registry.register("feature", "set", FeatureSetHandler())
     registry.register("feature", "meta", FeatureMetaHandler())
     registry.register("feature", "list", FeatureListHandler())
     registry.register("feature", "", FeatureListHandler())
+    registry.register("feature", "update", FeatureUpdateHandler())
     registry.register("feature", "test", FeatureTestHandler())
     registry.register("feature", "delete", FeatureDeleteHandler())
     registry.register("feature", "del", FeatureDeleteHandler())

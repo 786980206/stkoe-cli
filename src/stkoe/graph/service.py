@@ -352,10 +352,18 @@ class GraphService:
         self.store.fingerprint_clear(node_id("table", name))
         return {"deleted": name}
 
-    def table_scan(self, name: str, *, all: bool = False) -> dict | list:
+    def table_update(self, name: str, *, all: bool = False) -> dict | list:
+        """源头表更新：重扫对账（物理变化 → 版本递增 + 下游置脏）。
+
+        源头（table/index）无上游，天然就绪；`--all` 批量重扫全部已登记表。
+        """
         if all:
             return [self._scan_disk("table", n["name"]) for n in self.graph.list("table")]
         return self._scan_disk("table", name)
+
+    def table_scan(self, name: str, *, all: bool = False) -> dict | list:
+        """旧名别名（V3 语义改称 update）。"""
+        return self.table_update(name, all=all)
 
     def table_data_key(self, name: str) -> str:
         """当前数据标识：快检后返回签名（未登记则 ''）。"""
@@ -409,10 +417,15 @@ class GraphService:
         self.store.fingerprint_clear(node_id("index", name))
         return {"deleted": name}
 
-    def index_scan(self, name: str, *, all: bool = False) -> dict | list:
+    def index_update(self, name: str, *, all: bool = False) -> dict | list:
+        """源头 index 更新：重扫对账（物理变化 → 版本递增 + 下游置脏）。"""
         if all:
             return [self._scan_disk("index", n["name"]) for n in self.graph.list("index")]
         return self._scan_disk("index", name)
+
+    def index_scan(self, name: str, *, all: bool = False) -> dict | list:
+        """旧名别名（V3 语义改称 update）。"""
+        return self.index_update(name, all=all)
 
     def index_data_key(self, name: str) -> str:
         root = self._root(name)
@@ -470,6 +483,19 @@ class GraphService:
     def panel_set(self, name: str, **kw) -> dict:
         self._require_node("panel", name)
         return self.graph.set("panel", name, **kw)
+
+    def panel_update(self, name: str) -> dict:
+        """panel 更新：传导检查上游（index/成员表）就绪 → 实时 join 可构造 → 标记有效。
+
+        panel 为实时 join 视图（无物化），update 语义 = 确认上游就绪并置 valid=True。
+        """
+        self.graph.assert_ready("panel", name)
+        joined, _ = self._panel_lazy(name)
+        rows = joined.select(pl.len()).collect().item()
+        self.store.patch_node(node_id("panel", name), valid=True,
+                              update_time=_now_iso())
+        return {"name": name, "valid": True, "rows": rows,
+                "version": self.store.get_node(node_id("panel", name))["version"]}
 
     def panel_delete(self, name: str, *, force: bool = False) -> dict:
         self._require_node("panel", name)
@@ -616,8 +642,12 @@ class GraphService:
         return self._collect_page(lf, columns=columns, limit=limit, offset=offset,
                                   count_total=count_total)
 
-    def fieldset_scan(self, name: str, *, resync: bool = False) -> dict:
-        """校验并物化：计算全部已校验字段；更新节点 valid/materialized（物理产物后续接入）。"""
+    def fieldset_update(self, name: str, *, resync: bool = False) -> dict:
+        """fieldset 更新：传导检查上游（panel 链）就绪 → 校验已校验字段 → resolve 标记有效。
+
+        物化语义 = 校验通过 + 节点有效（物理产物后续接入）；scan 为旧名别名。
+        """
+        self.graph.assert_ready("fieldset", name)
         node = self._require_node("fieldset", name)
         fields = [f for f in (node.get("fields") or {}).values() if f.get("validated")]
         base, keys = self._panel_lazy(node.get("dataset", "").split(":", 1)[1])
@@ -625,8 +655,12 @@ class GraphService:
         out = engine.scan(base, keys, [FieldMeta.from_dict(f) for f in fields])
         rows = out.select(pl.len()).collect().item()
         m = self.graph.resolve("fieldset", name)
-        return {"name": name, "materialized": True, "rows": rows,
+        return {"name": name, "materialized": True, "valid": True, "rows": rows,
                 "fields_count": len(fields), "version": m["version"]}
+
+    def fieldset_scan(self, name: str, *, resync: bool = False) -> dict:
+        """旧名别名（V3 语义改称 update）。"""
+        return self.fieldset_update(name, resync=resync)
 
     def fieldset_test(self, name: str, formula: str):
         node = self._require_node("fieldset", name)
@@ -688,6 +722,18 @@ class GraphService:
         self._require_node("sample", name)
         return self.graph.set("sample", name, **kw)
 
+    def sample_update(self, name: str) -> dict:
+        """sample 更新：传导检查上游（fieldset 链）就绪 → 过滤视图可构造 → 标记有效。
+
+        sample 无物化，update 语义 = 确认上游就绪并置 valid=True。
+        """
+        self.graph.assert_ready("sample", name)
+        self._sample_view_lf(name).select(pl.len()).collect()
+        self.store.patch_node(node_id("sample", name), valid=True,
+                              update_time=_now_iso())
+        return {"name": name, "valid": True,
+                "version": self.store.get_node(node_id("sample", name))["version"]}
+
     def sample_delete(self, name: str, *, force: bool = False) -> dict:
         self._require_node("sample", name)
         self.graph.delete("sample", name, force=force)
@@ -711,6 +757,14 @@ class GraphService:
     def feature_set(self, name: str, **kw) -> dict:
         self._require_node("feature", name)
         return self.graph.set("feature", name, **kw)
+
+    def feature_update(self, name: str) -> dict:
+        """feature 更新：纯定义资产（无上游），标记有效即可。"""
+        self.graph.assert_ready("feature", name)
+        self.store.patch_node(node_id("feature", name), valid=True,
+                              update_time=_now_iso())
+        return {"name": name, "valid": True,
+                "version": self.store.get_node(node_id("feature", name))["version"]}
 
     def feature_delete(self, name: str, *, force: bool = False) -> dict:
         self._require_node("feature", name)
@@ -893,22 +947,33 @@ class GraphService:
         return {"factor": name, "ok": True, "rows": df.height,
                 "columns": list(df.columns), "message": f"有效（{df.height} 行）"}
 
-    def factor_scan(self, name: str | None = None, *, all: bool = False,
-                    resync: bool = False) -> dict | list[dict]:
-        """物化最终因子到 factors/<name>/（flat 单文件）；幂等，依赖签名一致则跳过。"""
+    def factor_update(self, name: str | None = None, *, all: bool = False,
+                      resync: bool = False) -> dict | list[dict]:
+        """factor 更新：传导检查上游（sample/feature 全链）就绪 → 物化 factors/<name>/。
+
+        幂等（依赖签名一致则跳过）；update 成功后节点置 valid=True。scan 为旧名别名。
+        """
         if all:
             return [self._factor_scan_one(n["name"], resync=resync)
                     for n in self.graph.list("factor")]
         if not name:
-            raise ValueError("factor scan 需要因子名（或 --all）")
+            raise ValueError("factor update 需要因子名（或 --all）")
+        self.graph.assert_ready("factor", name)
         return self._factor_scan_one(name, resync=resync)
+
+    def factor_scan(self, name: str | None = None, *, all: bool = False,
+                    resync: bool = False) -> dict | list[dict]:
+        """旧名别名（V3 语义改称 update）。"""
+        return self.factor_update(name, all=all, resync=resync)
 
     def _factor_scan_one(self, name: str, *, resync: bool = False) -> dict:
         node = self._require_node("factor", name)
         extra = dict(node.get("extra") or {})
         cur_hash = self._factor_hash(node)
         version_before = node.get("version", 0)
-        if not resync and extra.get("dependency_hash") == cur_hash \
+        # 幂等仅当节点有效：上游变化置脏（valid=False）后 update 必须强制重建
+        if not resync and node.get("valid") \
+                and extra.get("dependency_hash") == cur_hash \
                 and extra.get("materialized"):
             return {"name": name, "version_before": version_before,
                     "version_after": version_before, "materialized": True,
@@ -925,6 +990,7 @@ class GraphService:
                               "formula": fnode.get("formula") or "",
                               "display_name": node.get("factor_col") or feature,
                               "description": "", "unit": None, "tags": []})
+        self.store.patch_node(node_id("factor", name), valid=True)
         version_after = self.store.get_node(node_id("factor", name))["version"]
         return {"name": name, "version_before": version_before,
                 "version_after": version_after, "materialized": True, "changed": True,
@@ -1103,15 +1169,24 @@ class GraphService:
         return {"test": name, "ok": True, "rows": df.height,
                 "columns": list(df.columns), "message": f"有效（{df.height} 行）"}
 
-    def test_scan(self, name: str | None = None, *, all: bool = False,
-                  resync: bool = False) -> dict | list[dict]:
-        """物化测试数据集到 factor_tests/<name>/data.parquet；幂等。"""
+    def test_update(self, name: str | None = None, *, all: bool = False,
+                    resync: bool = False) -> dict | list[dict]:
+        """test 更新：传导检查上游（factor 全链）就绪 → 物化 factor_tests/<name>/。
+
+        幂等；update 成功后节点置 valid=True。scan 为旧名别名。
+        """
         if all:
             return [self._test_scan_one(n["name"], resync=resync)
                     for n in self.graph.list("tester")]
         if not name:
-            raise ValueError("test scan 需要测试集名（或 --all）")
+            raise ValueError("test update 需要测试集名（或 --all）")
+        self.graph.assert_ready("tester", name)
         return self._test_scan_one(name, resync=resync)
+
+    def test_scan(self, name: str | None = None, *, all: bool = False,
+                  resync: bool = False) -> dict | list[dict]:
+        """旧名别名（V3 语义改称 update）。"""
+        return self.test_update(name, all=all, resync=resync)
 
     def _test_scan_one(self, name: str, *, resync: bool = False) -> dict:
         node = self._require_node("tester", name)
@@ -1119,7 +1194,9 @@ class GraphService:
         cur_hash = self._test_hash(node)
         spec = self._test_spec(node)
         version_before = node.get("version", 0)
-        if not resync and extra.get("dependency_hash") == cur_hash \
+        # 幂等仅当节点有效：上游变化置脏（valid=False）后 update 必须强制重建
+        if not resync and node.get("valid") \
+                and extra.get("dependency_hash") == cur_hash \
                 and extra.get("materialized"):
             return {"name": name, "version_before": version_before,
                     "version_after": version_before, "materialized": True,
@@ -1133,6 +1210,7 @@ class GraphService:
                 for c, t in zip(df.columns, df.dtypes)]
         self.graph.set("tester", name, materialized=True, materialized_at=_now_iso(),
                        dependency_hash=cur_hash, columns=cols)
+        self.store.patch_node(node_id("tester", name), valid=True)
         version_after = self.store.get_node(node_id("tester", name))["version"]
         return {"name": name, "version_before": version_before,
                 "version_after": version_after, "materialized": True, "changed": True,

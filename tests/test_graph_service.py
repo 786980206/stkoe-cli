@@ -174,7 +174,7 @@ class TestPanelGraph:
 class TestFactorGraph:
     """factor：feature 公式 + sample 视图 + pipeline 算子链（graph 登记，scan 物化）。"""
 
-    def _chain(self, svc):
+    def _chain(self, svc, with_ready=True):
         svc.table_add("index")
         svc.table_add("m1")
         svc.index_add("index")
@@ -184,9 +184,14 @@ class TestFactorGraph:
         svc.fieldset_check("fs1", "x2")
         svc.sample_add("sp1", "fs1")
         svc.feature_add("f1", "code * 2")
+        if with_ready:
+            # update 语义：上游依次就绪（panel → fieldset → sample → feature）
+            for t, n in [("panel", "ds1"), ("fieldset", "fs1"),
+                         ("sample", "sp1"), ("feature", "f1")]:
+                getattr(svc, f"{t}_update")(n)
 
     def test_factor_add_meta_check_get_scan(self, svc):
-        self._chain(svc)
+        self._chain(svc, with_ready=False)  # 只建链，上游不 update（未就绪）
         fm = svc.factor_add("fac1", "f1", "sp1")
         assert fm["name"] == "fac1"
         assert fm["feature"] == "f1"
@@ -202,6 +207,17 @@ class TestFactorGraph:
         assert df.height == 2 and total == 2
         assert df.columns == ["sym", "date", "f1"]
 
+        # 上游未就绪（链上有 valid=False）→ factor update 被传导拦截
+        import pytest
+
+        with pytest.raises(Exception):
+            svc.factor_update("fac1")
+
+        # 依次传导 update：panel → fieldset → sample → feature → factor(scan 别名)
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")
+        svc.sample_update("sp1")
+        svc.feature_update("f1")
         s1 = svc.factor_scan("fac1")
         assert s1["changed"] is True
         assert s1["version_after"] > s1["version_before"]
@@ -231,7 +247,7 @@ class TestFactorGraph:
 class TestTesterGraph:
     """test：factor 关联 sample 视图 + 测试必需列；scan 物化，test_data 供 stat。"""
 
-    def _chain(self, svc, with_test_cols=True):
+    def _chain(self, svc, with_test_cols=True, with_ready=True):
         if with_test_cols:
             # 覆盖 index/data.parquet 加入测试必需列（多文件 scan 不 union schema）
             pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
@@ -248,6 +264,11 @@ class TestTesterGraph:
         svc.sample_add("sp1", "fs1")
         svc.feature_add("f1", "code * 2")
         svc.factor_add("fac1", "f1", "sp1")
+        if with_ready:
+            for t, n in [("panel", "ds1"), ("fieldset", "fs1"),
+                         ("sample", "sp1"), ("feature", "f1"),
+                         ("factor", "fac1")]:
+                getattr(svc, f"{t}_update")(n)
 
     def test_test_add_requires_columns(self, svc):
         self._chain(svc, with_test_cols=False)

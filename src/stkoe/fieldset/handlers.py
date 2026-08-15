@@ -195,6 +195,7 @@ def register(registry) -> None:
     registry.register("fieldset", "", FieldsetListHandler())
     registry.register("fieldset", "set", FieldsetSetHandler())
     registry.register("fieldset", "scan", FieldsetScanHandler())
+    registry.register("fieldset", "update", FieldsetScanHandler())
     registry.register("fieldset", "check", FieldsetCheckHandler())
     registry.register("fieldset", "test", FieldsetTestHandler())
     registry.register("fieldset", "delete", FieldsetDeleteHandler())

@@ -231,6 +231,7 @@ def _table_delete(args: list[str], data_dir=None) -> list[Result]:
 
 
 @handler("table", "scan")
+@handler("table", "update")
 def _table_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
@@ -487,6 +488,17 @@ def _panel_set(args: list[str], data_dir=None) -> list[Result]:
     return [Result.json("panel", svc.panel_set(pos[0], **flags))]
 
 
+@handler("panel", "update")
+@handler("dataset", "update")
+def _panel_update(args: list[str], data_dir=None) -> list[Result]:
+    """panel 更新：上游（index/成员表）就绪后标记有效（无物化）。"""
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("panel update 需要 panel 名")
+    svc = _graph_service(data_dir)
+    return [Result.json("panel", svc.panel_update(pos[0]))]
+
+
 # ---------------------------------------------------------------------------
 # index 同步处理器（V3.0 独立主体：Index 节点 + 物理 parquet，symbol/datetime 列）
 # ---------------------------------------------------------------------------
@@ -543,6 +555,7 @@ def _index_delete(args: list[str], data_dir=None) -> list[Result]:
 
 
 @handler("index", "scan")
+@handler("index", "update")
 def _index_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
@@ -722,6 +735,7 @@ def _fieldset_test(args: list[str], data_dir=None) -> list[Result]:
 
 
 @handler("fieldset", "scan")
+@handler("fieldset", "update")
 def _fieldset_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
@@ -806,6 +820,16 @@ def _sample_set(args: list[str], data_dir=None) -> list[Result]:
     return [Result.json("sample", svc.sample_set(pos[0], **flags))]
 
 
+@handler("sample", "update")
+def _sample_update(args: list[str], data_dir=None) -> list[Result]:
+    """sample 更新：上游（fieldset 链）就绪后标记有效（无物化）。"""
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("sample update 需要样本池名")
+    svc = _graph_service(data_dir)
+    return [Result.json("sample", svc.sample_update(pos[0]))]
+
+
 @handler("sample", "check")
 def _sample_check(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
@@ -854,6 +878,16 @@ def _feature_set(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("feature set 需要至少一个 --key value")
     svc = _graph_service(data_dir)
     return [Result.json("feature", svc.feature_set(pos[0], **flags))]
+
+
+@handler("feature", "update")
+def _feature_update(args: list[str], data_dir=None) -> list[Result]:
+    """feature 更新：纯定义资产，标记有效（无物化）。"""
+    pos = _positional(args)
+    if not pos:
+        raise CommandError("feature update 需要因子名")
+    svc = _graph_service(data_dir)
+    return [Result.json("feature", svc.feature_update(pos[0]))]
 
 
 @handler("feature", "del")
@@ -995,6 +1029,7 @@ def _factor_check(args: list[str], data_dir=None) -> list[Result]:
 
 
 @handler("factor", "scan")
+@handler("factor", "update")
 def _factor_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
@@ -1120,6 +1155,7 @@ def _test_check(args: list[str], data_dir=None) -> list[Result]:
 
 
 @handler("test", "scan")
+@handler("test", "update")
 def _test_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)

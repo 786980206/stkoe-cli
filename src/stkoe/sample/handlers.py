@@ -116,6 +116,16 @@ class SampleCheckHandler(TaskHandler):
         return TaskResult(data=dumps_str(res))
 
 
+class SampleUpdateHandler(TaskHandler):
+    async def run(self, ctx) -> TaskResult:
+        pos = _positional(ctx.args)
+        if not pos:
+            raise ValueError("sample update 需要样本池名")
+        svc = _service(ctx)
+        out = await asyncio.to_thread(svc.sample_update, pos[0])
+        return TaskResult(data=dumps_str(out))
+
+
 class SampleDeleteHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
@@ -135,6 +145,7 @@ def register(registry) -> None:
     registry.register("sample", "list", SampleListHandler())
     registry.register("sample", "", SampleListHandler())
     registry.register("sample", "set", SampleSetHandler())
+    registry.register("sample", "update", SampleUpdateHandler())
     registry.register("sample", "check", SampleCheckHandler())
     registry.register("sample", "delete", SampleDeleteHandler())
     registry.register("sample", "del", SampleDeleteHandler())

@@ -78,7 +78,7 @@ uv run -m stkoe feature test ma5 --sample sp1               # 在样本池视图
 ```bash
 uv run -m stkoe factor add fac1 --feature ma5 --sample sp1 --pipeline "nothing()"
 uv run -m stkoe factor check fac1                           # 计算成功 + 恰好 1 列因子列
-uv run -m stkoe factor scan fac1                            # 物化 factors/fac1/data.parquet（flat 单文件，幂等）
+uv run -m stkoe factor update fac1                          # 物化 factors/fac1/data.parquet（上游就绪才可更新，幂等）
 uv run -m stkoe factor get fac1 --limit 5                   # 读因子（样本索引 + 因子列）
 ```
 
@@ -87,7 +87,7 @@ uv run -m stkoe factor get fac1 --limit 5                   # 读因子（样本
 ```bash
 uv run -m stkoe test add t1 --factor fac1 --returns r --groupby ic --marketcap fv
 uv run -m stkoe test check t1                               # 构造成功 + 含必需列 + 行数 > 0
-uv run -m stkoe test scan t1                                # 物化 factor_tests/t1/data.parquet
+uv run -m stkoe test update t1                              # 物化 factor_tests/t1/data.parquet（上游就绪才可更新）
 uv run -m stkoe test get t1 --limit 5                       # 测试面板（d{no}/factor_quantile 等）
 ```
 
@@ -121,7 +121,7 @@ uv run -m python gclient.py
 stkoe> s:mock                        # 任务版示例：5 步进度 + 日志 + 落盘结果
 stkoe> s:mock demo                   # 任务版 mock 造数（写 tables/index + tables/m1）
 stkoe> s:mock gen mytable --kind klday --n-syms 20   # 任务版参数化生成
-stkoe> s:test scan t1                # 后台物化测试数据集（订阅到终态）
+stkoe> s:test update t1              # 后台物化测试数据集（订阅到终态；scan 为旧名别名）
 stkoe> s:stat scan t1 --kind ic      # 后台跑 IC 测试器（单位置简写同样可用）
 stkoe> t:<task_id>                   # 回放订阅某任务事件流
 ```

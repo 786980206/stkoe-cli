@@ -52,7 +52,8 @@ def _setup_source(tmp_path):
 
 
 def _gsetup(root):
-    """graph 语义造数：idx/mem 表 → index → panel ds(keys=k) → sample sp1 → feature f1"""
+    """graph 语义造数：idx/mem 表 → index → panel ds(keys=k) → sample sp1 → feature f1
+    （上游链依次 update 就绪）"""
     _write(root, "idx", pl.DataFrame({
         "k": ["a", "b"], "x": [1.0, 2.0]}))
     _write(root, "mem", pl.DataFrame({"k": ["a", "b"]}))
@@ -66,6 +67,9 @@ def _gsetup(root):
     svc.fieldset_add("fs1", "ds")
     svc.sample_add("sp1", "fs1")
     svc.feature_add("f1", "x*2")
+    for t, n in [("panel", "ds"), ("fieldset", "fs1"),
+                 ("sample", "sp1"), ("feature", "f1")]:
+        getattr(svc, f"{t}_update")(n)
     svc.close()
     return root
 

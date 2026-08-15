@@ -212,6 +212,20 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 index add --all 批量发现 + 修 delete 指纹残留（legacy 事务模式）
+
+- **`index add --all`**：批量发现 `index/` 下未登记且含 parquet 的目录（同 `table add --all`），
+  返回 `indexes` 数组；批量时 `--symbol-col/--datetime-col/--materialize-partition` 对全部
+  新发现统一生效。Execute（dispatch `_index_add`）与 CLI（`stkoe index add --all`）同步支持；
+  测试：test_graph_service.py `test_index_add_all` + test_grpc.py `test_execute_index_add_all`
+- **fix: delete 资产后指纹残留**：Python 3.13 默认 `sqlite3.isolation_level=''`（legacy 模式），
+  `GraphStore.execute` 在 txn() 外的 DML（`fingerprint_clear` 的 DELETE）隐式开启事务但不
+  提交，连接 close() 时回滚 → `table_delete`/`index_delete` 清指纹从未真正持久化（同连接内
+  SELECT 可见未提交状态，测试未暴露；新进程可见残留）。修复：`GraphStore.execute` 对
+  txn() 外的写语句（INSERT/UPDATE/DELETE/REPLACE）立即 commit；txn() 内的仍由 txn() 统一
+  提交。回归测试 `test_delete_clears_fingerprint_persistently`（跨连接验证）
+- 文档：api.md §3.1 index add 行补 `--all` + 表下注说明；全量 176 用例绿
+
 ### 2026-08 V2.0 死代码测试移出默认全量（tests → V2.0/tests）+ 测试经验沉淀
 
 - **拆分 7 个混合测试文件**：tests/test_{table,dataset,fieldset,sample,feature,factor,

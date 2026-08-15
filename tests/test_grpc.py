@@ -368,6 +368,29 @@ def _json_names(datas):
     return []
 
 
+def test_execute_index_add_all(client, srv):
+    """e:index add --all：批量发现 index/ 下未登记的 parquet 目录（空目录/已登记跳过）"""
+    import polars as pl
+
+    root = Path(srv.data_dir) / "index"
+    for n in ("i1", "i2"):
+        (root / n).mkdir(parents=True)
+        pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"]}).write_parquet(root / n / "p.parquet")
+    (root / "empty").mkdir(parents=True)
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="index", action="add", args=["--all"])))
+    assert header.code == 0
+    reports = _json(datas, "indexes")
+    assert [r["name"] for r in reports] == ["i1", "i2"]
+
+    # 再跑一次 --all：已登记，无新发现
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="index", action="add", args=["--all"])))
+    assert header.code == 0
+    assert _json(datas, "indexes") == []
+
+
 def test_execute_index_list_candidate(client, srv, tmp_path):
     """e:index list --candidate：未登记 index 但含 parquet 的表目录候选"""
     import polars as pl

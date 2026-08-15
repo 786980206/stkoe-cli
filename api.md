@@ -90,7 +90,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | table | `set` | `<name>` | `--display_name/--description/--source/--tags <v>` + 任意键（`--type` 进 extra） | JsonData（TableMeta） |
 | table | `col` | `<name> <column>` | `--display_name/--description/--unit/--formula/--tags <v>` | JsonData（TableMeta） |
 | table | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| index | `add` | `<name>` | `--symbol-col <col>`（默认 `sym`） `--datetime-col <col>`（默认 `date`） `--materialize-partition <v>`（默认 `yearly`）+ 元数据键 | JsonData（TableScanReport，type="index"） |
+| index | `add` | `<name>` | `--all`（批量发现 `index/` 下未登记且含 parquet 的目录）；单表可带 `--symbol-col <col>`（默认 `sym`） `--datetime-col <col>`（默认 `date`） `--materialize-partition <v>`（默认 `yearly`）+ 元数据键 | JsonData（TableScanReport，type="index"；`--all` 返回数组） |
 | index | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | index | `meta` | `<name>` | — | JsonData（IndexMeta） |
 | index | `list` | — | `--candidate`（返回未登记 index 但含 parquet 的表目录候选） | JsonData（IndexMeta[] 或 候选名[]） |
@@ -162,6 +162,8 @@ HealthRequest {}                                   HealthResponse { status, vers
 > `table scan` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
 > `table add` 单表可携带初始元数据（键语义与 `table set` 一致，仅首次注册生效；`--all` 时不适用）。
+> `index add` 同语义：`--all` 批量发现 `index/` 下未登记且含 parquet 的目录（已登记/空目录跳过），
+> 返回 `indexes` 数组；批量时 `--symbol-col/--datetime-col` 等参数对全部新发现统一生效。
 > V3.0 起类型由节点 label 承载：table 恒 "table"，index 是独立资产（`index add`）；
 > 旧 `--type` 参数仅作分类标识进 extra（如 `--type=index` 不再约束 panel 注册）。
 > `panel`（原 dataset）：`panel add <name> <index> [member...] --keys` 实时 join 视图（index 左表），

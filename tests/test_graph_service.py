@@ -112,6 +112,23 @@ class TestTableGraph:
         assert (svc.data_dir / "catalog.db").exists()
         assert not (svc.data_dir / "graph.db").exists()
 
+    def test_delete_clears_fingerprint_persistently(self, svc):
+        """delete 清指纹必须持久化（跨连接验证）。
+
+        回归：Python 3.13 默认 isolation_level=''（legacy 模式），txn() 外的 DELETE
+        隐式事务不提交、close 时回滚 → 曾致 delete 后指纹残留（新进程可见）。
+        """
+        svc.table_add("m1")
+        svc.close()
+        # 新连接（模拟新进程/CLI 调用链）
+        svc2 = GraphService(svc.data_dir)
+        svc2.table_delete("m1")
+        svc2.close()
+        svc3 = GraphService(svc.data_dir)
+        assert svc3.store.get_node("table:m1") is None
+        assert svc3.store.fingerprint_get("table:m1") == {}
+        svc3.close()
+
 
 class TestIndexGraph:
     def test_index_independent(self, svc):
@@ -184,6 +201,27 @@ class TestIndexGraph:
         assert "index" not in cands  # 已登记 index 的不作候选
         listed = svc.index_list()
         assert [i["name"] for i in listed] == ["index"]
+
+    def test_index_add_all(self, svc):
+        """index add --all：批量发现 index/ 下未登记的 parquet 目录（空目录跳过）"""
+        # fixture 已含 index/index（未登记）；再造两个未登记候选 + 一个空目录
+        for n in ("a1", "a2"):
+            os.makedirs(os.path.join(svc.data_dir, "index", n), exist_ok=True)
+            pl.DataFrame({"sym": ["x"], "date": ["2024-01-01"]}).write_parquet(
+                os.path.join(svc.data_dir, "index", n, "data.parquet"))
+        os.makedirs(os.path.join(svc.data_dir, "index", "empty"), exist_ok=True)
+
+        reports = svc.index_add("", all=True)
+        assert {r["name"] for r in reports} == {"index", "a1", "a2"}
+        assert all(r["changed"] is True for r in reports)
+        # 默认 symbol/datetime 列写入节点
+        node = svc.store.get_node("index:a1")
+        assert node["symbol_col"] == "sym"
+        assert node["datetime_col"] == "date"
+        # 已登记的不再重复登记（幂等）
+        assert svc.index_add("", all=True) == []
+        # 空目录不作候选
+        assert svc.store.get_node("index:empty") is None
 
 
 class TestFactorGraph:

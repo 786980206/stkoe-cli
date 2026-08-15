@@ -89,8 +89,18 @@ class GraphStore:
         return self._conn
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """执行普通 SQL（物理指纹表读写；与图同连接/同事务）。"""
-        return self._conn.execute(sql, params)
+        """执行普通 SQL（物理指纹表读写；与图同连接/同事务）。
+
+        Python 3.13 默认 ``isolation_level=''``（legacy 模式）：txn() 之外的
+        DML 会隐式开启事务且不自动提交，连接关闭时被回滚（曾致 delete 资产后
+        指纹残留）。此处对 txn() 外的写语句立即 commit；txn() 内的交给
+        txn() 统一提交。
+        """
+        cur = self._conn.execute(sql, params)
+        if self._txn_depth == 0 and sql.lstrip()[:6].upper() in (
+                "INSERT", "UPDATE", "DELETE", "REPLAC"):
+            self._conn.commit()
+        return cur
 
     # ---------- 物理指纹（stkoe_data_files / stkoe_file_stats） ----------
 

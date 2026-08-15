@@ -504,11 +504,19 @@ def _panel_update(args: list[str], data_dir=None) -> list[Result]:
 def _index_add(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     pos = _positional(args)
-    if not pos:
-        raise CommandError("index add 需要 index 名")
     svc = _graph_service(data_dir)
     meta = {k: v for k, v in flags.items()
-            if k not in ("symbol-col", "datetime-col", "materialize-partition")}
+            if k not in ("all", "symbol-col", "datetime-col", "materialize-partition")}
+    if flags.get("all"):
+        reports = svc.index_add(
+            "", all=True,
+            symbol_col=flags.get("symbol-col") or "sym",
+            datetime_col=flags.get("datetime-col") or "date",
+            materialize_partition=flags.get("materialize-partition") or "yearly",
+            meta=meta or None)
+        return [Result.json("indexes", reports)]
+    if not pos:
+        raise CommandError("index add 需要 index 名（或 --all）")
     return [Result.json("index", svc.index_add(
         pos[0],
         symbol_col=flags.get("symbol-col") or "sym",

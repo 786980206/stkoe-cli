@@ -389,8 +389,27 @@ class GraphService:
     # index（独立主体：物理与 table 同，节点为 Index + symbol/datetime 列）
     # =====================================================================
 
-    def index_add(self, name: str, *, symbol_col: str = "sym", datetime_col: str = "date",
-                  materialize_partition: str = "yearly", meta: dict | None = None) -> dict:
+    def index_add(self, name: str, *, all: bool = False, symbol_col: str = "sym",
+                  datetime_col: str = "date", materialize_partition: str = "yearly",
+                  meta: dict | None = None) -> dict | list:
+        """注册 index（发现资产）：目录必须存在；已注册报 TableExistsError。
+
+        ``--all`` 批量发现：扫描 ``index/`` 下未登记且含 parquet 的目录（同 table add --all）。
+        """
+        if all:
+            if not self.indexs_root.exists():
+                return []
+            out = []
+            for d in sorted(x for x in self.indexs_root.iterdir() if x.is_dir()):
+                if self.store.get_node(node_id("index", d.name)) is None \
+                        and any(d.rglob("*.parquet")):
+                    out.append(self._scan_disk(
+                        "index", d.name, meta=meta,
+                        extra_data={"symbol_col": symbol_col, "datetime_col": datetime_col,
+                                    "materialize_partition": materialize_partition}))
+            return out
+        if not name:
+            raise ValueError("add 需要 index 名（或 --all 批量发现）")
         root = self._index_root(name)
         if not root.exists():
             raise TableNotFoundError(f"index dir not found: {root}")

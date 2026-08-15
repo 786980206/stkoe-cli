@@ -472,7 +472,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 e:table list
 e:table get demo --where "price >= 1.0" --limit 10
 s:panel scan ds1
-s:stat scan panel ds1
+s:stat scan dataset ds1
 t:<task_id>
 ```
 
@@ -544,10 +544,10 @@ stkoe mock demo
 stkoe table add index
 stkoe index add index --symbol-col sym --datetime-col date
 stkoe table add m1
-# 建逻辑数据集（panel 实时 join index+m1 on keys）
-stkoe panel add ds1 index m1 --keys sym,date
+# 建逻辑数据集（panel 实时 join index+m1 on keys；keys 由 index 推断，member 可配 join）
+stkoe panel add ds1 index m1
 # 统计覆盖率（all + 每个索引列一个分组文件）
-stkoe stat scan panel ds1
+stkoe stat scan dataset ds1
 # 衍生指标集（基于 panel 计算新字段，check 通过后标记 validated）
 stkoe fieldset add fs1 --dataset ds1
 stkoe fieldset add fs1 ma5 --formula "price.rolling_mean(5)"
@@ -579,4 +579,140 @@ gclient> e:stat get panel ds1 --partition_by all
 # 后台物化 + 订阅进度
 gclient> s:fieldset scan fs1
 gclient> t:<task_id>
+```
+
+---
+
+## 10. portal 前端调用流程指南
+
+> 本节面向 **portal（Tauri 前端）项目的 Agent**：portal **不直接管理数据目录**，
+> 所有资产/血缘/数据操作都经 gRPC Execute 通道调用运行中的 stkoe 服务
+> （默认 `127.0.0.1:9569`，用户自启 `stkoe serve`）完成。下方按功能场景给出
+> 推荐调用顺序与关键参数，前端按此实现即可。
+
+### 10.1 通用调用方式
+
+- 单个命令 = 一次 `ExecuteRequest{source, action, args}`（args 为扁平字符串数组，
+  形如 `["<name>", "--key", "value"]`；参数解析见 §1.1）；
+- 响应为流式：首条恒为 `DataHeader`（`code=0` 成功；非 0 业务错误，`message` 含原因），
+  随后 0..N 条 `JsonData`（`{name, data}`，data 为 JSON 字符串）或单条 `ArrowTable`
+  （IPC bytes，仅 `* get` 类命令返回；meta 见 §3.2）；
+- **data_dir 一致性（关键）**：CLI（`stkoe <cmd>`）与服务的 data_dir 都来自同一份
+  `stkoe.json` 配置（默认 `~/.stkoe`）。若用 CLI 添加了资产、再用 portal 查血缘，
+  必须确保两者指向同一 data_dir，且服务用**最新代码**重启过。
+
+### 10.2 推荐调用流程（按页面/功能组织）
+
+#### A. 启动与健康检查
+1. `e:version`（空 action）→ 版本号；失败说明服务未启动或端口不对；
+2. `e:config show` → 生效配置（含 `data-dir`），用于与 CLI 目录核对。
+
+#### B. 资产浏览（列表页 / 详情）
+1. 源头：`e:table list` / `e:index list`（JSON 数组）；
+2. 派生：`e:panel list` / `e:fieldset list` / `e:sample list` / `e:feature list` /
+   `e:factor list` / `e:test list`；
+3. 单个详情：`e:<source> meta <name>`（完整元数据：列、版本、valid、
+   materialized/curated 等）。
+
+#### C. 血缘图（右上角抽屉 / 完整页）
+1. `e:graph nodes` → 全部节点摘要（id/type/name/version/valid/materialized），
+   供"中心节点"选择器；
+2. `e:graph lineage`（缺 `--node` 全图）或 `e:graph lineage --node <type:name>
+   --depth N`（子图）→ Cytoscape elements payload（§3.13），前端用 Cytoscape.js 渲染；
+3. `e:graph stats` → 节点/边计数（空图提示用）。
+
+#### D. 数据读取（详情表格）
+- `e:table get` / `e:index get` / `e:panel get` / `e:fieldset get` / `e:sample get` /
+  `e:factor get` / `e:test get` → **ArrowTable（IPC）**，meta 含 rows/total/columns
+  列说明；`--where` / `--limit` / `--offset` / `--columns` 分页过滤。
+
+#### E. 资产创建（向导/表单）
+- 源头：`e:table add <name>`（发现 `table/<name>/` 下的 parquet）；
+  `e:index add <name> --symbol-col sym --datetime-col date`；
+- 面板：`e:panel add <name> <index> [member[:join]...]`——member 可带
+  `:asof`/`:left` 指定 join 方式（缺省 asof），keys 由 index 推断、不传 `--keys`；
+- 衍生：`e:fieldset add <name> --dataset <panel>` →
+  `e:fieldset add <name> <field> --formula <expr>` → `e:fieldset check <name> <field>`
+  （check 通过才参与物化）；
+- 样本：`e:sample add <name> --fieldset <fs> [--formula <过滤式>]`；
+- 因子：`e:feature add <name> --formula <expr>`；
+  `e:factor add <name> --feature <f> --sample <s> [--pipeline <链>]`；
+- 测试集：`e:test add <name> --factor <fac> [--returns/--groupby/--marketcap]`。
+
+#### F. 更新 / 就绪（数据变化后刷新）
+1. **源头变化**：`e:table update <name>`（或 `e:index update`；`scan` 为旧名别名）
+   → 重扫对账；内部自动把变化写入版本事件并**置脏整条下游链**；
+2. **链路就绪**：按依赖顺序依次
+   `e:panel update <name>` → `e:fieldset update <name>` → `e:sample update` /
+   `e:feature update` → `e:factor update` → `e:test update`；
+   **顺序不可乱**：上游未就绪时 `update` 报 `DependencyError`（message 会指出先 update 谁）；
+3. 之后重拉 `e:graph lineage` / `e:<source> meta` 即可看到新版本与新数据。
+
+### 10.3 注意事项
+
+- `* get` 返回 ArrowTable，其余返回 JsonData；先判 `DataHeader.code` 再取数据；
+- 后台耗时操作（物化）可 `s:<source> <action>` 提交任务，用 `t:<task_id>` 轮询或
+  SubscribeTask 订阅进度（§4）；
+- 哪些资产 update 会物化、如何按事件区间增量，见 §11；
+- portal 不应自行读写 `data_dir`/`catalog.db`——一律经服务 Execute 通道。
+
+---
+
+## 11. 增量更新与物化语义（V3 graph 事件驱动）
+
+> 当前实现的"数据变更 → 版本事件 → 下游失效 → 逐级 update 恢复"闭环说明。
+
+### 11.1 资产分类：哪些资产会触发物化
+
+| 资产 | update 行为 | 物化产物 |
+|---|---|---|
+| **table / index**（源头） | 重扫对账（`update`/`scan`）：物理变化 → 铸版本 + 事件入 version_list + **全链下游置脏**；天然 valid，无物化 | 无（物理 parquet 即数据） |
+| **panel** | join 视图**全量物化落盘** + 铸版本 + 水位对齐 | `panel/<name>/data.parquet` |
+| **fieldset** | 衍生字段（keys + 已校验字段）**全量物化落盘** + 铸版本 | `fieldset/<name>/data.parquet` |
+| **factor** | **增量物化**：按源头积累事件区间只重算该区间并合并写回；`--resync` 全量 | `factor/<name>/data.parquet` |
+| **test** | **增量物化**（同 factor） | `factor_test/<name>/data.parquet` |
+| **sample / feature** | 无物化，update 只**铸版本**（消费事件入 version_list）+ 出边水位对齐 | 无（实时构造） |
+| **stat** | 不进 graph，纯文件产物（手动 `stat scan` 触发） | `stat/<target>/<name>/<kind>/*.parquet` |
+
+读取端（panel/fieldset/factor/test `get`）：**物化且 curated 读物化 parquet，否则实时计算**
+（curated = 已物化且依赖签名 == 当前签名；上游版本变化 → curated 失效自动回退实时）。
+
+### 11.2 遇到新数据变更事件时，分别如何处理
+
+1. **源头物理变化**（`table/` 或 `index/` 目录新增/修改/删除 parquet 文件）
+   → `table update <name>`（或读取前的快检自动 scan）重扫对账，`diff_files` 得到文件级 diff：
+   - added / changed 文件 → **upsert 事件**；removed 文件 → **delete 事件**
+     （一次变更同时有增删时，两类事件各记一个版本）；
+   - 事件带 **datetime 区间 `[min, max]`**：hive 分区键 = datetime_col 时用分区值，
+     否则读变化文件 footer 的 datetime 列 min/max（只读元数据、不读数据页）；
+     取不到范围 → 全集（None）；
+   - `notify_change`：源头**铸版本 + 事件入 version_list + BFS 全链下游置脏**
+     （valid=False，materialized=False）。
+2. **逐级 update 恢复**（必须按依赖顺序，先上游后下游；`assert_ready` 检查全链就绪）：
+   - `panel update`：join 视图重新物化落盘（全量）；有积累事件 → 铸版本
+     （合并事件入 version_list）；出边 `required_version` 对齐被依赖方当前版本；
+   - `fieldset update`：衍生字段重新物化（全量）+ 铸版本；
+   - `sample update` / `feature update`：只铸版本（无物化）；
+   - `factor update`：**增量**——从全部源头（table/index）收集
+     `version > consumed` 的积累事件，得 datetime 区间；已有物化且区间明确 →
+     读旧物化删区间 + **仅重算区间内行**合并写回；无区间 / 首次 / `--resync` →
+     全量重算；成功后记录各源头水位（`extra.consumed_versions`）；
+   - `test update`：同 factor（在 sample 视图上按区间构造）。
+3. **幂等**：update 时节点 valid 且依赖签名一致 → 直接返回 `changed=False` 跳过重建；
+   上游变化已把 valid 置 False，因此再次 update 必然重建（保证不数据过期）。
+4. **读取**：`get` 时物化且 curated 读物化；curated 失效（签名变化）自动回退实时，
+   数据一致性靠显式 update 恢复。
+
+```text
+数据流（一次变更）：
+  table/index 文件变化
+     │  table update（重扫对账）
+     ▼
+  源头节点：版本 +1，version_list 记录 upsert/delete 事件（带 datetime 区间）
+     │  notify_change：BFS 全链置脏（valid=False）
+     ▼
+  panel（物化）→ fieldset（物化字段）→ sample/feature（铸版本）→ factor（增量）→ test（增量）
+     │  每级 update：assert_ready 检查上游就绪 → 按自身语义物化/铸版本 → 水位对齐
+     ▼
+  get 读物化（curated）或实时；graph lineage 显示新版本
 ```

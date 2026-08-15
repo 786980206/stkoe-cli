@@ -1,10 +1,7 @@
-"""feature TaskHandler：把 FeatureController 接进任务框架（source="feature"）
-
-每个动作一个 Handler，解析位置参数 + ``--flag`` 后调用 FeatureController 的
-async 方法，结果以 JSON 返回。
-"""
+"""feature TaskHandler：把 GraphService 的 feature 资产接进任务框架（source="feature"）"""
 from __future__ import annotations
 
+import asyncio
 import io
 
 from ..args import parse_flags
@@ -28,10 +25,10 @@ def _positional(args: list[str]) -> list[str]:
     return out
 
 
-def _controller(ctx):
-    from .controller import FeatureController
+def _service(ctx):
+    from ..graph.service import GraphService
 
-    return FeatureController(data_dir=ctx.data_dir)
+    return GraphService(data_dir=ctx.data_dir)
 
 
 class FeatureAddHandler(TaskHandler):
@@ -40,12 +37,13 @@ class FeatureAddHandler(TaskHandler):
         if not pos:
             raise ValueError("feature add 需要因子名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        ft = await ctl.add(pos[0], engine=flags.get("engine") or "polars",
-                           formula=flags.get("formula") or "", **{
-                               k: v for k, v in flags.items()
-                               if k not in ("engine", "formula")})
-        return TaskResult(data=dumps_str(ft.to_dict()))
+        svc = _service(ctx)
+        ft = await asyncio.to_thread(
+            svc.feature_add, pos[0], flags.get("formula") or "",
+            engine=flags.get("engine") or "polars", **{
+                k: v for k, v in flags.items()
+                if k not in ("engine", "formula")})
+        return TaskResult(data=dumps_str(ft))
 
 
 class FeatureSetHandler(TaskHandler):
@@ -56,9 +54,9 @@ class FeatureSetHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         if not flags:
             raise ValueError("feature set 需要至少一个 --key value")
-        ctl = _controller(ctx)
-        ft = await ctl.set(pos[0], **flags)
-        return TaskResult(data=dumps_str(ft.to_dict()))
+        svc = _service(ctx)
+        ft = await asyncio.to_thread(svc.feature_set, pos[0], **flags)
+        return TaskResult(data=dumps_str(ft))
 
 
 class FeatureDeleteHandler(TaskHandler):
@@ -67,8 +65,9 @@ class FeatureDeleteHandler(TaskHandler):
         if not pos:
             raise ValueError("feature delete 需要因子名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        out = await ctl.delete(pos[0], force=bool(flags.get("force")))
+        svc = _service(ctx)
+        out = await asyncio.to_thread(
+            svc.feature_delete, pos[0], force=bool(flags.get("force")))
         return TaskResult(data=dumps_str(out))
 
 
@@ -77,16 +76,16 @@ class FeatureMetaHandler(TaskHandler):
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("feature meta 需要因子名")
-        ctl = _controller(ctx)
-        ft = await ctl.meta(pos[0])
-        return TaskResult(data=dumps_str(ft.to_dict()))
+        svc = _service(ctx)
+        ft = await asyncio.to_thread(svc.feature_meta, pos[0])
+        return TaskResult(data=dumps_str(ft))
 
 
 class FeatureListHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
-        ctl = _controller(ctx)
-        fts = await ctl.list()
-        return TaskResult(data=dumps_str([ft.to_dict() for ft in fts]))
+        svc = _service(ctx)
+        fts = await asyncio.to_thread(svc.feature_list)
+        return TaskResult(data=dumps_str(fts))
 
 
 class FeatureTestHandler(TaskHandler):
@@ -98,12 +97,12 @@ class FeatureTestHandler(TaskHandler):
         sample = flags.get("sample")
         if not sample:
             raise ValueError("feature test 需要 --sample <样本池名>")
-        ctl = _controller(ctx)
-        res, df = await ctl.test(pos[0], sample)
+        svc = _service(ctx)
+        res, df = await asyncio.to_thread(svc.feature_test, pos[0], sample)
         buf = io.BytesIO()
         if df is not None and df.height:
             df.write_ipc_stream(buf)
-        data = res.to_dict()
+        data = dict(res)
         if df is not None:
             data["result_ref"] = ctx.put_result("test.arrow", buf.getvalue())
         return TaskResult(data=dumps_str(data))

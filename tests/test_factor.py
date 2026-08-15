@@ -51,6 +51,25 @@ def _setup_source(tmp_path):
     return root
 
 
+def _gsetup(root):
+    """graph 语义造数：idx/mem 表 → index → panel ds(keys=k) → sample sp1 → feature f1"""
+    _write(root, "idx", pl.DataFrame({
+        "k": ["a", "b"], "x": [1.0, 2.0]}))
+    _write(root, "mem", pl.DataFrame({"k": ["a", "b"]}))
+    from stkoe.graph.service import GraphService
+
+    svc = GraphService(data_dir=root)
+    svc.table_add("idx")
+    svc.table_add("mem")
+    svc.index_add("idx")
+    svc.panel_add("ds", "idx", ["mem"], keys=["k"])
+    svc.fieldset_add("fs1", "ds")
+    svc.sample_add("sp1", "fs1")
+    svc.feature_add("f1", "x*2")
+    svc.close()
+    return root
+
+
 def test_engine_and_operator_registry(ctl):
     assert "polars" in engine_names()
     assert get_engine("polars").name == "polars"
@@ -287,22 +306,8 @@ def test_scan_all(ctl, tmp_path):
 
 
 def test_task_framework_factor_handlers(mgr):
-    """任务版：factor add → check → get（result 落盘）→ scan → delete 全链路"""
-    from stkoe.dataset import DatasetController
-    from stkoe.feature import FeatureController
-    from stkoe.sample import SampleController
-    from stkoe.table import TableController
-
-    root = mgr.data_dir
-    _write(root, "idx", pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0]}))
-    tctl = TableController(data_dir=root)
-    _run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    _run(dc.add("ds", "idx", keys=["k"]))
-    sc = SampleController(data_dir=root)
-    _run(sc.add("sp1", dataset="ds"))
-    fc = FeatureController(data_dir=root)
-    _run(fc.add("f1", formula="x*2"))
+    """任务版：factor add → check → get（result 落盘）→ scan → delete 全链路（graph 语义）"""
+    _gsetup(mgr.data_dir)
 
     t_add = mgr.submit("factor", "add", ["fac1", "--feature", "f1",
                                          "--sample", "sp1"])
@@ -371,6 +376,16 @@ def _await(mgr, task, timeout=5.0):
 
 def _mgr_result(mgr, task):
     import json
+    import time
 
-    evs = mgr.events.list_by_task(task.task_id)
+    from stkoe.task.model import TERMINAL_STATES
+
+    task_id = task.task_id if hasattr(task, "task_id") else task
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        evs = mgr.events.list_by_task(task_id)
+        if evs and evs[-1].state in TERMINAL_STATES:
+            return json.loads(evs[-1].data) if evs[-1].data else None
+        time.sleep(0.01)
+    evs = mgr.events.list_by_task(task_id)
     return json.loads(evs[-1].data) if evs and evs[-1].data else None

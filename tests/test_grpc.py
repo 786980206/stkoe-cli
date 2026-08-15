@@ -370,36 +370,44 @@ def _json_names(datas):
 
 # ---------- Execute 版 sample ----------
 
-def test_execute_sample_add_check_get_delete(client, srv):
-    """Execute 路径 sample add/check/get/delete/list 全链路（与 s:sample 任务版对齐）"""
-    import asyncio
+def _seed_panel_chain(client, srv, x2_formula="x*2"):
+    """graph 语义造数：table idx/mem → index idx → panel ds → fieldset fs1(+x2 校验通过)"""
     import polars as pl
 
-    from stkoe.dataset import DatasetController
-    from stkoe.fieldset import FieldsetController
-    from stkoe.table import TableController
-
-    root = srv.data_dir
-    d = Path(root) / "tables" / "idx"
+    root = Path(srv.data_dir)
+    d = root / "tables" / "idx"
     d.mkdir(parents=True)
     pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0],
                   "date": ["2026-01-01", "2026-01-02"]}).write_parquet(d / "data.parquet")
+    m = root / "tables" / "mem"
+    m.mkdir(parents=True)
+    pl.DataFrame({"k": ["a", "b"], "y": [10.0, 20.0]}).write_parquet(m / "data.parquet")
 
-    def run(a):
-        return asyncio.run(a)
+    for src, action, args in [
+        ("table", "add", ["idx"]),
+        ("table", "add", ["mem"]),
+        ("index", "add", ["idx"]),
+        ("panel", "add", ["ds", "idx", "mem", "--keys", "k"]),
+        ("fieldset", "add", ["fs1", "--dataset", "ds"]),
+        ("fieldset", "add", ["fs1", "x2", "--formula", x2_formula]),
+    ]:
+        header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+            source=src, action=action, args=args)))
+        assert header.code == 0, (src, action, args, header.message)
 
-    tctl = TableController(data_dir=root)
-    run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    run(dc.add("ds", "idx", keys=["k"]))
-    fs = FieldsetController(data_dir=root)
-    run(fs.add("fs1", dataset="ds"))
-    run(fs.add_field("fs1", "x2", formula="x*2"))
-    run(fs.check("fs1", "x2"))
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="fieldset", action="check", args=["fs1", "x2"])))
+    assert header.code == 0
+    assert _json(datas, "fieldset")[0]["ok"] is True
+
+
+def test_execute_sample_add_check_get_delete(client, srv):
+    """Execute 路径 sample add/check/get/delete/list 全链路（graph 语义：依赖 fieldset）"""
+    _seed_panel_chain(client, srv)
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="sample", action="add",
-        args=["sp1", "--dataset", "ds", "--formula", "(x>=2.0)"])))
+        args=["sp1", "--fieldset", "fs1", "--formula", "(x>=2.0)"])))
     assert header.code == 0
     assert _json(datas, "sample")["name"] == "sp1"
 
@@ -415,7 +423,7 @@ def test_execute_sample_add_check_get_delete(client, srv):
     assert len(tables) == 1
     meta = json.loads(tables[0].table.meta)
     assert meta["rows"] == 1  # 仅 x>=2.0 → b
-    assert [c["name"] for c in meta["columns"]] == ["k", "x", "date", "x2"]
+    assert [c["name"] for c in meta["columns"]] == ["k", "x", "date", "y", "x2"]
     assert meta["total"] == 1
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -433,39 +441,17 @@ def test_execute_sample_add_check_get_delete(client, srv):
 # ---------- Execute 版 fieldset ----------
 
 def test_execute_fieldset_get_default_and_fields_only(client, srv):
-    """Execute 路径 fieldset get 默认返回 dataset+fieldset join 视图，--fields-only 仅返回衍生数据"""
-    import asyncio
-    import polars as pl
+    """Execute 路径 fieldset get 默认返回 panel+fieldset join 视图，--fields-only 仅返回衍生数据"""
+    _seed_panel_chain(client, srv)
 
-    from stkoe.dataset import DatasetController
-    from stkoe.fieldset import FieldsetController
-    from stkoe.table import TableController
-
-    root = srv.data_dir
-    d = Path(root) / "tables" / "idx"
-    d.mkdir(parents=True)
-    pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0],
-                  "date": ["2026-01-01", "2026-01-02"]}).write_parquet(d / "data.parquet")
-
-    def run(a):
-        return asyncio.run(a)
-
-    run(TableController(data_dir=root).add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    run(dc.add("ds", "idx", keys=["k"]))
-    fs = FieldsetController(data_dir=root)
-    run(fs.add("fs1", dataset="ds"))
-    run(fs.add_field("fs1", "x2", formula="x*2"))
-    run(fs.check("fs1", "x2"))
-
-    # 默认：dataset + fieldset 已校验指标 join 拼接
+    # 默认：panel 视图 + fieldset 已校验指标 join 拼接
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="fieldset", action="get", args=["fs1"])))
     assert header.code == 0
     tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
     assert len(tables) == 1
     meta = json.loads(tables[0].table.meta)
-    assert [c["name"] for c in meta["columns"]] == ["k", "x", "date", "x2"]
+    assert [c["name"] for c in meta["columns"]] == ["k", "x", "date", "y", "x2"]
     assert meta["rows"] == 2
 
     # --fields-only：仅返回衍生数据（keys + 已校验指标）
@@ -480,29 +466,14 @@ def test_execute_fieldset_get_default_and_fields_only(client, srv):
 # ---------- Execute 版 feature ----------
 
 def test_execute_feature_add_test_list_delete(client, srv):
-    """Execute 路径 feature add/test/list/delete 全链路（与 s:feature 任务版对齐）"""
-    import asyncio
+    """Execute 路径 feature add/test/list/delete 全链路（graph 语义：test 在 sample 视图求值）"""
     import polars as pl
 
-    from stkoe.dataset import DatasetController
-    from stkoe.sample import SampleController
-    from stkoe.table import TableController
-
-    root = srv.data_dir
-    d = Path(root) / "tables" / "idx"
-    d.mkdir(parents=True)
-    pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0],
-                  "optime": ["2024-01-01 08:00:00"] * 2}).write_parquet(d / "data.parquet")
-
-    def run(a):
-        return asyncio.run(a)
-
-    tctl = TableController(data_dir=root)
-    run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    run(dc.add("ds", "idx", keys=["k"]))
-    sc = SampleController(data_dir=root)
-    run(sc.add("sp1", dataset="ds"))
+    _seed_panel_chain(client, srv)
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="sample", action="add",
+        args=["sp1", "--fieldset", "fs1"])))
+    assert header.code == 0
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="feature", action="add", args=["f1", "--formula", "x*2"])))
@@ -533,39 +504,60 @@ def test_execute_feature_add_test_list_delete(client, srv):
 
 # ---------- Execute 版 factor ----------
 
-def test_execute_factor_add_get_check_scan_delete(client, srv):
-    """Execute 路径 factor add/get/check/scan/delete 全链路（与 s:factor 任务版对齐）"""
-    import asyncio
+def _seed_factor_chain(client, srv):
+    """graph 语义造数：table idx/mem → index → panel ds([sym,date]) → fieldset fs1
+    → sample sp1 → feature f1（test 必需列 date/sym/r/ic/fv 齐备）"""
     import polars as pl
 
-    from stkoe.dataset import DatasetController
-    from stkoe.feature import FeatureController
-    from stkoe.sample import SampleController
-    from stkoe.table import TableController
-
-    root = srv.data_dir
-    d = Path(root) / "tables" / "idx"
+    root = Path(srv.data_dir)
+    d = root / "tables" / "idx"
     d.mkdir(parents=True)
-    pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0]}).write_parquet(d / "data.parquet")
+    pl.DataFrame({
+        "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-01"],
+        "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0], "x": [1.0, 2.0],
+    }).write_parquet(d / "data.parquet")
+    m = root / "tables" / "mem"
+    m.mkdir(parents=True)
+    pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01", "2024-01-01"],
+                  "price": [1.5, 2.5]}).write_parquet(m / "data.parquet")
 
-    def run(a):
-        return asyncio.run(a)
+    for src, action, args in [
+        ("table", "add", ["idx"]),
+        ("table", "add", ["mem"]),
+        ("index", "add", ["idx"]),
+        ("panel", "add", ["ds", "idx", "mem", "--keys", "sym,date"]),
+        ("fieldset", "add", ["fs1", "--dataset", "ds"]),
+        ("fieldset", "add", ["fs1", "x2", "--formula", "x*2"]),
+    ]:
+        header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+            source=src, action=action, args=args)))
+        assert header.code == 0, (src, action, args, header.message)
 
-    tctl = TableController(data_dir=root)
-    run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    run(dc.add("ds", "idx", keys=["k"]))
-    sc = SampleController(data_dir=root)
-    run(sc.add("sp1", dataset="ds"))
-    fc = FeatureController(data_dir=root)
-    run(fc.add("f1", formula="x*2"))
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="fieldset", action="check", args=["fs1", "x2"])))
+    assert header.code == 0
+    assert _json(datas, "fieldset")[0]["ok"] is True
+
+    for src, action, args in [
+        ("sample", "add", ["sp1", "--fieldset", "fs1"]),
+        ("feature", "add", ["f1", "--formula", "x*2"]),
+    ]:
+        header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+            source=src, action=action, args=args)))
+        assert header.code == 0, (src, action, args, header.message)
+
+
+def test_execute_factor_add_get_check_scan_delete(client, srv):
+    """Execute 路径 factor add/get/check/scan/delete 全链路（graph 语义）"""
+    _seed_factor_chain(client, srv)
+    root = Path(srv.data_dir)
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="factor", action="add", args=["fac1", "--feature", "f1",
                                              "--sample", "sp1"])))
     assert header.code == 0
     assert _json(datas, "factor")["name"] == "fac1"
-    assert _json(datas, "factor")["keys"] == ["k"]
+    assert _json(datas, "factor")["keys"] == ["sym", "date"]
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="factor", action="get", args=["fac1"])))
@@ -574,7 +566,7 @@ def test_execute_factor_add_get_check_scan_delete(client, srv):
     assert len(tables) == 1
     meta = json.loads(tables[0].table.meta)
     assert meta["rows"] == 2
-    assert [c["name"] for c in meta["columns"]] == ["k", "f1"]
+    assert [c["name"] for c in meta["columns"]] == ["sym", "date", "f1"]
     assert meta["total"] == 2
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -586,7 +578,7 @@ def test_execute_factor_add_get_check_scan_delete(client, srv):
         source="factor", action="scan", args=["fac1"])))
     assert header.code == 0
     assert _json(datas, "factor")["changed"] is True
-    assert (Path(root) / "factors" / "fac1" / "data.parquet").exists()
+    assert (root / "factors" / "fac1" / "data.parquet").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="factor", action="delete", args=["fac1"])))
@@ -597,37 +589,14 @@ def test_execute_factor_add_get_check_scan_delete(client, srv):
 # ---------- Execute 版 factor_test（test 源） ----------
 
 def test_execute_test_add_get_check_scan_and_stat(client, srv):
-    """Execute 路径 test add/get/check/scan + stat scan test 全链路"""
-    import asyncio
-    import polars as pl
+    """Execute 路径 test add/get/check/scan + stat scan test 全链路（graph 语义）"""
+    _seed_factor_chain(client, srv)
+    root = Path(srv.data_dir)
 
-    from stkoe.dataset import DatasetController
-    from stkoe.factor import FactorController
-    from stkoe.feature import FeatureController
-    from stkoe.sample import SampleController
-    from stkoe.table import TableController
-
-    root = srv.data_dir
-    d = Path(root) / "tables" / "idx"
-    d.mkdir(parents=True)
-    pl.DataFrame({
-        "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-01"],
-        "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0], "x": [1.0, 2.0],
-    }).write_parquet(d / "data.parquet")
-
-    def run(a):
-        return asyncio.run(a)
-
-    tctl = TableController(data_dir=root)
-    run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    run(dc.add("ds", "idx", "idx", keys=["sym", "date"]))
-    sc = SampleController(data_dir=root)
-    run(sc.add("sp1", dataset="ds"))
-    fc = FeatureController(data_dir=root)
-    run(fc.add("f1", formula="x*2"))
-    fx = FactorController(data_dir=root)
-    run(fx.add("fac1", feature="f1", sample="sp1"))
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="factor", action="add", args=["fac1", "--feature", "f1",
+                                             "--sample", "sp1"])))
+    assert header.code == 0
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="test", action="add", args=["t1", "--factor", "fac1",
@@ -655,7 +624,7 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
         source="test", action="scan", args=["t1"])))
     assert header.code == 0
     assert _json(datas, "test")["changed"] is True
-    assert (Path(root) / "factor_tests" / "t1" / "data.parquet").exists()
+    assert (root / "factor_tests" / "t1" / "data.parquet").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="stat", action="scan", args=["t1", "--kind", "ic"])))
@@ -663,7 +632,7 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
     report = _json(datas, "stat")
     assert report["target_type"] == "test"
     assert "ic_d1" in report["partitions"]
-    assert (Path(root) / "stats" / "test" / "t1" / "ic" / "ic_d1.parquet").exists()
+    assert (root / "stats" / "test" / "t1" / "ic" / "ic_d1.parquet").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="test", action="delete", args=["t1"])))

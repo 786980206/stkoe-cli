@@ -1,4 +1,4 @@
-"""factor_test TaskHandler：把 FactorTestController 接进任务框架（source="test"）"""
+"""factor_test TaskHandler：把 GraphService 的 test 资产接进任务框架（source="test"）"""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +7,6 @@ import io
 from ..args import parse_flags
 from ..jsonutil import dumps_str
 from ..task.model import TaskResult
-from ..task.progress import worker_on_progress
 from ..task.registry import TaskHandler
 
 
@@ -26,10 +25,10 @@ def _positional(args: list[str]) -> list[str]:
     return out
 
 
-def _controller(ctx):
-    from .controller import FactorTestController
+def _service(ctx):
+    from ..graph.service import GraphService
 
-    return FactorTestController(data_dir=ctx.data_dir)
+    return GraphService(data_dir=ctx.data_dir)
 
 
 def _spec_flags(flags: dict):
@@ -54,18 +53,20 @@ class TestAddHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         if not flags.get("factor"):
             raise ValueError("test add 需要 --factor <因子名>")
-        ctl = _controller(ctx)
         spec = _spec_flags(flags)
-        tm = await ctl.add(
-            pos[0], factor=flags["factor"],
+        svc = _service(ctx)
+        tm = await asyncio.to_thread(
+            svc.test_add, pos[0], flags["factor"],
             returns=flags.get("returns") or "r",
             groupby=flags.get("groupby") or "ic",
             marketcap=flags.get("marketcap") or "fv",
-            spec=spec, **{k: v for k, v in flags.items()
-                          if k not in ("factor", "returns", "groupby", "marketcap",
-                                       "by_group", "quantiles", "periods",
-                                       "date_range", "rolling_window")})
-        return TaskResult(data=dumps_str(tm.to_dict()))
+            factor_col=flags.get("factor_col"),
+            spec=spec.to_dict(), **{k: v for k, v in flags.items()
+                                    if k not in ("factor", "returns", "groupby",
+                                                 "marketcap", "factor_col",
+                                                 "by_group", "quantiles", "periods",
+                                                 "date_range", "rolling_window")})
+        return TaskResult(data=dumps_str(tm))
 
 
 class TestGetHandler(TaskHandler):
@@ -74,9 +75,9 @@ class TestGetHandler(TaskHandler):
         if not pos:
             raise ValueError("test get 需要测试集名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        df, total = await ctl.get(
-            pos[0],
+        svc = _service(ctx)
+        df, total = await asyncio.to_thread(
+            svc.test_get, pos[0],
             where=flags.get("where"),
             limit=int(flags["limit"]) if flags.get("limit") else None,
             offset=int(flags["offset"]) if flags.get("offset") else None,
@@ -98,16 +99,16 @@ class TestMetaHandler(TaskHandler):
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("test meta 需要测试集名")
-        ctl = _controller(ctx)
-        tm = await ctl.meta(pos[0])
-        return TaskResult(data=dumps_str(tm.to_dict()))
+        svc = _service(ctx)
+        tm = await asyncio.to_thread(svc.test_meta, pos[0])
+        return TaskResult(data=dumps_str(tm))
 
 
 class TestListHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
-        ctl = _controller(ctx)
-        tms = await ctl.list()
-        return TaskResult(data=dumps_str([tm.to_dict() for tm in tms]))
+        svc = _service(ctx)
+        tms = await asyncio.to_thread(svc.test_list)
+        return TaskResult(data=dumps_str(tms))
 
 
 class TestSetHandler(TaskHandler):
@@ -118,12 +119,12 @@ class TestSetHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         if not flags:
             raise ValueError("test set 需要至少一个 --key value")
-        ctl = _controller(ctx)
         kw = dict(flags)
         if "spec" in kw and isinstance(kw["spec"], str):
             kw["spec"] = {"periods": [int(p) for p in kw["spec"].split(",")]}
-        tm = await ctl.set(pos[0], **kw)
-        return TaskResult(data=dumps_str(tm.to_dict()))
+        svc = _service(ctx)
+        tm = await asyncio.to_thread(svc.test_set, pos[0], **kw)
+        return TaskResult(data=dumps_str(tm))
 
 
 class TestCheckHandler(TaskHandler):
@@ -131,28 +132,25 @@ class TestCheckHandler(TaskHandler):
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("test check 需要测试集名")
-        ctl = _controller(ctx)
-        res = await ctl.check(pos[0])
-        return TaskResult(data=dumps_str(res.to_dict()))
+        svc = _service(ctx)
+        res = await asyncio.to_thread(svc.test_check, pos[0])
+        return TaskResult(data=dumps_str(res))
 
 
 class TestScanHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        loop = asyncio.get_running_loop()
-        on_progress = worker_on_progress(ctx, loop)
-
+        svc = _service(ctx)
         if flags.get("all"):
-            reports = await ctl.scan(all=True, resync=bool(flags.get("resync")),
-                                     on_progress=on_progress)
-            return TaskResult(data=dumps_str([r.to_dict() for r in reports]))
+            reports = await asyncio.to_thread(
+                svc.test_scan, all=True, resync=bool(flags.get("resync")))
+            return TaskResult(data=dumps_str(reports))
         if not pos:
             raise ValueError("test scan 需要测试集名（或 --all）")
-        report = await ctl.scan(pos[0], resync=bool(flags.get("resync")),
-                                on_progress=on_progress)
-        return TaskResult(data=dumps_str(report.to_dict()))
+        report = await asyncio.to_thread(
+            svc.test_scan, pos[0], resync=bool(flags.get("resync")))
+        return TaskResult(data=dumps_str(report))
 
 
 class TestDeleteHandler(TaskHandler):
@@ -161,8 +159,9 @@ class TestDeleteHandler(TaskHandler):
         if not pos:
             raise ValueError("test delete 需要测试集名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        out = await ctl.delete(pos[0], force=bool(flags.get("force")))
+        svc = _service(ctx)
+        out = await asyncio.to_thread(
+            svc.test_delete, pos[0], force=bool(flags.get("force")))
         return TaskResult(data=dumps_str(out))
 
 

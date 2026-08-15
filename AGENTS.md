@@ -87,11 +87,13 @@ src/stkoe/
 ├── mock/              # 演示数据生成（stkoe mock demo/gen，替代 scripts/gen_example_data.py）
 │   ├── gen.py         # 生成器（tdcal/common/index/feature/klday/m1 + demo）+ write（只写盘不注册）
 │   └── handlers.py    # 任务版 Handler（source="mock"，注册进 TaskRegistry）
-├── graph/             # V3.0 资产血缘图（graphqlite 嵌入式图数据库，见 graph-design.md）
+├── graph/             # V3.0 资产图（graphqlite 嵌入式图数据库 + GraphService，见 graph-design.md）
 │   ├── model.py       # DataChangeEvent / ColumnMeta / FieldMeta / AssetMeta / DependencyEdge
-│   ├── store.py       # GraphStore：节点/边 CRUD + 血缘遍历（BFS，带环保护）
+│   ├── store.py       # GraphStore：节点/边 CRUD + 血缘遍历（BFS，带环保护）+ 物理指纹普通表
 │   ├── events.py      # 事件合并（symbol/datetime 并集、field 交集）与积累（水位线）
 │   ├── controller.py  # GraphController：资产 CRUD + 依赖约束 + notify_change/resolve(_all)
+│   ├── service.py     # GraphService：table/index/panel/fieldset/sample/feature/factor/test
+│   │                  #   统一服务（登记/依赖/版本走 graph；实时视图 + 物化落盘）
 │   ├── handlers.py    # 各资产 Handler（v3.0-def.py 形态：table/index/panel/fieldset/…/graph）
 │   └── errors.py      # AssetNotFound/Exists、DependencyError、CycleError 等
 └── task/              # 任务框架
@@ -171,17 +173,41 @@ src/stkoe/
 
 ## 当前状态与下一步
 
-**当前**：V2.0 数据资产（table/dataset/fieldset/sample/feature/factor/test/stat/mock/task）
-稳定；V3.0 血缘图重构进行中 —— `graph/` 模块（graphqlite 图库：节点/边/时间戳版本/
-事件响应/依赖约束）已落地，`graph lineage/nodes/stats` 已接入 gRPC Execute 通道，
+**当前**：V3.0 图重构完成——table/index/panel（原 dataset）/fieldset/sample/feature/factor/test
+全部基于 graph 实现（`graph/service.py` 的 GraphService），Execute 与 SubmitTask 三路径统一；
+旧 catalog.db 废弃（登记/依赖/版本进 graph 节点/边，物理指纹表迁入 graph.db 普通表；
+tasks.db 独立保留）；`graph lineage/nodes/stats` 已接入 gRPC Execute 通道，
 portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-design.md §6-7）。
 
 **下一步**（详见 README「路线图」）：
-1. 真实 storage 物化钩子（parquet）+ notify_change 对接物理数据变化
-2. graph 资产三路径对齐（SubmitTask / CLI / api.md / example.md）
+1. panel 物化（scan 落盘）、index 唯一性校验等物理细节
+2. 任务版 table/dataset handler 残余清理（V2.0 controller 死代码评估）
 3. 列级血缘（列节点图）、version_list 裁剪、图算法（PageRank 等）
 
 ## 近期变更记录
+
+### 2026-08 V3.0 全面切 graph：table/index/panel/fieldset/sample/feature/factor/test 三路径统一走 GraphService + catalog.db 废弃
+
+- **GraphService 新增 factor/test 方法**：factor 实时计算（sample 视图求 feature 公式 →
+  拼索引+因子列 → pipeline 算子链）与物化（`factors/<name>/data.parquet`，flat 单文件，
+  幂等签名 = 上游 feature/sample 的 graph 版本 + engine/pipeline/factor_col hash）；
+  test 数据构造（sample 视图 + 测试必需列 → `prepare_factor_data`）与物化
+  （`factor_tests/<name>/data.parquet`）；`test_data()` 供 stat 测试器复用
+- **dispatch factor/test 处理器切 GraphService**（Execute）；stat 的 test 目标改走 graph
+  （`StatController._scan_test_sync` 用 GraphService.test_data + factor_test/tester.py，
+  删除对 V2.0 FactorTestController 的依赖）
+- **任务版 handler 全面切 GraphService**：fieldset/sample/feature/factor/factor_test 的
+  TaskHandler 改为同步调用 + `asyncio.to_thread`（GraphStore 连接
+  `check_same_thread=False` 支持任务线程顺序使用）
+- **fieldset check 写回 validated**：通过后写回节点 `validated=True`
+  （视图/物化只取已校验字段，对齐 V2.0 语义）
+- **sample 依赖 fieldset**：血缘链 table/index → panel → fieldset → sample → factor；
+  `sample add --fieldset`；sample_check keys 经 fieldset → panel 解析
+- **CLI 补 `index`/`panel` 子命令**（dataset 为旧别名转发）
+- 测试：test_grpc.py 的 sample/fieldset/feature/factor/test Execute 用例改 graph 造数
+  （新增 `_seed_panel_chain`/`_seed_factor_chain`），test_fieldset/sample/feature/factor/
+  factor_test 任务版用例改 graph 造数（`_gsetup`），test_graph_service.py 补 factor/test
+  用例，全量 298 用例绿
 
 ### 2026-08 graph 血缘经 gRPC Execute 通道输出（portal 血缘模块后端）
 

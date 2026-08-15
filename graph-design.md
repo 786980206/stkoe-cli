@@ -220,10 +220,11 @@ GraphStore(db_path)
 
 ### 5.3 与既有代码的关系
 
-- `graph/` 是**新的一层**，暂不替换 V2.0 的 table/dataset/… controller；
-  本阶段仅实现图本体（CRUD + 事件响应），物理数据读取/物化留 `storage` 钩子（默认 no-op）。
-- 后续步骤：把各资产 controller 改为「图节点登记 + storage 物化」双写，gRPC Execute /
-  SubmitTask / CLI 三路径对齐（届时同步 api.md）。
+- `graph/` 已**全面接管资产登记**：table/index/panel/fieldset/sample/feature/factor/test 的
+  登记/依赖/版本全部走图节点/边（`GraphService`，见 `graph/service.py`）；V2.0 的
+  table/dataset/… controller 保留在 `src/` 与 `V2.0/` 作为参考实现，新代码不再走 catalog.db。
+- Execute（dispatch）与 SubmitTask（任务版 handler）三路径已对齐到 GraphService；
+  物理数据读取/物化由 GraphService 直接做（parquet + 指纹），stat 数据源亦走 graph。
 
 ## 6. 本阶段交付
 
@@ -235,12 +236,14 @@ GraphStore(db_path)
       handler 全流程
 - [x] **gRPC Execute 通道输出**：`graph lineage/nodes/stats` 命令（api.md §3.13），
       portal 前端"血缘关系"模块（右上角抽屉 + 展开完整页面，Cytoscape.js 渲染）
+- [x] **GraphService 全面接管**：table/index/panel/fieldset/sample/feature/factor/test
+      三路径（Execute + SubmitTask + CLI）统一走 graph；catalog.db 废弃（物理指纹表
+      迁入 graph.db 普通表）；factor/test 物化落盘 factors/、factor_tests/
 
 ## 7. 下一步（路线图）
 
-- [ ] **真实 storage 物化**：实现 storage 钩子（parquet 读取/物化），`materialize`
-      真正落盘；`notify_change` 对接物理表数据变化
-- [ ] **三路径对齐**：graph 资产接入 SubmitTask 任务版 + CLI，api.md/example.md 同步
+- [ ] **panel 物化**：panel scan 落盘 + index 唯一性校验等物理细节
+- [ ] **V2.0 清理**：任务版 table/dataset handler 切 graph、V2.0 controller 死代码评估
 - [ ] **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
       （`(column) -[:DERIVES]-> (column)`）
 - [ ] **版本/事件沉淀**：version_list 过期裁剪、跨依赖事件精确并集

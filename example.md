@@ -27,43 +27,42 @@ uv run -m stkoe mock demo
 ## 1. 发现表资产
 
 ```bash
-uv run -m stkoe table add index --type index   # 注册 index（发现 data.parquet，标记为 index 类型表）
+uv run -m stkoe table add index            # 注册 index（发现 data.parquet）
+uv run -m stkoe index add index --symbol-col sym --datetime-col date   # index 为独立资产（symbol/datetime 列）
 uv run -m stkoe table add m1                    # 注册 m1
 uv run -m stkoe table list             # 已注册表清单
 uv run -m stkoe table meta index       # 表元数据（含列信息）
 uv run -m stkoe table get index --where "date >= '2024-01-02'" --limit 5   # 谓词裁剪读取
 ```
 
-## 2. 逻辑数据集（add 只注册，scan 才物化）
+## 2. 逻辑数据集（panel：实时 join 视图，无物化）
 
 ```bash
-uv run -m stkoe dataset add ds1 index m1 --keys sym,date   # 注册数据集（index 为主表且必须 type=index，m1 为成员）
-uv run -m stkoe dataset scan ds1                            # 物化：join 后落盘 datasets/ds1/
-uv run -m stkoe dataset meta ds1                            # 数据集元数据（含 join 后的列）
-uv run -m stkoe dataset get ds1 --limit 5                   # 读数据集（curated 读物化 parquet）
+uv run -m stkoe panel add ds1 index m1 --keys sym,date   # 注册 panel（index 为主表，m1 为成员，实时 join）
+uv run -m stkoe panel meta ds1                            # panel 元数据（含 join 后的列与 keys）
+uv run -m stkoe panel get ds1 --limit 5                     # 读实时 join 视图
 ```
 
 ## 3. 覆盖率统计（stat）
 
 ```bash
-uv run -m stkoe stat scan dataset ds1                       # coverage：all + 每个索引列各一文件
-uv run -m stkoe stat get dataset ds1 --partition_by all     # 读全量分区
-uv run -m stkoe stat meta dataset ds1                       # 已扫描分区列表
+uv run -m stkoe stat scan panel ds1                       # coverage：all + 每个索引列各一文件
+uv run -m stkoe stat get panel ds1 --partition_by all       # 读全量分区
+uv run -m stkoe stat meta panel ds1                         # 已扫描分区列表
 ```
 
-## 4. 衍生指标集（fieldset：公式引擎 + 校验 + 物化）
+## 4. 衍生指标集（fieldset：公式引擎 + 校验）
 
 ```bash
-uv run -m stkoe fieldset add fs1 --dataset ds1              # 指标集挂到 ds1
+uv run -m stkoe fieldset add fs1 --dataset ds1              # 指标集挂到 panel ds1
 uv run -m stkoe fieldset add fs1 x2 --formula "x * 2.0"     # 加指标 x2 = 2*x（validated=False）
 uv run -m stkoe fieldset check fs1 x2                       # 校验（行数 == 源行数 → validated=True）
-uv run -m stkoe fieldset scan fs1                           # 物化 keys + 已校验指标
 ```
 
-## 5. 样本池（sample：基于 dataset_with_fieldset 的过滤，无物化）
+## 5. 样本池（sample：基于 fieldset 视图的过滤，无物化）
 
 ```bash
-uv run -m stkoe sample add sp1 --dataset ds1 --formula "(date >= '2024-01-02') & (x > 1.0)"
+uv run -m stkoe sample add sp1 --fieldset fs1 --formula "(date >= '2024-01-02') & (x > 1.0)"
 uv run -m stkoe sample check sp1                            # 过滤后含全部索引列且行数 > 0
 ```
 
@@ -79,7 +78,7 @@ uv run -m stkoe feature test ma5 --sample sp1               # 在样本池视图
 ```bash
 uv run -m stkoe factor add fac1 --feature ma5 --sample sp1 --pipeline "nothing()"
 uv run -m stkoe factor check fac1                           # 计算成功 + 恰好 1 列因子列
-uv run -m stkoe factor scan fac1                            # 物化 factors/fac1/（镜像源 dataset 布局）
+uv run -m stkoe factor scan fac1                            # 物化 factors/fac1/data.parquet（flat 单文件，幂等）
 uv run -m stkoe factor get fac1 --limit 5                   # 读因子（样本索引 + 因子列）
 ```
 

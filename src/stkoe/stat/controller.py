@@ -62,25 +62,37 @@ class StatController:
     def _kind_dir(self, target_type: str, target_name: str, kind: str) -> Path:
         return self.root / target_type / target_name / kind
 
+    def _graph_service(self):
+        from ..graph.service import GraphService
+
+        return GraphService(data_dir=self.data_dir)
+
     def _index_cols(self, target_type: str, target_name: str) -> list[str]:
-        """目标索引列：dataset 用主键 keys；table 用非工具列"""
-        if target_type == "table":
-            m = self._dc._tc._meta_sync(target_name)
-            return [c.name for c in m.columns if not c.is_tool]
-        if target_type == "dataset":
-            dm = self._dc._describe_sync(target_name)
-            return list(dm.keys)
+        """目标索引列：panel（原 dataset）用主键 keys；table 用非工具列（走 graph）"""
+        svc = self._graph_service()
+        try:
+            if target_type == "table":
+                cols = svc.table_meta(target_name)["columns"]
+                return [c["name"] for c in cols if c["name"] not in self.ignore_cols]
+            if target_type in ("dataset", "panel"):
+                return list(svc.panel_meta(target_name)["keys"])
+        finally:
+            svc.close()
         raise StatTargetError(f"unsupported stat target: {target_type}")
 
     def _partitions(self, target_type: str, target_name: str) -> list[str]:
         return ["all", *self._index_cols(target_type, target_name)]
 
     def _select_lf(self, target_type: str, target_name: str) -> pl.LazyFrame:
-        """目标数据（lazy）：dataset 走实时 join/物化视图，table 剔除工具列"""
-        if target_type == "table":
-            return self._dc._tc._get_lazy(target_name, exclude_tool=True)
-        if target_type == "dataset":
-            return self._dc._get_lazy_sync(target_name)
+        """目标数据（lazy）：table 剔除工具列，panel 走实时 join 视图（走 graph）"""
+        svc = self._graph_service()
+        try:
+            if target_type == "table":
+                return svc.table_lazy(target_name, exclude_tool=True)
+            if target_type in ("dataset", "panel"):
+                return svc.panel_lazy(target_name)
+        finally:
+            svc.close()
         raise StatTargetError(f"unsupported stat target: {target_type}")
 
     # ---------- test 目标（因子测试器） ----------
@@ -88,16 +100,34 @@ class StatController:
     def _scan_test_sync(self, target_name: str, kind: str,
                         on_progress=None) -> StatScanReport:
         """因子测试器扫描：运行 tester kind 并把命名产物写入
-        ``stats/test/<name>/<kind>/<output>.parquet``"""
-        from ..factor_test.controller import (FactorTestController,
-                                              FactorTestNotFoundError)
+        ``stats/test/<name>/<kind>/<output>.parquet``（数据源走 GraphService）。"""
+        from ..factor_test.spec import FactorTesterSpec
+        from ..factor_test.tester import run_tester
+        from ..table.controller import TableNotFoundError
 
-        ctl = FactorTestController(data_dir=self.data_dir)
+        svc = self._graph_service()
         try:
-            ctl._describe_sync(target_name)
-        except FactorTestNotFoundError:
+            tm = svc.test_meta(target_name)
+            data = svc.test_data(target_name)
+        except TableNotFoundError:
             raise StatNotFoundError(f"test 未注册: {target_name}")
-        files = ctl._tester_scan_sync(target_name, kind, on_progress=on_progress)
+        finally:
+            svc.close()
+        spec = FactorTesterSpec.from_dict(tm.get("spec") or {})
+        outputs = run_tester(kind, data, spec)
+        out_dir = self.root / "test" / target_name / kind
+        out_dir.mkdir(parents=True, exist_ok=True)
+        files: list[StatFile] = []
+        total = len(outputs)
+        for i, (out_name, df) in enumerate(outputs.items(), start=1):
+            if on_progress is not None:
+                on_progress(i, total, f"{target_name}/{kind}: {out_name}")
+            p = out_dir / f"{out_name}.parquet"
+            df.write_parquet(p)
+            files.append(StatFile(partition=out_name,
+                                  rel_path=p.relative_to(self.root),
+                                  rows=df.height, size=p.stat().st_size))
+        files = list(_ordered(tuple(files)))
         return StatScanReport(
             target_type="test", target_name=target_name, kind=kind,
             partitions=tuple(f.partition for f in files), files=tuple(files))
@@ -147,9 +177,13 @@ class StatController:
         from ..table.util import detect_layout, disk_files
 
         if target_type == "table":
-            root = self._dc._tc._root(target_name)
-        elif target_type == "dataset":
-            root = self.data_dir / "datasets" / target_name
+            svc = self._graph_service()
+            try:
+                root = svc.data_dir / "tables" / target_name
+            finally:
+                svc.close()
+        elif target_type in ("dataset", "panel"):
+            raise StatTargetError("storage 统计不支持 panel（无物化目录）")
         else:
             raise StatTargetError(f"unsupported stat target: {target_type}")
         if not root.exists():

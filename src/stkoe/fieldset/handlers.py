@@ -1,15 +1,12 @@
-"""fieldset TaskHandler：把 FieldsetController 接进任务框架（source="fieldset"）"""
+"""fieldset TaskHandler：把 GraphService 的 fieldset 资产接进任务框架（source="fieldset"）"""
 from __future__ import annotations
 
 import asyncio
 import io
 
-import polars as pl
-
 from ..args import parse_flags
 from ..jsonutil import dumps_str
 from ..task.model import TaskResult
-from ..task.progress import worker_on_progress
 from ..task.registry import TaskHandler
 
 
@@ -28,10 +25,10 @@ def _positional(args: list[str]) -> list[str]:
     return out
 
 
-def _controller(ctx):
-    from .controller import FieldsetController
+def _service(ctx):
+    from ..graph.service import GraphService
 
-    return FieldsetController(data_dir=ctx.data_dir)
+    return GraphService(data_dir=ctx.data_dir)
 
 
 class FieldsetAddHandler(TaskHandler):
@@ -40,17 +37,21 @@ class FieldsetAddHandler(TaskHandler):
         if not pos:
             raise ValueError("fieldset add 需要指标集名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         if len(pos) == 1:
-            fm = await ctl.add(pos[0], dataset=flags.get("dataset"),
-                               engine=flags.get("engine") or "polars", **{
-                                   k: v for k, v in flags.items()
-                                   if k not in ("dataset", "engine")})
-            return TaskResult(data=dumps_str(fm.to_dict()))
-        field = pos[1]
-        fm = await ctl.add_field(pos[0], field, **{
-            k: v for k, v in flags.items()})
-        return TaskResult(data=dumps_str(fm.to_dict()))
+            if not flags.get("dataset"):
+                raise ValueError("fieldset add 需要 --dataset <panel 名>")
+            fm = await asyncio.to_thread(
+                svc.fieldset_add, pos[0], flags["dataset"],
+                engine=flags.get("engine") or "polars", **{
+                    k: v for k, v in flags.items()
+                    if k not in ("dataset", "engine")})
+            return TaskResult(data=dumps_str(fm))
+        fm = await asyncio.to_thread(
+            svc.fieldset_add_field, pos[0], pos[1],
+            flags.get("formula") or "", **{
+                k: v for k, v in flags.items() if k != "formula"})
+        return TaskResult(data=dumps_str(fm))
 
 
 class FieldsetGetHandler(TaskHandler):
@@ -59,14 +60,12 @@ class FieldsetGetHandler(TaskHandler):
         if not pos:
             raise ValueError("fieldset get 需要指标集名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         columns = flags.get("columns") or None
-        df, total = await ctl.get(
-            pos[0],
+        df, total = await asyncio.to_thread(
+            svc.fieldset_get, pos[0],
             columns=columns.split(",") if columns else None,
             where=flags.get("where"),
-            partition=flags.get("partition"),
-            exclude_tool=bool(flags.get("exclude-tool")),
             limit=int(flags["limit"]) if flags.get("limit") else None,
             offset=int(flags["offset"]) if flags.get("offset") else None,
             count_total=True,
@@ -88,19 +87,19 @@ class FieldsetMetaHandler(TaskHandler):
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("fieldset meta 需要指标集名")
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         if len(pos) == 1:
-            fm = await ctl.meta(pos[0])
-            return TaskResult(data=dumps_str(fm.to_dict()))
-        field = await ctl.field_meta(pos[0], pos[1])
-        return TaskResult(data=dumps_str(field.to_dict()))
+            fm = await asyncio.to_thread(svc.fieldset_meta, pos[0])
+            return TaskResult(data=dumps_str(fm))
+        field = await asyncio.to_thread(svc.fieldset_meta_field, pos[0], pos[1])
+        return TaskResult(data=dumps_str(field))
 
 
 class FieldsetListHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
-        ctl = _controller(ctx)
-        fms = await ctl.list()
-        return TaskResult(data=dumps_str([fm.to_dict() for fm in fms]))
+        svc = _service(ctx)
+        fms = await asyncio.to_thread(svc.fieldset_list)
+        return TaskResult(data=dumps_str(fms))
 
 
 class FieldsetSetHandler(TaskHandler):
@@ -111,12 +110,12 @@ class FieldsetSetHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         if not flags:
             raise ValueError("fieldset set 需要至少一个 --key value")
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         if len(pos) == 1:
-            fm = await ctl.set(pos[0], **flags)
-            return TaskResult(data=dumps_str(fm.to_dict()))
-        fm = await ctl.set_field(pos[0], pos[1], **flags)
-        return TaskResult(data=dumps_str(fm.to_dict()))
+            fm = await asyncio.to_thread(svc.fieldset_set, pos[0], **flags)
+            return TaskResult(data=dumps_str(fm))
+        fm = await asyncio.to_thread(svc.fieldset_set_field, pos[0], pos[1], **flags)
+        return TaskResult(data=dumps_str(fm))
 
 
 class FieldsetCheckHandler(TaskHandler):
@@ -125,31 +124,34 @@ class FieldsetCheckHandler(TaskHandler):
         if not pos:
             raise ValueError("fieldset check 需要指标集名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        loop = asyncio.get_running_loop()
-        field = pos[1] if len(pos) > 1 else None
-        results = await ctl.check(pos[0], field, all_fields=bool(flags.get("all")),
-                                  on_progress=worker_on_progress(ctx, loop))
-        return TaskResult(data=dumps_str([r.to_dict() for r in results]))
+        svc = _service(ctx)
+        if flags.get("all") or len(pos) < 2:
+            fm = await asyncio.to_thread(svc.fieldset_meta, pos[0])
+            results = []
+            for f in (fm.get("fields") or {}):
+                r = await asyncio.to_thread(svc.fieldset_check, pos[0], f)
+                results.append(r)
+            return TaskResult(data=dumps_str(results))
+        r = await asyncio.to_thread(svc.fieldset_check, pos[0], pos[1])
+        return TaskResult(data=dumps_str([r]))
 
 
 class FieldsetScanHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        loop = asyncio.get_running_loop()
-        on_progress = worker_on_progress(ctx, loop)
-
+        svc = _service(ctx)
         if flags.get("all"):
-            reports = await ctl.scan(all=True, resync=bool(flags.get("resync")),
-                                     on_progress=on_progress)
-            return TaskResult(data=dumps_str([r.to_dict() for r in reports]))
+            metas = await asyncio.to_thread(svc.fieldset_list)
+            reports = []
+            for m in metas:
+                r = await asyncio.to_thread(svc.fieldset_scan, m["name"])
+                reports.append(r)
+            return TaskResult(data=dumps_str(reports))
         if not pos:
             raise ValueError("fieldset scan 需要指标集名（或 --all）")
-        report = await ctl.scan(pos[0], resync=bool(flags.get("resync")),
-                                on_progress=on_progress)
-        return TaskResult(data=dumps_str(report.to_dict()))
+        report = await asyncio.to_thread(svc.fieldset_scan, pos[0])
+        return TaskResult(data=dumps_str(report))
 
 
 class FieldsetDeleteHandler(TaskHandler):
@@ -158,11 +160,12 @@ class FieldsetDeleteHandler(TaskHandler):
         if not pos:
             raise ValueError("fieldset delete 需要指标集名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         if len(pos) > 1:
-            fm = await ctl.delete_field(pos[0], pos[1])
-            return TaskResult(data=dumps_str(fm.to_dict()))
-        out = await ctl.delete(pos[0], force=bool(flags.get("force")))
+            fm = await asyncio.to_thread(svc.fieldset_delete_field, pos[0], pos[1])
+            return TaskResult(data=dumps_str(fm))
+        out = await asyncio.to_thread(
+            svc.fieldset_delete, pos[0], force=bool(flags.get("force")))
         return TaskResult(data=dumps_str(out))
 
 
@@ -174,17 +177,14 @@ class FieldsetTestHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         if not flags.get("formula"):
             raise ValueError("fieldset test 需要 --formula <表达式>")
-        ctl = _controller(ctx)
-        df = await ctl.test(pos[0], flags["formula"])
-        buf = io.BytesIO()
-        if df.height:
+        svc = _service(ctx)
+        res, df = await asyncio.to_thread(svc.fieldset_test, pos[0], flags["formula"])
+        data = dict(res)
+        if df is not None and df.height:
+            buf = io.BytesIO()
             df.write_ipc_stream(buf)
-        ref = ctx.put_result("test.arrow", buf.getvalue())
-        return TaskResult(
-            data=dumps_str({"name": pos[0], "ok": True, "rows": df.height,
-                            "columns": df.columns, "result_ref": ref}),
-            result_ref=ref,
-        )
+            data["result_ref"] = ctx.put_result("test.arrow", buf.getvalue())
+        return TaskResult(data=dumps_str(data))
 
 
 def register(registry) -> None:

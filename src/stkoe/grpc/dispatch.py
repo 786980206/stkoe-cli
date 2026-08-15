@@ -1,16 +1,19 @@
 """命令分发：把 Execute / SubmitTask 的 ``(source, action, args)`` 路由到对应处理器
 
 协议约定请求为 ``stkoe <source> <action> <args...>`` 位置参数形态：
-- source：table / dataset / stat / fieldset / sample / feature / factor / test / config / task / mock / version
+- source：table / index / panel（原 dataset 别名转发）/ fieldset / sample / feature /
+  factor / test / stat / config / task / mock / graph / version
 - action：add / get / del / set / list / meta / check / test / scan / ... 等子命令动词
 - args：action 之后的位置参数
 
 处理器通过 ``@handler(source, action)`` 装饰器注册，签名 ``fn(args, data_dir=None) -> list[Result]``；
 ``Result`` 携带 name + kind（json/table），由 gRPC 层分别序列化为
-``JsonData`` / ``ArrowTable``。后续数据层模块（table/dataset/...）逐步注册处理器即可。
+``JsonData`` / ``ArrowTable``。
 
-table 家族处理器为 Execute 同步路径：直接调用 TableController（内部 asyncio.run 收敛），
-与 SubmitTask 的任务版（task/handlers.py 的 TaskHandler）行为对齐。
+V3.0：table/index/panel/fieldset/sample/feature/factor/test 全部走 ``GraphService``
+（登记/依赖/版本进 graph，物理数据走 graph.db 指纹 + polars），dataset 为 panel 的
+旧别名（转发同一 handler）；SubmitTask 任务版（task/handlers.py 的 TaskHandler）
+行为对齐（同走 GraphService）。
 """
 from __future__ import annotations
 
@@ -414,7 +417,8 @@ def _panel_add(args: list[str], data_dir=None) -> list[Result]:
     keys = None
     if flags.get("keys"):
         keys = [k.strip() for k in flags["keys"].split(",") if k.strip()]
-    dm = svc.panel_add(pos[0], pos[1], pos[2:], keys=keys, **flags)
+    dm = svc.panel_add(pos[0], pos[1], pos[2:], keys=keys, **{
+        k: v for k, v in flags.items() if k != "keys"})
     return [Result.json("panel", dm)]
 
 
@@ -597,33 +601,8 @@ def _index_set(args: list[str], data_dir=None) -> list[Result]:
 
 
 # ---------------------------------------------------------------------------
-# fieldset 同步处理器（Execute 路径；SubmitTask 后台任务版在 fieldset/handlers.py）
+# fieldset 同步处理器（graph 登记；check/scan 用 panel 视图 + 公式引擎）
 # ---------------------------------------------------------------------------
-
-def _fieldset_controller(data_dir=None):
-    from ..fieldset.controller import FieldsetController
-
-    return FieldsetController(data_dir=data_dir)
-
-
-def _fieldset_arrow_meta(name: str, df, total: int, fm) -> str:
-    """ArrowTable.meta JSON：rows/total + keys 列元数据（源 dataset）+ 指标列"""
-    cols = []
-    pkeys = set(fm.keys)
-    for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
-        meta = {"name": cn, "data_type": dt}
-        if cn in pkeys:
-            src = next((c for c in fm.columns if c.name == cn), None)
-            if src is not None:
-                meta = {**src.to_dict(), "data_type": dt}
-        else:
-            f = next((fp for fp in fm.fields if fp.name == cn), None)
-            if f is not None:
-                meta = {**f.to_dict(), "data_type": dt}
-        cols.append(meta)
-    return dumps_str({"name": name, "rows": df.height, "total": total,
-                      "columns": cols})
-
 
 @handler("fieldset", "add")
 def _fieldset_add(args: list[str], data_dir=None) -> list[Result]:
@@ -631,15 +610,18 @@ def _fieldset_add(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("fieldset add 需要指标集名")
     flags = parse_flags(args)
-    ctl = _fieldset_controller(data_dir)
+    svc = _graph_service(data_dir)
     if len(pos) == 1:
-        fm = asyncio.run(ctl.add(pos[0], dataset=flags.get("dataset"),
-                                 engine=flags.get("engine") or "polars", **{
-                                     k: v for k, v in flags.items()
-                                     if k not in ("dataset", "engine")}))
-        return [Result.json("fieldset", fm.to_dict())]
-    fm = asyncio.run(ctl.add_field(pos[0], pos[1], **flags))
-    return [Result.json("fieldset", fm.to_dict())]
+        if not flags.get("dataset"):
+            raise CommandError("fieldset add 需要 --dataset <panel 名>")
+        fm = svc.fieldset_add(pos[0], flags["dataset"],
+                              engine=flags.get("engine") or "polars", **{
+                                  k: v for k, v in flags.items()
+                                  if k not in ("dataset", "engine")})
+        return [Result.json("fieldset", fm)]
+    fm = svc.fieldset_add_field(pos[0], pos[1], flags.get("formula") or "", **{
+        k: v for k, v in flags.items() if k != "formula"})
+    return [Result.json("fieldset", fm)]
 
 
 @handler("fieldset", "get")
@@ -648,24 +630,22 @@ def _fieldset_get(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("fieldset get 需要指标集名")
     flags = parse_flags(args)
-    ctl = _fieldset_controller(data_dir)
-    df, total = asyncio.run(ctl.get(
+    svc = _graph_service(data_dir)
+    df, total = svc.fieldset_get(
         pos[0],
         columns=flags.get("columns").split(",") if flags.get("columns") else None,
         where=flags.get("where"),
-        partition=flags.get("partition"),
-        exclude_tool=bool(flags.get("exclude-tool")),
         limit=int(flags["limit"]) if flags.get("limit") else None,
         offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
         fields_only=bool(flags.get("fields-only")),
-    ))
-    fm = asyncio.run(ctl.meta(pos[0]))
+    )
+    fm = svc.fieldset_meta(pos[0])
     buf = io.BytesIO()
     if df.height:
         df.write_ipc_stream(buf)
     return [Result.table(pos[0], buf.getvalue(),
-                         meta=_fieldset_arrow_meta(pos[0], df, total, fm))]
+                         meta=_arrow_meta(pos[0], df, total, fm.get("columns") or []))]
 
 
 @handler("fieldset", "meta")
@@ -673,20 +653,17 @@ def _fieldset_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("fieldset meta 需要指标集名")
-    ctl = _fieldset_controller(data_dir)
+    svc = _graph_service(data_dir)
     if len(pos) == 1:
-        fm = asyncio.run(ctl.meta(pos[0]))
-        return [Result.json("fieldset", fm.to_dict())]
-    field = asyncio.run(ctl.field_meta(pos[0], pos[1]))
-    return [Result.json("field", field.to_dict())]
+        return [Result.json("fieldset", svc.fieldset_meta(pos[0]))]
+    return [Result.json("field", svc.fieldset_meta_field(pos[0], pos[1]))]
 
 
 @handler("fieldset", "list")
 @handler("fieldset", "")
 def _fieldset_list(args: list[str], data_dir=None) -> list[Result]:
-    ctl = _fieldset_controller(data_dir)
-    fms = asyncio.run(ctl.list())
-    return [Result.json("fieldsets", [fm.to_dict() for fm in fms])]
+    svc = _graph_service(data_dir)
+    return [Result.json("fieldsets", svc.fieldset_list())]
 
 
 @handler("fieldset", "set")
@@ -697,12 +674,10 @@ def _fieldset_set(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("fieldset set 需要指标集名")
     if not flags:
         raise CommandError("fieldset set 需要至少一个 --key value")
-    ctl = _fieldset_controller(data_dir)
+    svc = _graph_service(data_dir)
     if len(pos) == 1:
-        fm = asyncio.run(ctl.set(pos[0], **flags))
-        return [Result.json("fieldset", fm.to_dict())]
-    fm = asyncio.run(ctl.set_field(pos[0], pos[1], **flags))
-    return [Result.json("fieldset", fm.to_dict())]
+        return [Result.json("fieldset", svc.fieldset_set(pos[0], **flags))]
+    return [Result.json("fieldset", svc.fieldset_set_field(pos[0], pos[1], **flags))]
 
 
 @handler("fieldset", "del")
@@ -712,12 +687,10 @@ def _fieldset_delete(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("fieldset delete 需要指标集名")
     flags = parse_flags(args)
-    ctl = _fieldset_controller(data_dir)
+    svc = _graph_service(data_dir)
     if len(pos) > 1:
-        fm = asyncio.run(ctl.delete_field(pos[0], pos[1]))
-        return [Result.json("fieldset", fm.to_dict())]
-    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
-    return [Result.json("fieldset", out)]
+        return [Result.json("fieldset", svc.fieldset_delete_field(pos[0], pos[1]))]
+    return [Result.json("fieldset", svc.fieldset_delete(pos[0], force=bool(flags.get("force"))))]
 
 
 @handler("fieldset", "check")
@@ -726,10 +699,12 @@ def _fieldset_check(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("fieldset check 需要指标集名")
     flags = parse_flags(args)
-    ctl = _fieldset_controller(data_dir)
-    field = pos[1] if len(pos) > 1 else None
-    results = asyncio.run(ctl.check(pos[0], field, all_fields=bool(flags.get("all"))))
-    return [Result.json("fieldset", [r.to_dict() for r in results])]
+    svc = _graph_service(data_dir)
+    if flags.get("all") or len(pos) < 2:
+        fm = svc.fieldset_meta(pos[0])
+        results = [svc.fieldset_check(pos[0], f) for f in (fm.get("fields") or {})]
+        return [Result.json("fieldset", results)]
+    return [Result.json("fieldset", [svc.fieldset_check(pos[0], pos[1])])]
 
 
 @handler("fieldset", "test")
@@ -740,57 +715,34 @@ def _fieldset_test(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     if not flags.get("formula"):
         raise CommandError("fieldset test 需要 --formula <表达式>")
-    ctl = _fieldset_controller(data_dir)
+    svc = _graph_service(data_dir)
     try:
-        df = asyncio.run(ctl.test(pos[0], flags["formula"]))
+        res, df = svc.fieldset_test(pos[0], flags["formula"])
     except Exception as e:
         return [Result.json("fieldset", {"ok": False, "error": str(e)})]
     buf = io.BytesIO()
-    if df.height:
+    if df is not None and df.height:
         df.write_ipc_stream(buf)
-    return [Result.json("fieldset", {"ok": True, "rows": df.height,
-                                     "columns": df.columns}),
-            Result.table(f"test/{pos[0]}", buf.getvalue())]
+        return [Result.json("fieldset", res), Result.table(f"test/{pos[0]}", buf.getvalue())]
+    return [Result.json("fieldset", res)]
 
 
 @handler("fieldset", "scan")
 def _fieldset_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
-    ctl = _fieldset_controller(data_dir)
+    svc = _graph_service(data_dir)
     if flags.get("all"):
-        reports = asyncio.run(ctl.scan(all=True, resync=bool(flags.get("resync"))))
-        return [Result.json("fieldsets", [r.to_dict() for r in reports])]
+        return [Result.json("fieldsets",
+                            [svc.fieldset_scan(n["name"]) for n in svc.graph.list("fieldset")])]
     if not pos:
         raise CommandError("fieldset scan 需要指标集名（或 --all）")
-    report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
-    return [Result.json("fieldset", report.to_dict())]
+    return [Result.json("fieldset", svc.fieldset_scan(pos[0]))]
 
 
 # ---------------------------------------------------------------------------
-# sample 同步处理器（Execute 路径；SubmitTask 后台任务版在 sample/handlers.py）
+# sample 同步处理器（graph 登记；依赖 fieldset，get/check 实时过滤）
 # ---------------------------------------------------------------------------
-
-def _sample_controller(data_dir=None):
-    from ..sample.controller import SampleController
-
-    return SampleController(data_dir=data_dir)
-
-
-def _sample_arrow_meta(name: str, df, total: int, sm) -> str:
-    """ArrowTable.meta JSON：rows/total + 返回列的完整列元数据（源 dataset + fieldset 衍生列）"""
-    known = {c.name: c.to_dict() for c in sm.columns}
-    cols = []
-    for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
-        col = known.get(cn)
-        if col is None:
-            col = {"name": cn, "data_type": dt}
-        else:
-            col = {**col, "data_type": dt}
-        cols.append(col)
-    return dumps_str({"name": name, "rows": df.height, "total": total,
-                      "columns": cols})
-
 
 @handler("sample", "add")
 def _sample_add(args: list[str], data_dir=None) -> list[Result]:
@@ -798,13 +750,15 @@ def _sample_add(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("sample add 需要样本池名")
     flags = parse_flags(args)
-    ctl = _sample_controller(data_dir)
-    sm = asyncio.run(ctl.add(pos[0], dataset=flags.get("dataset"),
-                             engine=flags.get("engine") or "polars",
-                             formula=flags.get("formula") or "", **{
-                                 k: v for k, v in flags.items()
-                                 if k not in ("dataset", "engine", "formula")}))
-    return [Result.json("sample", sm.to_dict())]
+    if not flags.get("fieldset"):
+        raise CommandError("sample add 需要 --fieldset <fieldset 名>")
+    svc = _graph_service(data_dir)
+    sm = svc.sample_add(pos[0], flags["fieldset"],
+                        engine=flags.get("engine") or "polars",
+                        formula=flags.get("formula") or "", **{
+                            k: v for k, v in flags.items()
+                            if k not in ("fieldset", "engine", "formula")})
+    return [Result.json("sample", sm)]
 
 
 @handler("sample", "get")
@@ -813,23 +767,21 @@ def _sample_get(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("sample get 需要样本池名")
     flags = parse_flags(args)
-    ctl = _sample_controller(data_dir)
-    df, total = asyncio.run(ctl.get(
+    svc = _graph_service(data_dir)
+    df, total = svc.sample_get(
         pos[0],
         columns=flags.get("columns").split(",") if flags.get("columns") else None,
         where=flags.get("where"),
-        partition=flags.get("partition"),
-        exclude_tool=bool(flags.get("exclude-tool")),
         limit=int(flags["limit"]) if flags.get("limit") else None,
         offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
-    ))
-    sm = asyncio.run(ctl.meta(pos[0]))
+    )
+    sm = svc.sample_meta(pos[0])
     buf = io.BytesIO()
     if df.height:
         df.write_ipc_stream(buf)
     return [Result.table(pos[0], buf.getvalue(),
-                         meta=_sample_arrow_meta(pos[0], df, total, sm))]
+                         meta=_arrow_meta(pos[0], df, total, sm.get("columns") or []))]
 
 
 @handler("sample", "meta")
@@ -837,17 +789,15 @@ def _sample_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("sample meta 需要样本池名")
-    ctl = _sample_controller(data_dir)
-    sm = asyncio.run(ctl.meta(pos[0]))
-    return [Result.json("sample", sm.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("sample", svc.sample_meta(pos[0]))]
 
 
 @handler("sample", "list")
 @handler("sample", "")
 def _sample_list(args: list[str], data_dir=None) -> list[Result]:
-    ctl = _sample_controller(data_dir)
-    sms = asyncio.run(ctl.list())
-    return [Result.json("samples", [sm.to_dict() for sm in sms])]
+    svc = _graph_service(data_dir)
+    return [Result.json("samples", svc.sample_list())]
 
 
 @handler("sample", "set")
@@ -858,9 +808,8 @@ def _sample_set(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("sample set 需要样本池名")
     if not flags:
         raise CommandError("sample set 需要至少一个 --key value")
-    ctl = _sample_controller(data_dir)
-    sm = asyncio.run(ctl.set(pos[0], **flags))
-    return [Result.json("sample", sm.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("sample", svc.sample_set(pos[0], **flags))]
 
 
 @handler("sample", "check")
@@ -868,9 +817,8 @@ def _sample_check(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("sample check 需要样本池名")
-    ctl = _sample_controller(data_dir)
-    res = asyncio.run(ctl.check(pos[0]))
-    return [Result.json("sample", res.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("sample", svc.sample_check(pos[0]))]
 
 
 @handler("sample", "del")
@@ -880,20 +828,13 @@ def _sample_delete(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("sample delete 需要样本池名")
     flags = parse_flags(args)
-    ctl = _sample_controller(data_dir)
-    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
-    return [Result.json("sample", out)]
+    svc = _graph_service(data_dir)
+    return [Result.json("sample", svc.sample_delete(pos[0], force=bool(flags.get("force"))))]
 
 
 # ---------------------------------------------------------------------------
-# feature 同步处理器（Execute 路径；SubmitTask 后台任务版在 feature/handlers.py）
+# feature 同步处理器（graph 登记，纯定义；test 在 sample 视图上求值）
 # ---------------------------------------------------------------------------
-
-def _feature_controller(data_dir=None):
-    from ..feature.controller import FeatureController
-
-    return FeatureController(data_dir=data_dir)
-
 
 @handler("feature", "add")
 def _feature_add(args: list[str], data_dir=None) -> list[Result]:
@@ -901,12 +842,12 @@ def _feature_add(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("feature add 需要因子名")
     flags = parse_flags(args)
-    ctl = _feature_controller(data_dir)
-    ft = asyncio.run(ctl.add(pos[0], engine=flags.get("engine") or "polars",
-                             formula=flags.get("formula") or "", **{
-                                 k: v for k, v in flags.items()
-                                 if k not in ("engine", "formula")}))
-    return [Result.json("feature", ft.to_dict())]
+    svc = _graph_service(data_dir)
+    ft = svc.feature_add(pos[0], flags.get("formula") or "",
+                         engine=flags.get("engine") or "polars", **{
+                             k: v for k, v in flags.items()
+                             if k not in ("engine", "formula")})
+    return [Result.json("feature", ft)]
 
 
 @handler("feature", "set")
@@ -917,9 +858,8 @@ def _feature_set(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("feature set 需要因子名")
     if not flags:
         raise CommandError("feature set 需要至少一个 --key value")
-    ctl = _feature_controller(data_dir)
-    ft = asyncio.run(ctl.set(pos[0], **flags))
-    return [Result.json("feature", ft.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("feature", svc.feature_set(pos[0], **flags))]
 
 
 @handler("feature", "del")
@@ -929,9 +869,8 @@ def _feature_delete(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("feature delete 需要因子名")
     flags = parse_flags(args)
-    ctl = _feature_controller(data_dir)
-    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
-    return [Result.json("feature", out)]
+    svc = _graph_service(data_dir)
+    return [Result.json("feature", svc.feature_delete(pos[0], force=bool(flags.get("force"))))]
 
 
 @handler("feature", "meta")
@@ -939,17 +878,15 @@ def _feature_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("feature meta 需要因子名")
-    ctl = _feature_controller(data_dir)
-    ft = asyncio.run(ctl.meta(pos[0]))
-    return [Result.json("feature", ft.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("feature", svc.feature_meta(pos[0]))]
 
 
 @handler("feature", "list")
 @handler("feature", "")
 def _feature_list(args: list[str], data_dir=None) -> list[Result]:
-    ctl = _feature_controller(data_dir)
-    fts = asyncio.run(ctl.list())
-    return [Result.json("features", [ft.to_dict() for ft in fts])]
+    svc = _graph_service(data_dir)
+    return [Result.json("features", svc.feature_list())]
 
 
 @handler("feature", "test")
@@ -960,40 +897,19 @@ def _feature_test(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     if not flags.get("sample"):
         raise CommandError("feature test 需要 --sample <样本池名>")
-    ctl = _feature_controller(data_dir)
-    res, df = asyncio.run(ctl.test(pos[0], flags["sample"]))
+    svc = _graph_service(data_dir)
+    res, df = svc.feature_test(pos[0], flags["sample"])
     if df is not None and df.height:
         buf = io.BytesIO()
         df.write_ipc_stream(buf)
-        return [Result.json("feature", res.to_dict()),
+        return [Result.json("feature", res),
                 Result.table(f"test/{pos[0]}", buf.getvalue())]
-    return [Result.json("feature", res.to_dict())]
+    return [Result.json("feature", res)]
 
 
 # ---------------------------------------------------------------------------
-# factor 同步处理器（Execute 路径；SubmitTask 后台任务版在 factor/handlers.py）
+# factor 同步处理器（graph 登记；get/check 实时计算，scan 物化落盘）
 # ---------------------------------------------------------------------------
-
-def _factor_controller(data_dir=None):
-    from ..factor.controller import FactorController
-
-    return FactorController(data_dir=data_dir)
-
-
-def _factor_arrow_meta(name: str, df, total: int, fm) -> str:
-    """ArrowTable.meta JSON：rows/total + factor 列元数据（索引列 + 因子列说明）"""
-    keys = set(fm.keys)
-    cols = []
-    for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
-        if cn in keys:
-            cols.append({"name": cn, "data_type": dt, "as_index": True})
-        elif fm.field is not None and cn == fm.factor_col:
-            cols.append({**fm.field.to_dict(), "data_type": dt})
-        else:
-            cols.append({"name": cn, "data_type": dt})
-    return dumps_str({"name": name, "rows": df.height, "total": total,
-                      "columns": cols})
-
 
 @handler("factor", "add")
 def _factor_add(args: list[str], data_dir=None) -> list[Result]:
@@ -1001,9 +917,16 @@ def _factor_add(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("factor add 需要因子名")
     flags = parse_flags(args)
-    ctl = _factor_controller(data_dir)
-    fm = asyncio.run(ctl.add(pos[0], **flags))
-    return [Result.json("factor", fm.to_dict())]
+    svc = _graph_service(data_dir)
+    fm = svc.factor_add(pos[0], flags.get("feature") or "",
+                        flags.get("sample") or "",
+                        engine=flags.get("engine") or "polars",
+                        pipeline=flags.get("pipeline") or "nothing()",
+                        factor_col=flags.get("factor_col"), **{
+                            k: v for k, v in flags.items()
+                            if k not in ("feature", "sample", "engine",
+                                         "pipeline", "factor_col")})
+    return [Result.json("factor", fm)]
 
 
 @handler("factor", "get")
@@ -1012,20 +935,21 @@ def _factor_get(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("factor get 需要因子名")
     flags = parse_flags(args)
-    ctl = _factor_controller(data_dir)
-    df, total = asyncio.run(ctl.get(
+    svc = _graph_service(data_dir)
+    df, total = svc.factor_get(
         pos[0],
         where=flags.get("where"),
         partition=flags.get("partition"),
         limit=int(flags["limit"]) if flags.get("limit") else None,
         offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
-    ))
-    fm = asyncio.run(ctl.meta(pos[0]))
+    )
+    fm = svc.factor_meta(pos[0])
     buf = io.BytesIO()
-    df.write_ipc_stream(buf)
+    if df.height:
+        df.write_ipc_stream(buf)
     return [Result.table(pos[0], buf.getvalue(),
-                         meta=_factor_arrow_meta(pos[0], df, total, fm))]
+                         meta=_arrow_meta(pos[0], df, total, fm.get("columns") or []))]
 
 
 @handler("factor", "set")
@@ -1036,9 +960,8 @@ def _factor_set(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("factor set 需要因子名")
     if not flags:
         raise CommandError("factor set 需要至少一个 --key value")
-    ctl = _factor_controller(data_dir)
-    fm = asyncio.run(ctl.set(pos[0], **flags))
-    return [Result.json("factor", fm.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("factor", svc.factor_set(pos[0], **flags))]
 
 
 @handler("factor", "del")
@@ -1048,9 +971,8 @@ def _factor_delete(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("factor delete 需要因子名")
     flags = parse_flags(args)
-    ctl = _factor_controller(data_dir)
-    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
-    return [Result.json("factor", out)]
+    svc = _graph_service(data_dir)
+    return [Result.json("factor", svc.factor_delete(pos[0], force=bool(flags.get("force"))))]
 
 
 @handler("factor", "meta")
@@ -1058,17 +980,15 @@ def _factor_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("factor meta 需要因子名")
-    ctl = _factor_controller(data_dir)
-    fm = asyncio.run(ctl.meta(pos[0]))
-    return [Result.json("factor", fm.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("factor", svc.factor_meta(pos[0]))]
 
 
 @handler("factor", "list")
 @handler("factor", "")
 def _factor_list(args: list[str], data_dir=None) -> list[Result]:
-    ctl = _factor_controller(data_dir)
-    fms = asyncio.run(ctl.list())
-    return [Result.json("factors", [fm.to_dict() for fm in fms])]
+    svc = _graph_service(data_dir)
+    return [Result.json("factors", svc.factor_list())]
 
 
 @handler("factor", "check")
@@ -1076,49 +996,27 @@ def _factor_check(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("factor check 需要因子名")
-    ctl = _factor_controller(data_dir)
-    res = asyncio.run(ctl.check(pos[0]))
-    return [Result.json("factor", res.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("factor", svc.factor_check(pos[0]))]
 
 
 @handler("factor", "scan")
 def _factor_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
-    ctl = _factor_controller(data_dir)
+    svc = _graph_service(data_dir)
     if flags.get("all"):
-        reports = asyncio.run(ctl.scan(all=True, resync=bool(flags.get("resync"))))
-        return [Result.json("factors", [r.to_dict() for r in reports])]
+        reports = svc.factor_scan(all=True, resync=bool(flags.get("resync")))
+        return [Result.json("factors", reports)]
     if not pos:
         raise CommandError("factor scan 需要因子名（或 --all）")
-    report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
-    return [Result.json("factor", report.to_dict())]
+    report = svc.factor_scan(pos[0], resync=bool(flags.get("resync")))
+    return [Result.json("factor", report)]
 
 
 # ---------------------------------------------------------------------------
-# test 同步处理器（Execute 路径；SubmitTask 后台任务版在 factor_test/handlers.py）
+# test 同步处理器（graph 登记；get/check 实时构造，scan 物化落盘）
 # ---------------------------------------------------------------------------
-
-def _test_controller(data_dir=None):
-    from ..factor_test.controller import FactorTestController
-
-    return FactorTestController(data_dir=data_dir)
-
-
-def _test_arrow_meta(name: str, df, total: int, tm) -> str:
-    """ArrowTable.meta JSON：rows/total + 测试数据集列元数据"""
-    known = {c.name: c.to_dict() for c in tm.columns}
-    cols = []
-    for cn, dt in zip(df.columns, (str(t) for t in df.dtypes)):
-        col = known.get(cn)
-        if col is None:
-            col = {"name": cn, "data_type": dt}
-        else:
-            col = {**col, "data_type": dt}
-        cols.append(col)
-    return dumps_str({"name": name, "rows": df.height, "total": total,
-                      "columns": cols})
-
 
 @handler("test", "add")
 def _test_add(args: list[str], data_dir=None) -> list[Result]:
@@ -1128,7 +1026,7 @@ def _test_add(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     if not flags.get("factor"):
         raise CommandError("test add 需要 --factor <因子名>")
-    ctl = _test_controller(data_dir)
+    svc = _graph_service(data_dir)
     from ..factor_test.spec import FactorTesterSpec
 
     spec = FactorTesterSpec(
@@ -1140,16 +1038,18 @@ def _test_add(args: list[str], data_dir=None) -> list[Result]:
                          (flags.get("date_range") or "2023-01-01,2026-01-01").split(",")),
         rolling_window=int(flags["rolling_window"]) if flags.get("rolling_window") else 252,
     )
-    tm = asyncio.run(ctl.add(
-        pos[0], factor=flags["factor"],
+    tm = svc.test_add(
+        pos[0], flags["factor"],
         returns=flags.get("returns") or "r",
         groupby=flags.get("groupby") or "ic",
         marketcap=flags.get("marketcap") or "fv",
-        spec=spec, **{k: v for k, v in flags.items()
-                      if k not in ("factor", "returns", "groupby", "marketcap",
-                                   "by_group", "quantiles", "periods",
-                                   "date_range", "rolling_window")}))
-    return [Result.json("test", tm.to_dict())]
+        factor_col=flags.get("factor_col"),
+        spec=spec.to_dict(), **{k: v for k, v in flags.items()
+                                if k not in ("factor", "returns", "groupby",
+                                             "marketcap", "factor_col",
+                                             "by_group", "quantiles", "periods",
+                                             "date_range", "rolling_window")})
+    return [Result.json("test", tm)]
 
 
 @handler("test", "get")
@@ -1158,20 +1058,20 @@ def _test_get(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("test get 需要测试集名")
     flags = parse_flags(args)
-    ctl = _test_controller(data_dir)
-    df, total = asyncio.run(ctl.get(
+    svc = _graph_service(data_dir)
+    df, total = svc.test_get(
         pos[0],
         where=flags.get("where"),
         limit=int(flags["limit"]) if flags.get("limit") else None,
         offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
-    ))
-    tm = asyncio.run(ctl.meta(pos[0]))
+    )
+    tm = svc.test_meta(pos[0])
     buf = io.BytesIO()
     if df.height:
         df.write_ipc_stream(buf)
     return [Result.table(pos[0], buf.getvalue(),
-                         meta=_test_arrow_meta(pos[0], df, total, tm))]
+                         meta=_arrow_meta(pos[0], df, total, tm.get("columns") or []))]
 
 
 @handler("test", "meta")
@@ -1179,17 +1079,15 @@ def _test_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("test meta 需要测试集名")
-    ctl = _test_controller(data_dir)
-    tm = asyncio.run(ctl.meta(pos[0]))
-    return [Result.json("test", tm.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("test", svc.test_meta(pos[0]))]
 
 
 @handler("test", "list")
 @handler("test", "")
 def _test_list(args: list[str], data_dir=None) -> list[Result]:
-    ctl = _test_controller(data_dir)
-    tms = asyncio.run(ctl.list())
-    return [Result.json("tests", [tm.to_dict() for tm in tms])]
+    svc = _graph_service(data_dir)
+    return [Result.json("tests", svc.test_list())]
 
 
 @handler("test", "set")
@@ -1200,12 +1098,11 @@ def _test_set(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("test set 需要测试集名")
     if not flags:
         raise CommandError("test set 需要至少一个 --key value")
-    ctl = _test_controller(data_dir)
+    svc = _graph_service(data_dir)
     kw = dict(flags)
     if "spec" in kw and isinstance(kw["spec"], str):
         kw["spec"] = {"periods": [int(p) for p in kw["spec"].split(",")]}
-    tm = asyncio.run(ctl.set(pos[0], **kw))
-    return [Result.json("test", tm.to_dict())]
+    return [Result.json("test", svc.test_set(pos[0], **kw))]
 
 
 @handler("test", "del")
@@ -1215,9 +1112,8 @@ def _test_delete(args: list[str], data_dir=None) -> list[Result]:
     if not pos:
         raise CommandError("test delete 需要测试集名")
     flags = parse_flags(args)
-    ctl = _test_controller(data_dir)
-    out = asyncio.run(ctl.delete(pos[0], force=bool(flags.get("force"))))
-    return [Result.json("test", out)]
+    svc = _graph_service(data_dir)
+    return [Result.json("test", svc.test_delete(pos[0], force=bool(flags.get("force"))))]
 
 
 @handler("test", "check")
@@ -1225,23 +1121,22 @@ def _test_check(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
         raise CommandError("test check 需要测试集名")
-    ctl = _test_controller(data_dir)
-    res = asyncio.run(ctl.check(pos[0]))
-    return [Result.json("test", res.to_dict())]
+    svc = _graph_service(data_dir)
+    return [Result.json("test", svc.test_check(pos[0]))]
 
 
 @handler("test", "scan")
 def _test_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
-    ctl = _test_controller(data_dir)
+    svc = _graph_service(data_dir)
     if flags.get("all"):
-        reports = asyncio.run(ctl.scan(all=True, resync=bool(flags.get("resync"))))
-        return [Result.json("tests", [r.to_dict() for r in reports])]
+        reports = svc.test_scan(all=True, resync=bool(flags.get("resync")))
+        return [Result.json("tests", reports)]
     if not pos:
         raise CommandError("test scan 需要测试集名（或 --all）")
-    report = asyncio.run(ctl.scan(pos[0], resync=bool(flags.get("resync"))))
-    return [Result.json("test", report.to_dict())]
+    report = svc.test_scan(pos[0], resync=bool(flags.get("resync")))
+    return [Result.json("test", report)]
 
 
 # ---------------------------------------------------------------------------

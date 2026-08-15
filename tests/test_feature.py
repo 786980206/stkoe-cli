@@ -52,6 +52,27 @@ def _setup_source(tmp_path):
     return root
 
 
+def _gsetup(root):
+    """graph 语义造数：idx/mem 表 → index → panel ds(keys=k) → fieldset fs1 → sample sp1"""
+    _write(root, "idx", pl.DataFrame({
+        "k": ["a", "b", "c"],
+        "x": [1.0, 2.0, 3.0],
+        "date": ["2026-01-01", "2026-01-02", "2026-01-03"],
+    }))
+    _write(root, "mem", pl.DataFrame({"k": ["a", "b", "c"]}))
+    from stkoe.graph.service import GraphService
+
+    svc = GraphService(data_dir=root)
+    svc.table_add("idx")
+    svc.table_add("mem")
+    svc.index_add("idx")
+    svc.panel_add("ds", "idx", ["mem"], keys=["k"])
+    svc.fieldset_add("fs1", "ds")
+    svc.sample_add("sp1", "fs1")
+    svc.close()
+    return root
+
+
 def test_engine_registry_has_polars(ctl):
     assert "polars" in engine_names()
     assert get_engine("polars").name == "polars"
@@ -166,22 +187,8 @@ def test_delete_sample_not_blocked_by_feature(ctl, tmp_path):
 
 
 def test_task_framework_feature_handlers(mgr):
-    """任务版：feature add → test → set → del 全链路"""
-    from stkoe.table import TableController
-
-    from stkoe.dataset import DatasetController
-
-    from stkoe.sample import SampleController
-
-    root = mgr.data_dir
-    _write(root, "idx", pl.DataFrame({
-        "k": ["a", "b"], "x": [1.0, 2.0], "optime": ["2024-01-01 08:00:00"] * 2}))
-    tctl = TableController(data_dir=root)
-    _run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    _run(dc.add("ds", "idx", keys=["k"]))
-    sc = SampleController(data_dir=root)
-    _run(sc.add("sp1", dataset="ds"))
+    """任务版：feature add → test → set → del 全链路（graph 语义）"""
+    _gsetup(mgr.data_dir)
 
     t_add = mgr.submit("feature", "add", ["f1", "--formula", "x*2"])
     _await(mgr, t_add)
@@ -241,6 +248,16 @@ def _await(mgr, task, timeout=5.0):
 
 def _mgr_result(mgr, task):
     import json
+    import time
 
-    evs = mgr.events.list_by_task(task.task_id)
+    from stkoe.task.model import TERMINAL_STATES
+
+    task_id = task.task_id if hasattr(task, "task_id") else task
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        evs = mgr.events.list_by_task(task_id)
+        if evs and evs[-1].state in TERMINAL_STATES:
+            return json.loads(evs[-1].data) if evs[-1].data else None
+        time.sleep(0.01)
+    evs = mgr.events.list_by_task(task_id)
     return json.loads(evs[-1].data) if evs and evs[-1].data else None

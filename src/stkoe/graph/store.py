@@ -75,7 +75,8 @@ class GraphStore:
     """graphqlite 图存储：节点/边/遍历原语。"""
 
     def __init__(self, db_path: str = ":memory:"):
-        self._conn: sqlite3.Connection = sqlite3.connect(db_path)
+        # check_same_thread=False：任务版 handler 在 run 线程建连接、to_thread 线程顺序使用
+        self._conn: sqlite3.Connection = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row  # 物理指纹查询按列名访问
         graphqlite.load(self._conn)
         self._conn.executescript(_FP_SCHEMA)  # 物理指纹普通表（幂等）

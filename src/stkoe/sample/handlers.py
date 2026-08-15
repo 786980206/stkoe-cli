@@ -1,13 +1,8 @@
-"""sample TaskHandler：把 SampleController 接进任务框架（source="sample"）
-
-每个动作一个 Handler，解析位置参数 + ``--flag`` 后调用 SampleController 的
-async 方法，结果以 JSON 返回。
-"""
+"""sample TaskHandler：把 GraphService 的 sample 资产接进任务框架（source="sample"）"""
 from __future__ import annotations
 
+import asyncio
 import io
-
-import polars as pl
 
 from ..args import parse_flags
 from ..jsonutil import dumps_str
@@ -30,10 +25,10 @@ def _positional(args: list[str]) -> list[str]:
     return out
 
 
-def _controller(ctx):
-    from .controller import SampleController
+def _service(ctx):
+    from ..graph.service import GraphService
 
-    return SampleController(data_dir=ctx.data_dir)
+    return GraphService(data_dir=ctx.data_dir)
 
 
 class SampleAddHandler(TaskHandler):
@@ -42,13 +37,16 @@ class SampleAddHandler(TaskHandler):
         if not pos:
             raise ValueError("sample add 需要样本池名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        sm = await ctl.add(pos[0], dataset=flags.get("dataset"),
-                           engine=flags.get("engine") or "polars",
-                           formula=flags.get("formula") or "", **{
-                               k: v for k, v in flags.items()
-                               if k not in ("dataset", "engine", "formula")})
-        return TaskResult(data=dumps_str(sm.to_dict()))
+        if not flags.get("fieldset"):
+            raise ValueError("sample add 需要 --fieldset <fieldset 名>")
+        svc = _service(ctx)
+        sm = await asyncio.to_thread(
+            svc.sample_add, pos[0], flags["fieldset"],
+            engine=flags.get("engine") or "polars",
+            formula=flags.get("formula") or "", **{
+                k: v for k, v in flags.items()
+                if k not in ("fieldset", "engine", "formula")})
+        return TaskResult(data=dumps_str(sm))
 
 
 class SampleGetHandler(TaskHandler):
@@ -57,14 +55,12 @@ class SampleGetHandler(TaskHandler):
         if not pos:
             raise ValueError("sample get 需要样本池名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         columns = flags.get("columns") or None
-        df, total = await ctl.get(
-            pos[0],
+        df, total = await asyncio.to_thread(
+            svc.sample_get, pos[0],
             columns=columns.split(",") if columns else None,
             where=flags.get("where"),
-            partition=flags.get("partition"),
-            exclude_tool=bool(flags.get("exclude-tool")),
             limit=int(flags["limit"]) if flags.get("limit") else None,
             offset=int(flags["offset"]) if flags.get("offset") else None,
             count_total=True,
@@ -85,16 +81,16 @@ class SampleMetaHandler(TaskHandler):
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("sample meta 需要样本池名")
-        ctl = _controller(ctx)
-        sm = await ctl.meta(pos[0])
-        return TaskResult(data=dumps_str(sm.to_dict()))
+        svc = _service(ctx)
+        sm = await asyncio.to_thread(svc.sample_meta, pos[0])
+        return TaskResult(data=dumps_str(sm))
 
 
 class SampleListHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
-        ctl = _controller(ctx)
-        sms = await ctl.list()
-        return TaskResult(data=dumps_str([sm.to_dict() for sm in sms]))
+        svc = _service(ctx)
+        sms = await asyncio.to_thread(svc.sample_list)
+        return TaskResult(data=dumps_str(sms))
 
 
 class SampleSetHandler(TaskHandler):
@@ -105,9 +101,9 @@ class SampleSetHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         if not flags:
             raise ValueError("sample set 需要至少一个 --key value")
-        ctl = _controller(ctx)
-        sm = await ctl.set(pos[0], **flags)
-        return TaskResult(data=dumps_str(sm.to_dict()))
+        svc = _service(ctx)
+        sm = await asyncio.to_thread(svc.sample_set, pos[0], **flags)
+        return TaskResult(data=dumps_str(sm))
 
 
 class SampleCheckHandler(TaskHandler):
@@ -115,9 +111,9 @@ class SampleCheckHandler(TaskHandler):
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("sample check 需要样本池名")
-        ctl = _controller(ctx)
-        res = await ctl.check(pos[0])
-        return TaskResult(data=dumps_str(res.to_dict()))
+        svc = _service(ctx)
+        res = await asyncio.to_thread(svc.sample_check, pos[0])
+        return TaskResult(data=dumps_str(res))
 
 
 class SampleDeleteHandler(TaskHandler):
@@ -126,8 +122,9 @@ class SampleDeleteHandler(TaskHandler):
         if not pos:
             raise ValueError("sample delete 需要样本池名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        out = await ctl.delete(pos[0], force=bool(flags.get("force")))
+        svc = _service(ctx)
+        out = await asyncio.to_thread(
+            svc.sample_delete, pos[0], force=bool(flags.get("force")))
         return TaskResult(data=dumps_str(out))
 
 

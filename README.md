@@ -4,19 +4,21 @@ stkoe 数据服务（gRPC）：管理**表 / 数据集 / 衍生指标 / 样本�
 当前正在进行 **V3.0 图数据库血缘重构**（graphqlite 嵌入式图库，记录资产间血缘关系）。
 
 - **V2.0 基线**：gRPC 服务 + SQLite catalog + polars 计算，代码已备份至 `V2.0/`
-- **V3.0 进行中**：`src/stkoe/graph/` 图模块（节点/边/版本/事件响应）已落地并跑通，
+- **V3.0 已落地**：`src/stkoe/graph/` 图模块（节点/边/版本/事件响应）+ `GraphService`
+  （table/index/panel/fieldset/sample/feature/factor/test 三路径统一，catalog.db 废弃），
   详见 [`graph-design.md`](graph-design.md)
 
 ## 当前功能（做了什么）
 
-### V2.0 数据资产（稳定）
+### V3.0 数据资产（已全面切 graph）
 
 | 模块 | 能力 |
 |---|---|
-| `table` | 注册/读取/删除本地 parquet 表、列元数据、`--type` 表类型、`list --candidate` |
-| `dataset` | 逻辑数据集（index 表 + 成员表 + keys），add 只注册、scan 物化、列元数据继承 |
-| `fieldset` | 衍生指标集（公式引擎 polars 插件制），check 校验、scan 物化、fields-only 读取 |
-| `sample` | 样本池（dataset_with_fieldset 过滤产物，无物化，实时构造） |
+| `table` | 注册/读取/删除本地 parquet 表、列元数据、`list --candidate`（登记/版本/依赖走 graph） |
+| `index` | 独立索引资产主体（symbol/datetime 列），table 恒 type="table" |
+| `panel` | 逻辑数据集（原 dataset，index 表 + 成员表 + keys），实时 join 视图；dataset 旧别名转发 |
+| `fieldset` | 衍生指标集（公式引擎 polars 插件制），check 校验写回 validated |
+| `sample` | 样本池（fieldset 视图过滤产物，无物化，实时构造） |
 | `feature` | 因子定义库（命名公式，纯定义），`feature test` 在样本视图即时求值 |
 | `factor` | 最终因子（feature 公式 + sample 视图 + pipeline 算子链），可物化、幂等 |
 | `test` | 因子测试数据集（factor_test）+ 六类测试器（stat 集成） |
@@ -24,7 +26,7 @@ stkoe 数据服务（gRPC）：管理**表 / 数据集 / 衍生指标 / 样本�
 | `mock` | 演示数据生成（`stkoe mock demo`/`gen`） |
 | `task` | 后台任务框架（SubmitTask/SubscribeTask/TaskControl，协作式取消） |
 
-### V3.0 血缘图（进行中，已可运行）
+### V3.0 图实现（已落地，三路径统一走 GraphService）
 
 - **`graph` 模块**（graphqlite 嵌入式图数据库，Cypher）：
   - 节点（10 类资产，label=类型，id=`<type>:<name>`）+ DEPENDS 边（依赖方→被依赖方，
@@ -34,6 +36,10 @@ stkoe 数据服务（gRPC）：管理**表 / 数据集 / 衍生指标 / 样本�
     （拓扑重算：积累事件合并→storage 钩子→版本递增+边水位对齐），成环报错
   - 删除约束：无下游才可删（force 绕过）；血缘链
     `table/index → panel → fieldset → sample → factor`
+- **GraphService**（`graph/service.py`）：table/index/panel/fieldset/sample/feature/factor/test
+  统一服务——登记/依赖/版本进 graph；物理指纹表（stkoe_data_files/stkoe_file_stats）
+  迁入 graph.db 普通表；factor/test 物化落盘 `factors/`、`factor_tests/`（幂等）；
+  Execute（dispatch）与 SubmitTask（任务版 handler）三路径对齐
 - **`graph` 命令（gRPC Execute，JSON 返回）**：`e:graph lineage [--node][--depth]` /
   `e:graph nodes [--type]` / `e:graph stats`
 - **可视化**：`tools/graph-viewer/`（Cytoscape.js 独立页）+ **portal 前端右上角
@@ -41,9 +47,8 @@ stkoe 数据服务（gRPC）：管理**表 / 数据集 / 衍生指标 / 样本�
 
 ## 接下来要做什么（路线图）
 
-1. **接入真实物理存储**：实现 `graph` 的 storage 钩子（parquet 读取/物化），让
-   `materialize` 真正落盘；`notify_change` 对接表数据变化事件
-2. **三路径对齐**：graph 资产接入 SubmitTask 任务版与 CLI，api.md/example.md 全量同步
+1. **panel 物化**：panel scan 落盘 + index 唯一性校验等物理细节
+2. **V2.0 清理**：任务版 table/dataset handler 切 graph、V2.0 controller 死代码评估
 3. **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
    （`(column) -[:DERIVES]-> (column)`）
 4. **版本/事件沉淀**：version_list 过期裁剪、事件合并的跨依赖精确并集

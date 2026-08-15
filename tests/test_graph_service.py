@@ -169,3 +169,117 @@ class TestPanelGraph:
         svc.panel_add("ds1", "index", ["m1"], keys=["sym"])
         svc.panel_delete("ds1")
         assert svc.store.get_node("panel:ds1") is None
+
+
+class TestFactorGraph:
+    """factor：feature 公式 + sample 视图 + pipeline 算子链（graph 登记，scan 物化）。"""
+
+    def _chain(self, svc):
+        svc.table_add("index")
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"], keys=["sym", "date"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_check("fs1", "x2")
+        svc.sample_add("sp1", "fs1")
+        svc.feature_add("f1", "code * 2")
+
+    def test_factor_add_meta_check_get_scan(self, svc):
+        self._chain(svc)
+        fm = svc.factor_add("fac1", "f1", "sp1")
+        assert fm["name"] == "fac1"
+        assert fm["feature"] == "f1"
+        assert fm["sample"] == "sp1"
+        assert fm["keys"] == ["sym", "date"]
+        m = svc.factor_meta("fac1")
+        assert m["materialized"] is False
+        assert {c["name"] for c in m["columns"]} >= {"sym", "date", "code", "price", "x2"}
+
+        r = svc.factor_check("fac1")
+        assert r["ok"] is True
+        df, total = svc.factor_get("fac1", count_total=True)
+        assert df.height == 2 and total == 2
+        assert df.columns == ["sym", "date", "f1"]
+
+        s1 = svc.factor_scan("fac1")
+        assert s1["changed"] is True
+        assert s1["version_after"] > s1["version_before"]
+        s2 = svc.factor_scan("fac1")  # 幂等
+        assert s2["changed"] is False
+        assert svc.factor_meta("fac1")["curated"] is True
+        assert (svc.data_dir / "factors" / "fac1" / "data.parquet").exists()
+
+    def test_factor_add_requires_registered(self, svc):
+        self._chain(svc)
+        with pytest.raises(Exception):
+            svc.factor_add("fac1", "nope", "sp1")
+        with pytest.raises(Exception):
+            svc.factor_add("fac1", "f1", "nope")
+
+    def test_factor_list_set_delete(self, svc):
+        self._chain(svc)
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_add("fac2", "f1", "sp1", pipeline="nothing()")
+        assert [f["name"] for f in svc.factor_list()] == ["fac1", "fac2"]
+        svc.factor_set("fac1", display_name="因子1")
+        assert svc.factor_meta("fac1")["display_name"] == "因子1"
+        svc.factor_delete("fac1")
+        assert svc.store.get_node("factor:fac1") is None
+
+
+class TestTesterGraph:
+    """test：factor 关联 sample 视图 + 测试必需列；scan 物化，test_data 供 stat。"""
+
+    def _chain(self, svc, with_test_cols=True):
+        if with_test_cols:
+            # 覆盖 index/data.parquet 加入测试必需列（多文件 scan 不 union schema）
+            pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                          "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
+                          "code": [1, 2]}).write_parquet(
+                os.path.join(svc.data_dir, "tables", "index", "data.parquet"))
+        svc.table_add("index")
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"], keys=["sym", "date"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_check("fs1", "x2")
+        svc.sample_add("sp1", "fs1")
+        svc.feature_add("f1", "code * 2")
+        svc.factor_add("fac1", "f1", "sp1")
+
+    def test_test_add_requires_columns(self, svc):
+        self._chain(svc, with_test_cols=False)
+        with pytest.raises(ValueError):
+            svc.test_add("t1", "fac1")
+
+    def test_test_add_get_check_scan_data_delete(self, svc):
+        self._chain(svc)
+        tm = svc.test_add("t1", "fac1")
+        assert tm["name"] == "t1"
+        assert tm["factor"] == "fac1"
+        assert tm["sample"] == "sp1"
+        assert tm["keys"] == ["sym", "date"]
+
+        df, total = svc.test_get("t1", count_total=True)
+        assert df.height == 2 and total == 2
+        assert "factor_quantile" in df.columns
+        assert "d1" in df.columns
+
+        r = svc.test_check("t1")
+        assert r["ok"] is True
+
+        s1 = svc.test_scan("t1")
+        assert s1["changed"] is True
+        assert s1["rows"] == 2
+        s2 = svc.test_scan("t1")  # 幂等
+        assert s2["changed"] is False
+        assert svc.test_meta("t1")["curated"] is True
+        assert (svc.data_dir / "factor_tests" / "t1" / "data.parquet").exists()
+
+        d = svc.test_data("t1")
+        assert d.height == 2
+
+        svc.test_delete("t1")
+        assert svc.store.get_node("tester:t1") is None

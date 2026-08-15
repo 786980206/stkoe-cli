@@ -79,6 +79,14 @@ def _cmd_dataset(raw: list[str]) -> int:
     return _cmd_dispatch("dataset", raw)
 
 
+def _cmd_index(raw: list[str]) -> int:
+    return _cmd_dispatch("index", raw)
+
+
+def _cmd_panel(raw: list[str]) -> int:
+    return _cmd_dispatch("panel", raw)
+
+
 def _cmd_stat(raw: list[str]) -> int:
     return _cmd_dispatch("stat", raw)
 
@@ -118,7 +126,8 @@ def _help() -> str:
         "  config show                     查看生效配置\n"
         "  config set --<key> <value> ...  设置任意配置项（写入 stkoe.json）\n"
         "  table <action> <args...>        table 命令（list/meta/add/set/get/delete，与 Execute 对齐）\n"
-        "  dataset <action> <args...>      dataset 命令（add/get/meta/list/set/scan/delete）\n"
+        "  index <action> <args...>        index 命令（add/get/meta/list/set/col/scan/delete；独立资产）\n"
+        "  panel <action> <args...>        panel 命令（add/get/meta/list/set/delete；原 dataset，dataset 为旧别名）\n"
         "  stat <action> <args...>         stat 命令（scan/get/meta/list/delete）\n"
         "  fieldset <action> <args...>     fieldset 命令（add/get/meta/list/set/scan/delete/check/test）\n"
         "  sample <action> <args...>       sample 命令（add/get/meta/list/set/check/delete；无物化）\n"
@@ -146,6 +155,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_config(args[1:])
     if cmd == "table":
         return _cmd_table(args[1:])
+    if cmd == "index":
+        return _cmd_index(args[1:])
+    if cmd == "panel":
+        return _cmd_panel(args[1:])
     if cmd == "dataset":
         return _cmd_dataset(args[1:])
     if cmd == "stat":

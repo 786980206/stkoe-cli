@@ -169,6 +169,18 @@ src/stkoe/
 - 流式断言用 `_collect`（先 DataHeader，再数据消息）
 - 全量 220 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
 
+## 当前状态与下一步
+
+**当前**：V2.0 数据资产（table/dataset/fieldset/sample/feature/factor/test/stat/mock/task）
+稳定；V3.0 血缘图重构进行中 —— `graph/` 模块（graphqlite 图库：节点/边/时间戳版本/
+事件响应/依赖约束）已落地，`graph lineage/nodes/stats` 已接入 gRPC Execute 通道，
+portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-design.md §6-7）。
+
+**下一步**（详见 README「路线图」）：
+1. 真实 storage 物化钩子（parquet）+ notify_change 对接物理数据变化
+2. graph 资产三路径对齐（SubmitTask / CLI / api.md / example.md）
+3. 列级血缘（列节点图）、version_list 裁剪、图算法（PageRank 等）
+
 ## 近期变更记录
 
 ### 2026-08 graph 血缘经 gRPC Execute 通道输出（portal 血缘模块后端）

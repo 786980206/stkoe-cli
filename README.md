@@ -1,178 +1,144 @@
 # stkoe
 
-stkoe 数据服务（重构版）。当前阶段：gRPC 服务端 + 表/数据集/统计三类数据资产。
+stkoe 数据服务（gRPC）：管理**表 / 数据集 / 衍生指标 / 样本池 / 因子 / 统计**等数据资产，
+当前正在进行 **V3.0 图数据库血缘重构**（graphqlite 嵌入式图库，记录资产间血缘关系）。
+
+- **V2.0 基线**：gRPC 服务 + SQLite catalog + polars 计算，代码已备份至 `V2.0/`
+- **V3.0 进行中**：`src/stkoe/graph/` 图模块（节点/边/版本/事件响应）已落地并跑通，
+  详见 [`graph-design.md`](graph-design.md)
+
+## 当前功能（做了什么）
+
+### V2.0 数据资产（稳定）
+
+| 模块 | 能力 |
+|---|---|
+| `table` | 注册/读取/删除本地 parquet 表、列元数据、`--type` 表类型、`list --candidate` |
+| `dataset` | 逻辑数据集（index 表 + 成员表 + keys），add 只注册、scan 物化、列元数据继承 |
+| `fieldset` | 衍生指标集（公式引擎 polars 插件制），check 校验、scan 物化、fields-only 读取 |
+| `sample` | 样本池（dataset_with_fieldset 过滤产物，无物化，实时构造） |
+| `feature` | 因子定义库（命名公式，纯定义），`feature test` 在样本视图即时求值 |
+| `factor` | 最终因子（feature 公式 + sample 视图 + pipeline 算子链），可物化、幂等 |
+| `test` | 因子测试数据集（factor_test）+ 六类测试器（stat 集成） |
+| `stat` | 覆盖率 / 存续统计（storage），输出 parquet 产物 |
+| `mock` | 演示数据生成（`stkoe mock demo`/`gen`） |
+| `task` | 后台任务框架（SubmitTask/SubscribeTask/TaskControl，协作式取消） |
+
+### V3.0 血缘图（进行中，已可运行）
+
+- **`graph` 模块**（graphqlite 嵌入式图数据库，Cypher）：
+  - 节点（10 类资产，label=类型，id=`<type>:<name>`）+ DEPENDS 边（依赖方→被依赖方，
+    带 `required_version` 消费水位 + role/join）
+  - **版本 = 高精度时间戳**（`time.time_ns()`）+ `version_list` 事件日志
+  - **事件响应**：`notify_change`（上游变化→下游置脏）→ `resolve`/`resolve_all`
+    （拓扑重算：积累事件合并→storage 钩子→版本递增+边水位对齐），成环报错
+  - 删除约束：无下游才可删（force 绕过）；血缘链
+    `table/index → panel → fieldset → sample → factor`
+- **`graph` 命令（gRPC Execute，JSON 返回）**：`e:graph lineage [--node][--depth]` /
+  `e:graph nodes [--type]` / `e:graph stats`
+- **可视化**：`tools/graph-viewer/`（Cytoscape.js 独立页）+ **portal 前端右上角
+  "血缘关系"抽屉**（Tauri 经 gRPC 拉取渲染）
+
+## 接下来要做什么（路线图）
+
+1. **接入真实物理存储**：实现 `graph` 的 storage 钩子（parquet 读取/物化），让
+   `materialize` 真正落盘；`notify_change` 对接表数据变化事件
+2. **三路径对齐**：graph 资产接入 SubmitTask 任务版与 CLI，api.md/example.md 全量同步
+3. **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
+   （`(column) -[:DERIVES]-> (column)`）
+4. **版本/事件沉淀**：version_list 过期裁剪、事件合并的跨依赖精确并集
+5. **图算法能力**：graphqlite 内置算法（PageRank/中心性/连通分量）用于资产重要性分析
+6. **测试**：图模块更多边界用例 + gRPC 全链路回归
 
 ## 环境要求
 
-- Python >= 3.13
-- 包管理用 [uv](https://docs.astral.sh/uv/)
+- Python >= 3.13；包管理用 [uv](https://docs.astral.sh/uv/)
+- 依赖：graphqlite / grpcio / orjson / polars / pyarrow（dev：grpcio-tools / pytest）
 
-## 安装
+## 安装与运行
 
 ```bash
 uv sync                 # 安装依赖
 uv run stkoe serve      # 前台运行 gRPC 服务（默认 127.0.0.1:9569）
+uv run pytest -q        # 全量测试
 ```
 
 ## 配置（stkoe.json）
 
-- 查找优先级：`STKOE_CONFIG` 环境变量 > `./stkoe.json`（若存在）> `~/.stkoe/stkoe.json`
-- 写入位置：`STKOE_CONFIG`（若设置）> `./stkoe.json`
-- 键名保持输入形态（含连字符），支持任意字段
+- 查找优先级：`STKOE_CONFIG` > `./stkoe.json` > `~/.stkoe/stkoe.json`
+- 已知键：`grpc-host`（默认 127.0.0.1）、`grpc-port`（9569）、`data-dir`（~/.stkoe）；任意键进 extra
 
 ```bash
-uv run stkoe config show                          # 查看生效配置
-uv run stkoe config set --grpc-host 0.0.0.0       # 写入 {"grpc-host": "0.0.0.0"}
-uv run stkoe config set --grpc-port 9000
+uv run stkoe config show | set --<key> <value> ...
 ```
 
-`stkoe serve` 缺省 host/port 取 `grpc-host` / `grpc-port`；`--host` / `--port` 显式覆盖。
-配置同样可通过 gRPC `Execute(source="config", action="show"|"set", args=["--key", "value"])` 读写。
+## CLI / gRPC 命令
 
-## CLI 命令
+请求统一为 `<source> <action> <args...>`；CLI 子命令与 gRPC Execute 同一分发：
 
 ```bash
-uv run stkoe serve                                # 前台运行 gRPC 服务
-uv run stkoe config show | set                    # 配置读写
-uv run stkoe table <action> <args...>             # table 命令（走 Execute 同步分发）
-uv run stkoe dataset <action> <args...>           # dataset 命令（走 Execute 同步分发）
-uv run stkoe stat <action> <args...>              # stat 命令（走 Execute 同步分发）
+uv run stkoe table list | meta demo | add demo | set demo --display_name 演示表 | col demo sym --unit 元
+uv run stkoe dataset add ds1 index m1 --keys sym,date | scan ds1 | get ds1 | meta ds1
+uv run stkoe fieldset add fs1 --dataset ds1 | fieldset add fs1 ma5 --formula "price.rolling_mean(5)"
+uv run stkoe sample add sp1 --dataset ds1 --formula "(date>='2026-01-01')"
+uv run stkoe feature add ma5 --formula "price.rolling_mean(5)"
+uv run stkoe factor add fac1 --feature ma5 --sample sp1 --pipeline "nothing()"
+uv run stkoe test add t1 --factor fac1 --returns r --groupby ic --marketcap fv
+uv run stkoe stat scan table demo | stat scan dataset ds1 | stat scan t1 --kind ic
+uv run stkoe mock demo                          # 生成演示 parquet（需 table add 注册）
+uv run stkoe task list                          # 后台任务列表
+
+# V3.0 血缘图（JSON 返回，供 portal 血缘模块 / 脚本使用）
+uv run stkoe graph lineage                      # 全图（Cytoscape elements payload）
+uv run stkoe graph lineage --node panel:ds1 --depth 3   # 指定节点上下游子图
+uv run stkoe graph nodes --type panel           # 节点摘要（中心节点选择器）
+uv run stkoe graph stats                        # 节点/边统计
 ```
 
-`table` / `dataset` / `stat` 子命令与 gRPC `Execute` 行为完全一致（同一分发实现）：
+## 血缘可视化
 
-```bash
-uv run stkoe table list --candidate               # 未登记但含 parquet 的表目录（「新建本地表」候选）
-uv run stkoe table list                           # 已注册表
-uv run stkoe table meta demo                      # 表元数据
-uv run stkoe table add demo                       # 注册表
-uv run stkoe table set demo --display_name 演示表  # 更新表元数据
-uv run stkoe table add idx --type index            # 注册 index 类型表（dataset index_table 必需）
-uv run stkoe table col demo sym --display_name 代码 --unit 元   # 更新列元数据
-uv run stkoe table get demo                       # 读表（返回 IPC 元信息）
-uv run stkoe table delete demo                    # 删除表注册（数据文件保留）
-
-uv run stkoe dataset add ds1 index m1 --keys sym,date    # 注册数据集（index 表须 --type index；不物化）
-uv run stkoe dataset scan ds1                     # 物化数据集（新增/覆盖表也行）
-uv run stkoe dataset get ds1                      # 读数据集（curated 读 parquet，否则实时 join）
-uv run stkoe dataset meta ds1                     # 数据集元数据
-uv run stkoe dataset set ds1 --display_name 演示数据集
-uv run stkoe dataset delete ds1                   # 删除数据集注册
-
-uv run stkoe stat scan dataset ds1                # 扫描覆盖率统计（stats/dataset/ds1/coverage/）
-uv run stkoe stat scan table demo --kind coverage
-uv run stkoe stat get dataset ds1 --partition_by all   # 读指定分区
-uv run stkoe stat get dataset ds1                 # 读全部分区
-uv run stkoe stat meta dataset ds1                # 统计元数据（已扫描的分区列表）
-uv run stkoe stat delete dataset ds1              # 删除统计产物（数据文件保留）
-```
+- **portal 前端**：右上角"血缘关系"按钮 → 右侧抽屉 / 展开完整页面（Cytoscape.js）
+- **独立工具**：`tools/graph-viewer/`（导出 JSON + 静态页，离线可用）
+- **数据源**：`<data-dir>/graph.db`（graphqlite）；`graph lineage` 返回
+  Cytoscape elements payload（详见 api.md §3.13）
 
 ## gRPC 协议
 
-协议定义见 `src/stkoe/grpc/stkoe.proto`：
-
-| RPC | 用途 | 数据形态 |
-|---|---|---|
-| `Execute` | 命令执行 | 服务端流式：首条 `DataHeader`，成功后跟随 `JsonData` / `ArrowTable` |
-| `SubmitTask` | 后台任务 | 提交返回 `task_id` |
-| `SubscribeTask` | 任务订阅 | 服务端流式 `TaskEvent`（seq/progress/message/data/state） |
-| `Health` | 存活探活 + 版本 | 状态/版本 |
-
-请求统一为 `<source> <action> <args...>` 位置参数形态（`args` 等价于
-`stkoe <source> <action> <args...>`）。
-
-已注册的 `(source, action)`：
-
-| source | action | 说明 |
-|---|---|---|
-| `version` | `""` / `get` | 服务版本 |
-| `config` | `show` / `""` | 生效配置 |
-| `config` | `set` | 写配置（`--key value`） |
-| `table` | `add` / `get` / `delete`(del) / `list` / `meta` / `set` / `col` | 表资产全套动词 |
-| `dataset` | `add` / `get` / `meta` / `list` / `set` / `scan` / `delete`(del) | 逻辑数据集（add 只注册、scan 才物化） |
-| `stat` | `scan` / `get` / `meta` / `list` / `delete`(del) | 数据统计（coverage 覆盖率） |
-
-### Execute 流式约定
-
-- 首条消息恒为 `DataHeader`：`code=0` 成功 / 非 0 业务错误（`message` 带原因）
-- 成功后可跟随 0..N 条数据消息：`JsonData`（小结果 JSON）或 `ArrowTable`（表格 Arrow IPC）
-- 每条数据消息带 `name` 用于区分
-
-### 客户端示例（Python + grpcio）
-
-```python
-import grpc
-from stkoe.grpc import stkoe_pb2, stkoe_pb2_grpc
-
-ch = grpc.insecure_channel("127.0.0.1:9569")
-stub = stkoe_pb2_grpc.StkoeServiceStub(ch)
-
-# Health
-h = stub.Health(stkoe_pb2.HealthRequest())
-print(h.status, h.version)
-
-# Execute：流式，首条 DataHeader
-for r in stub.Execute(stkoe_pb2.ExecuteRequest(source="version", action="")):
-    if r.WhichOneof("type") == "header":
-        print("code:", r.header.code, r.header.message)
-    elif r.WhichOneof("type") == "json":
-        print(r.json.name, r.json.data)
-
-# SubmitTask + SubscribeTask
-resp = stub.SubmitTask(stkoe_pb2.SubmitTaskRequest(source="version", action="get"))
-for r in stub.SubscribeTask(stkoe_pb2.SubscribeTaskRequest(task_id=resp.task_id, replay=True)):
-    if r.WhichOneof("type") == "event":
-        print(r.event.state, r.event.progress, r.event.message)
-```
+见 `src/stkoe/grpc/stkoe.proto`：Execute（流式 DataHeader + JsonData/ArrowTable）/
+SubmitTask / SubscribeTask / TaskControl / Health。`(source, action)` 全量命令表见
+[`api.md`](api.md)。
 
 ## 测试
 
 ```bash
-uv run pytest -q
+uv run pytest -q        # 全量 271 用例（graph 模块 48 例 + gRPC/资产模块）
 ```
 
 ## 目录结构
 
 ```
 src/stkoe/
-├── __main__.py        # python -m stkoe
-├── cli.py             # stkoe serve / config 命令入口
-├── args.py            # 共享 flag 解析
-├── jsonutil.py        # 统一 orjson 序列化
-├── settings.py        # stkoe.json 配置（StkoeConfig dataclass）
-├── grpc/
-│   ├── stkoe.proto    # 协议定义
-│   ├── stkoe_pb2.py / stkoe_pb2_grpc.py   # protoc 生成
-│   ├── dispatch.py    # (source, action, args) Execute 命令分发
-│   └── server.py      # StkoeService 实现 + StkoeServer
-├── table/             # 表数据资产（TableController）
-│   ├── spec.py        # TableLayout/ColumnMeta/TableMeta/TableScanReport 等 dataclass
-│   ├── util.py        # parquet 指纹/布局识别/footer/差异对比
-│   ├── catalog.py     # SQLite catalog（stkoe_objects/stkoe_data_files/stkoe_file_stats）
-│   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
-│   ├── controller.py  # TableController：async add/get/delete/list/meta/set/col
-│   └── handlers.py    # 任务框架接入（source="table"）
-├── dataset/           # 逻辑数据集（DatasetController）
-│   ├── spec.py        # DatasetMeta/DatasetScanReport dataclass
-│   ├── controller.py  # async add/get/meta/list/set/scan/delete（add 只注册，物化走 scan）
-│   └── handlers.py    # 任务框架接入（source="dataset"）
-├── stat/              # 数据统计资产（StatController）
-│   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
-│   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
-│   ├── controller.py  # async scan/get/meta/list/delete（cov 写入 stats/ 目录，不进 catalog）
-│   └── handlers.py    # 任务框架接入（source="stat"）
-├── mock/              # 演示数据生成（stkoe mock demo/gen，替代 scripts/gen_example_data.py）
-│   ├── gen.py         # 生成器（tdcal/common/index/feature/klday/m1 + demo）+ write（只写盘不注册）
-│   └── handlers.py    # 任务框架接入（source="mock"）
-└── task/              # 任务框架
-    ├── model.py       # Task / TaskEvent / TaskResult / TaskContext
-    ├── registry.py    # TaskHandler + TaskRegistry
-    ├── store.py       # SQLite：TaskStore(task) / EventStore(task_event)
-    ├── scheduler.py   # asyncio 调度器（独立事件循环线程）
-    ├── logs.py        # LogStore → tasks/<id>/task.log
-    ├── results.py     # ResultStore → tasks/<id>/<name> 大结果
-    ├── handlers.py    # 内置 Handler（version/config/mock）
-    └── manager.py     # TaskManager 编排核心
+├── cli.py / args.py / jsonutil.py / logutil.py / settings.py
+├── grpc/               # stkoe.proto + 编译产物 + dispatch.py（Execute 分发）+ server.py
+├── table/ dataset/ fieldset/ sample/ feature/ factor/ factor_test/ stat/ mock/
+├── graph/              # V3.0 资产血缘图（graphqlite）
+│   ├── model.py        # DataChangeEvent / AssetMeta / DependencyEdge / 列元数据
+│   ├── store.py        # GraphStore：节点/边 CRUD + BFS 血缘遍历 + txn 事务
+│   ├── export.py       # build_payload / node_summaries（→ Cytoscape elements JSON）
+│   ├── events.py       # 事件合并（并集/交集）与积累（required_version 水位线）
+│   ├── controller.py   # GraphController：CRUD + 依赖约束 + notify_change/resolve(_all)
+│   ├── handlers.py     # v3.0-def.py 形态的资产 Handler
+│   ├── version.py      # 高精度时间戳版本号
+│   └── errors.py
+└── task/               # 后台任务框架
+tools/graph-viewer/     # Cytoscape.js 血缘可视化（独立页）
+V2.0/                   # V2.0 全量备份（重构基线，勿改）
+v1.0/                   # 旧版参考实现（v0.5.1）
 ```
 
-> v1.0/ 为旧版参考实现（v0.5.1），本仓库正在按新需求重新构造。
+## 文档索引
+
+- [`api.md`](api.md)：对外 API 全量文档（gRPC/Execute/SubmitTask/CLI/配置/存储布局）
+- [`graph-design.md`](graph-design.md)：V3.0 图设计（节点/边/版本/事件模型）
+- [`example.md`](example.md)：全流程演练（mock 造数 → 因子测试）
+- `AGENTS.md`：开发指南（目录结构/架构要点/变更记录）

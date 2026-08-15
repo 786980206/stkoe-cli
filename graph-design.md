@@ -233,4 +233,16 @@ GraphStore(db_path)
 - [x] `src/stkoe/graph/`：model / errors / store / version / events / controller / handlers
 - [x] 测试 `tests/test_graph.py`：节点 CRUD、依赖约束、版本/事件积累、血缘传播、
       handler 全流程
-- [ ] 后续：真实 storage 物化、gRPC/CLI 三路径接入、api.md 同步
+- [x] **gRPC Execute 通道输出**：`graph lineage/nodes/stats` 命令（api.md §3.13），
+      portal 前端"血缘关系"模块（右上角抽屉 + 展开完整页面，Cytoscape.js 渲染）
+
+## 7. 下一步（路线图）
+
+- [ ] **真实 storage 物化**：实现 storage 钩子（parquet 读取/物化），`materialize`
+      真正落盘；`notify_change` 对接物理表数据变化
+- [ ] **三路径对齐**：graph 资产接入 SubmitTask 任务版 + CLI，api.md/example.md 同步
+- [ ] **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
+      （`(column) -[:DERIVES]-> (column)`）
+- [ ] **版本/事件沉淀**：version_list 过期裁剪、跨依赖事件精确并集
+- [ ] **图算法**：graphqlite 内置算法（PageRank/中心性/连通分量）做资产重要性分析
+- [ ] **图模块边界测试 + gRPC 全链路回归**

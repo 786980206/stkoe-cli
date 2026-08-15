@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -516,3 +517,177 @@ class TestStorageHook:
         PanelHandler.update(ctrl2, "p1")
         assert calls and calls[0][0] == "p1"
         assert calls[0][1]["upsert"].symbol_scope == ["a"]
+
+
+# =====================================================================
+# Execute 通道（graph source：后端经 gRPC Execute 返回 JSON，前端直接渲染）
+# =====================================================================
+
+def _make_graph_db(base_dir: str) -> GraphController:
+    """在 base_dir 建 graph.db（index/m1 → panel → fieldset → sample → factor）。"""
+    os.makedirs(base_dir, exist_ok=True)
+    ctrl = GraphController(GraphStore(os.path.join(base_dir, "graph.db")))
+    IndexHandler.add(ctrl, "index", symbol_col="sym", datetime_col="date",
+                     columns=[{"name": "sym"}, {"name": "date"}])
+    TableHandler.add(ctrl, "m1", columns=[{"name": "sym"}, {"name": "price"}])
+    PanelHandler.add(ctrl, "ds1", "index", tables={"m1": "left_join"}, keys=["sym"])
+    FieldsetHandler.add(ctrl, "fs1", "ds1")
+    SampleHandler.add(ctrl, "sp1", "fs1", formula="x > 0")
+    FeatureHandler.add(ctrl, "ma5f", "price.rolling_mean(5)")
+    FactorHandler.add(ctrl, "fac1", "ma5f", "sp1")
+    ctrl.resolve_all()
+    ctrl.store.close()
+    return ctrl
+
+
+class TestGraphDispatch:
+    """dispatch 层直测（不经 gRPC，data_dir 透传）。"""
+
+    def test_lineage_full(self):
+        from stkoe.grpc.dispatch import dispatch
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_dispatch")
+        _make_graph_db(base)
+        try:
+            results = dispatch("graph", "lineage", [], data_dir=base)
+            payload = json.loads(results[0].data)
+            assert payload["graph"]["node_count"] == 7
+            assert payload["graph"]["edge_count"] == 6
+            ids = {n["data"]["id"] for n in payload["elements"]["nodes"]}
+            assert ids == {"index:index", "table:m1", "panel:ds1", "fieldset:fs1",
+                           "sample:sp1", "feature:ma5f", "factor:fac1"}
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_lineage_subgraph_with_depth(self):
+        from stkoe.grpc.dispatch import dispatch
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_dispatch")
+        _make_graph_db(base)
+        try:
+            results = dispatch("graph", "lineage",
+                               ["--node", "fieldset:fs1", "--depth", "1"],
+                               data_dir=base)
+            payload = json.loads(results[0].data)
+            ids = {n["data"]["id"] for n in payload["elements"]["nodes"]}
+            assert ids == {"fieldset:fs1", "panel:ds1", "sample:sp1"}
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_nodes_and_stats(self):
+        from stkoe.grpc.dispatch import dispatch
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_dispatch")
+        _make_graph_db(base)
+        try:
+            nodes = json.loads(dispatch("graph", "nodes", [], data_dir=base)[0].data)
+            assert len(nodes) == 7
+            by_type = [n for n in nodes if n["type"] == "panel"]
+            assert by_type[0]["name"] == "ds1"
+            stats = json.loads(dispatch("graph", "stats", [], data_dir=base)[0].data)
+            assert stats == {"node_count": 7, "edge_count": 6}
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_empty_graph_when_db_missing(self):
+        from stkoe.grpc.dispatch import dispatch
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_empty")
+        os.makedirs(base, exist_ok=True)
+        try:
+            payload = json.loads(dispatch("graph", "lineage", [], data_dir=base)[0].data)
+            assert payload["graph"]["node_count"] == 0
+            assert payload["elements"]["nodes"] == []
+            assert dispatch("graph", "nodes", [], data_dir=base)[0].data == "[]"
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
+
+
+class TestGraphGrpcExecute:
+    """gRPC Execute 端到端：e:graph ... → DataHeader(0) + JsonData。"""
+
+    @pytest.fixture()
+    def srv(self):
+        import socket
+
+        from stkoe.grpc.server import StkoeServer
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_grpc")
+        _make_graph_db(base)
+        srv = StkoeServer(port=port, data_dir=base).start()
+        yield srv
+        srv.stop()
+        import shutil
+        shutil.rmtree(base, ignore_errors=True)
+
+    @pytest.fixture()
+    def client(self, srv):
+        import grpc
+
+        from stkoe.grpc import stkoe_pb2_grpc
+
+        ch = grpc.insecure_channel(f"127.0.0.1:{srv.port}")
+        yield stkoe_pb2_grpc.StkoeServiceStub(ch)
+        ch.close()
+
+    @staticmethod
+    def _collect(responses):
+        header, datas = None, []
+        for r in responses:
+            if r.WhichOneof("type") == "header":
+                header = r.header
+            else:
+                datas.append(r)
+        return header, datas
+
+    def test_execute_graph_lineage(self, client):
+        from stkoe.grpc import stkoe_pb2
+
+        header, datas = self._collect(client.Execute(
+            stkoe_pb2.ExecuteRequest(source="graph", action="lineage")))
+        assert header.code == 0
+        assert len(datas) == 1
+        assert datas[0].WhichOneof("type") == "json"
+        payload = json.loads(datas[0].json.data)
+        assert payload["graph"]["node_count"] == 7
+
+    def test_execute_graph_lineage_node(self, client):
+        from stkoe.grpc import stkoe_pb2
+
+        header, datas = self._collect(client.Execute(
+            stkoe_pb2.ExecuteRequest(
+                source="graph", action="lineage",
+                args=["--node", "panel:ds1", "--depth", "2"])))
+        assert header.code == 0
+        payload = json.loads(datas[0].json.data)
+        assert payload["graph"]["center"] == "panel:ds1"
+        # ds1 + 上游(index/m1) + 下游 2 层(fs1/sp1) = 5；fac1 在第 3 层不包含
+        assert payload["graph"]["node_count"] == 5
+
+    def test_execute_graph_nodes_stats(self, client):
+        from stkoe.grpc import stkoe_pb2
+
+        header, datas = self._collect(client.Execute(
+            stkoe_pb2.ExecuteRequest(source="graph", action="nodes",
+                                     args=["--type", "panel"])))
+        assert header.code == 0
+        nodes = json.loads(datas[0].json.data)
+        assert [n["name"] for n in nodes] == ["ds1"]
+        header, datas = self._collect(client.Execute(
+            stkoe_pb2.ExecuteRequest(source="graph", action="stats")))
+        assert json.loads(datas[0].json.data) == {"node_count": 7, "edge_count": 6}
+
+    def test_execute_graph_bad_depth(self, client):
+        from stkoe.grpc import stkoe_pb2
+
+        header, datas = self._collect(client.Execute(
+            stkoe_pb2.ExecuteRequest(source="graph", action="lineage",
+                                     args=["--depth", "0"])))
+        assert header.code != 0  # 业务错误：深度必须为正

@@ -171,6 +171,22 @@ src/stkoe/
 
 ## 近期变更记录
 
+### 2026-08 graph 血缘经 gRPC Execute 通道输出（portal 血缘模块后端）
+
+- **`graph` source 注册进 Execute 分发**（dispatch.py，仅 Execute，JSON 返回）：
+  - `e:graph lineage [--node <type:name>] [--depth N]` → Cytoscape elements payload
+    （缺 node 全图；库不存在返回空图）
+  - `e:graph nodes [--type <t>]` → 节点摘要列表（中心节点选择器用）
+  - `e:graph stats` → 节点/边统计
+  - 数据源 `<data-dir>/graph.db`（graphqlite），按 data_dir 透传打开
+- **抽 `graph/export.py` 纯函数**：`build_payload` / `node_summaries`（供 dispatch、
+  tools/graph-viewer/export.py 复用；tools 版已改为薄 CLI 包装，去掉重复实现）
+- **portal 集成**：前端右上角"血缘关系"按钮 → 右侧抽屉（Cytoscape.js 渲染）；
+  Tauri 端 Rust `fetch_graph_lineage/nodes/stats` 命令经现有 gRPC Execute 拉取
+  JSON（不新起 HTTP 服务，走 stkoe-cli 既有通道）
+- **文档**：api.md §1/§3.1/§3.13 补 graph 命令与 payload 结构
+- 测试：test_graph.py 增 dispatch 直测 + gRPC Execute 端到端 8 例，全量 271 用例绿
+
 ### 2026-08 tools/graph-viewer：Cytoscape.js 血缘可视化工具
 
 - **新增 `tools/graph-viewer/`**（详见其 README.md）：

@@ -1187,3 +1187,74 @@ def _mock_gen(args: list[str], data_dir=None) -> list[Result]:
         col=flags.get("col"),
     )
     return [Result.json("mock", report)]
+
+# ---------------------------------------------------------------------------
+# graph 血缘图处理器（V3.0 graphqlite 图数据，经 Execute 通道返回 JSON）
+# ---------------------------------------------------------------------------
+
+def _graph_store(data_dir):
+    """按 data_dir 打开血缘图库（<data_dir>/graph.db；不存在返回 None，命令返回空图）"""
+    from ..graph.store import GraphStore
+
+    if not data_dir:
+        return None
+    import os
+
+    path = os.path.join(data_dir, "graph.db")
+    return GraphStore(path) if os.path.exists(path) else None
+
+
+@handler("graph", "lineage")
+def _graph_lineage(args: list[str], data_dir=None) -> list[Result]:
+    """graph lineage [--node <type:name>] [--depth N]：血缘图 Cytoscape elements payload。
+
+    缺 --node 返回全图；带 --node 返回该节点上下游子图（--depth 限制深度）。
+    """
+    from ..graph.export import build_payload
+
+    flags = parse_flags(args)
+    node = flags.get("node")
+    depth = int(flags["depth"]) if flags.get("depth") else None
+    if depth is not None and depth < 1:
+        raise CommandError("--depth 需为正整数")
+    store = _graph_store(data_dir)
+    if store is None:
+        return [Result.json("graph", {
+            "graph": {"exported_at": "", "center": node, "node_count": 0,
+                      "edge_count": 0, "types": []},
+            "elements": {"nodes": [], "edges": []},
+        })]
+    try:
+        payload = build_payload(store, center=node, depth=depth, with_meta=True)
+    finally:
+        store.close()
+    return [Result.json("graph", payload)]
+
+
+@handler("graph", "nodes")
+def _graph_nodes(args: list[str], data_dir=None) -> list[Result]:
+    """graph nodes [--type <t>]：节点摘要列表（中心节点选择器用）。"""
+    from ..graph.export import node_summaries
+
+    flags = parse_flags(args)
+    store = _graph_store(data_dir)
+    if store is None:
+        return [Result.json("graph", [])]
+    try:
+        data = node_summaries(store, flags.get("type"))
+    finally:
+        store.close()
+    return [Result.json("graph", data)]
+
+
+@handler("graph", "stats")
+def _graph_stats(args: list[str], data_dir=None) -> list[Result]:
+    """graph stats：图节点/边统计。"""
+    store = _graph_store(data_dir)
+    if store is None:
+        return [Result.json("graph", {"node_count": 0, "edge_count": 0})]
+    try:
+        data = store.stats()
+    finally:
+        store.close()
+    return [Result.json("graph", data)]

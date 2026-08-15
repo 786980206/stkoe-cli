@@ -7,9 +7,9 @@
 
 所有业务命令统一为 `<source> <action> <args...>` 位置参数形态，等价于 `stkoe <source> <action> <args...>`。
 
-- **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `sample` / `feature` / `factor` / `test` / `stat` / `task` / `mock`
+- **source**：`version` / `config` / `table` / `dataset` / `fieldset` / `sample` / `feature` / `factor` / `test` / `stat` / `task` / `mock` / `graph`
 - **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `scan` / `check` / `test` / `delete`（`del` 别名）/ `show`
-- **单侧动词例外**：`mock`（空 action）仅 SubmitTask 可用（示例任务，见 §4.6）；`mock demo`/`mock gen` 双路径可用（见 §3.1/§4.1）；`task` 仅 Execute 可用（任务元操作，见 §4.5）
+- **单侧动词例外**：`mock`（空 action）仅 SubmitTask 可用（示例任务，见 §4.6）；`mock demo`/`mock gen` 双路径可用（见 §3.1/§4.1）；`task` 仅 Execute 可用（任务元操作，见 §4.5）；`graph` 仅 Execute 可用（血缘图 JSON 查询，见 §3.1/§3.13）
 - **args**：action 之后的位置参数 + `--key value` flag
 
 同一业务命令有**双路径**，行为对齐：
@@ -144,6 +144,9 @@ HealthRequest {}                                   HealthResponse { status, vers
 | test | `check` | `<name>` | — | JsonData（FactorTestCheckResult） |
 | test | `scan` | `<name>` | `--all` `--resync` | JsonData（FactorTestScanReport 或 []） |
 | test | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
+| graph | `lineage` | — | `--node <type:name>` `--depth N` | JsonData（Cytoscape elements payload，见 §3.13；缺 `--node` 为全图） |
+| graph | `nodes` | — | `--type <t>` | JsonData（节点摘要列表：id/type/name/display_name/version/valid/materialized） |
+| graph | `stats` | — | — | JsonData `{"node_count","edge_count"}` |
 
 > `table scan` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
@@ -325,6 +328,32 @@ date >= 2024-01-01            开区间（> / >=）
   - `bucket_turnover` → `tr_d{no}`（`TR(d{no})` 分位换手率，按 `date`）
   - `factor_returns` → `fr_d{no}`（`fw_ls/fw_raw/fw_ind/fw_ind_raw/eq_raw/eq_ind/ls/top_raw/
     bottom_raw/ls_ind/hold/mkt` + `*_cum` 累计序列，按 `date`）
+
+### 3.13 `graph` 血缘图（V3.0 graphqlite 图数据，仅 Execute）
+
+- **数据来源**：`<data-dir>/graph.db`（graphqlite 嵌入式图库，资产血缘 DEPENDS 边，
+  见 graph-design.md）；库不存在时返回空图（`node_count=0`）
+- **`graph lineage`** 返回 Cytoscape.js elements payload（前端可直接渲染）：
+
+```json
+{
+  "graph": { "exported_at": "…", "center": "panel:ds1" | null,
+             "node_count": 7, "edge_count": 6, "types": ["factor", "..."] },
+  "elements": {
+    "nodes": [{ "data": { "id": "table:index", "type": "table", "name": "index",
+                          "label": "index", "version": 1755…, "valid": true,
+                          "materialized": false, "meta": { "…": "…" } } }],
+    "edges": [{ "data": { "id": "panel:ds1->table:m1", "source": "panel:ds1",
+                          "target": "table:m1", "role": "member", "join": "left_join",
+                          "required_version": 1755… } }]
+  }
+}
+```
+
+- 节点 `id` = `"<type>:<name>"`，`type` 决定前端着色；边方向 = 依赖方向
+  （依赖方 → 被依赖方），`join` 仅 table → panel 边带
+- `--node <type:name>` 只导出该节点上下游子图（`--depth N` 限制深度，须为正整数）；
+  `graph nodes --type <t>` 供前端中心节点选择器使用
 
 ---
 

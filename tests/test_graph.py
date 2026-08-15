@@ -606,6 +606,31 @@ class TestGraphDispatch:
             import shutil
             shutil.rmtree(base, ignore_errors=True)
 
+    def test_lineage_with_tilde_data_dir(self, monkeypatch):
+        """回归：data_dir 为未展开的 "~..."（配置默认值形态）时也能查到图。
+
+        曾因 _graph_store 未 expanduser：os.path.join("~/.stkoe", "catalog.db")
+        找不到库 → graph lineage/nodes/stats 恒空（table list 经 GraphService
+        内部 expanduser 正常，形成"有节点但血缘空"的假象）。
+        """
+        import os as _os
+        from stkoe.grpc.dispatch import dispatch
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_dispatch")
+        _make_graph_db(base)
+        # 把 "~" 前缀映射到测试库目录，模拟配置默认值 "~/.stkoe" 未展开的形态
+        monkeypatch.setattr(_os.path, "expanduser",
+                            lambda p: base + p[1:] if p.startswith("~") else p)
+        try:
+            payload = json.loads(dispatch("graph", "lineage", [], data_dir="~")[0].data)
+            assert payload["graph"]["node_count"] == 7
+            assert dispatch("graph", "nodes", [], data_dir="~")[0].data != "[]"
+            stats = json.loads(dispatch("graph", "stats", [], data_dir="~")[0].data)
+            assert stats == {"node_count": 7, "edge_count": 6}
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
+
 
 class TestGraphGrpcExecute:
     """gRPC Execute 端到端：e:graph ... → DataHeader(0) + JsonData。"""

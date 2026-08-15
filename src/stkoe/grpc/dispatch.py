@@ -1226,6 +1226,9 @@ def _graph_store(data_dir):
         return None
     import os
 
+    # data_dir 可能来自配置默认值 "~/.stkoe"（未展开）：GraphService 内部 expanduser，
+    # 此处必须同样展开，否则 os.path.join("~/.stkoe", ...) 找不到库 → 空图
+    data_dir = os.path.expanduser(data_dir)
     for name in ("catalog.db", "graph.db"):
         path = os.path.join(data_dir, name)
         if os.path.exists(path):

@@ -212,6 +212,18 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 fix: graph lineage/nodes/stats 空图 —— _graph_store 未 expanduser
+
+- **现象**：配置默认 `data_dir="~/.stkoe"`（未展开字符串）时，`table list` 正常（GraphService
+  内部 `Path(data_dir).expanduser()`），但 `graph lineage/nodes/stats` 恒空——`dispatch.
+  _graph_store` 用 `os.path.join(data_dir, name)` 拼路径，字面 `"~/.stkoe\catalog.db"`
+  不存在 → 返回 None → 空图。形成"有节点但血缘空"的假象（portal 经 gRPC 命中）
+- **修复**：`_graph_store` 打开库前 `data_dir = os.path.expanduser(data_dir)`（与 GraphService
+  行为对齐）
+- **测试**：test_graph.py `test_lineage_with_tilde_data_dir`（monkeypatch expanduser 映射
+  "~" → 测试库，验证 lineage/nodes/stats 都能查到）；全量 177 用例绿
+- **注意**：运行中的服务进程加载的是启动时代码，修复后需重启 `stkoe serve` 才生效
+
 ### 2026-08 index add --all 批量发现 + 修 delete 指纹残留（legacy 事务模式）
 
 - **`index add --all`**：批量发现 `index/` 下未登记且含 parquet 的目录（同 `table add --all`），

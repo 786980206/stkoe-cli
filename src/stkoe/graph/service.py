@@ -43,7 +43,7 @@ from .handlers import (
     TableHandler,
     TesterHandler,
 )
-from .model import FieldMeta, node_id
+from .model import ColumnMeta, FieldMeta, node_id
 from .store import GraphStore
 
 
@@ -106,6 +106,11 @@ class GraphService:
                 out[k] = v
         return out
 
+    @staticmethod
+    def _norm_cols(cols) -> list[dict]:
+        """列元数据输出规范化：补齐 V2.0 ColumnMeta 全键（unit/formula/source_table/...）。"""
+        return [ColumnMeta.from_dict(c).to_dict() for c in (cols or [])]
+
     def _files(self, node_id_: str) -> list[dict]:
         """指纹 → 文件清单（FileMeta 形态）。"""
         return [{"rel_path": f["rel_path"], "partition": f["partition_path"],
@@ -133,7 +138,7 @@ class GraphService:
             "partition_by": list(node.get("partition_by") or ()),
             "partition_count": part_count,
             "files": files,
-            "columns": node.get("columns") or [],
+            "columns": self._norm_cols(node.get("columns")),
             "consistent": consistent,
             "created_at": node.get("create_time", ""),
             "updated_at": node.get("update_time", ""),
@@ -451,7 +456,7 @@ class GraphService:
                            "as_index": cc["name"] in keys})
                 cols.append(cc)
                 seen.add(cc["name"])
-        return cols
+        return self._norm_cols(cols)
 
     def panel_meta(self, name: str) -> dict:
         node = self._require_node("panel", name)

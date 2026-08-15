@@ -273,10 +273,9 @@ def test_table_delete_blocked_by_dataset_dep(tctl, ctl, tmp_path):
 
 
 def test_task_framework_dataset_handlers(mgr):
-    """dataset handlers 注册进任务框架：add→meta→get 全链路"""
-    from stkoe.table import TableController
+    """dataset handlers 注册进任务框架：add→meta→get 全链路（转发 panel，graph 语义）"""
+    from stkoe.graph.service import GraphService
 
-    tctl = TableController(data_dir=mgr.data_dir)
     root = mgr.data_dir
     _write(root, "index", pl.DataFrame({
         "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
@@ -284,22 +283,21 @@ def test_task_framework_dataset_handlers(mgr):
     _write(root, "m1", pl.DataFrame({
         "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
         "name": ["AA", "BB"], "industry": ["金融", "科技"]}))
-    for t in ("index", "m1"):
-        _run(tctl.add(t, meta={"type": "index"} if t == "index" else None))
+    gsvc = GraphService(data_dir=root)
+    gsvc.table_add("index")
+    gsvc.table_add("m1")
+    gsvc.index_add("index")
+    gsvc.close()
 
     t_add = mgr.submit("dataset", "add", ["ds1", "index", "m1", "--keys", "sym,date"])
     _await(mgr, t_add)
     add_res = _mgr_result(mgr, t_add)
     assert add_res["name"] == "ds1"
-    assert add_res["materialized"] is False  # add 只注册
-
-    t_scan = mgr.submit("dataset", "scan", ["ds1"])
-    _await(mgr, t_scan)
-    assert _mgr_result(mgr, t_scan)["materialized"] is True  # scan 才物化
+    assert add_res["keys"] == ["sym", "date"]  # panel 实时 join，无物化概念
 
     t_meta = mgr.submit("dataset", "meta", ["ds1"])
     _await(mgr, t_meta)
-    assert _mgr_result(mgr, t_meta)["index_table"] == "index"
+    assert _mgr_result(mgr, t_meta)["index"] == "index:index"
 
     t_list = mgr.submit("dataset", "list", [])
     _await(mgr, t_list)
@@ -312,49 +310,6 @@ def test_task_framework_dataset_handlers(mgr):
     t_del = mgr.submit("dataset", "delete", ["ds1"])
     _await(mgr, t_del)
     assert _mgr_result(mgr, t_del) == {"deleted": "ds1"}
-
-
-def test_task_scan_reports_partition_progress(mgr):
-    """s:dataset scan 多分区物化：ctx.update 逐分区上报进度（progress=i/total）"""
-    from stkoe.table import TableController
-
-    root = mgr.data_dir
-    idx_root = root / "tables" / "idx"
-    for d in ("2024-01-01", "2024-01-02"):
-        p = idx_root / f"dt={d}"
-        p.mkdir(parents=True)
-        pl.DataFrame({
-            "sym": [d], "price": [1.0],
-            "dt": [datetime.date(2024, 1, int(d[-2:]))],
-        }).write_parquet(p / "f.parquet")
-    (root / "tables" / "m1").mkdir(parents=True)
-    pl.DataFrame({
-        "sym": ["2024-01-01", "2024-01-02"],
-        "dt": [datetime.date(2024, 1, 1), datetime.date(2024, 1, 2)],
-        "name": ["AA", "BB"],
-    }).write_parquet(root / "tables" / "m1" / "f.parquet")
-    tctl = TableController(data_dir=mgr.data_dir)
-    _run(tctl.add("idx", meta={"type": "index"}))
-    _run(tctl.add("m1"))
-
-    t_add = mgr.submit("dataset", "add", ["ds1", "idx", "m1", "--keys", "dt,sym"])
-    _await(mgr, t_add)
-    assert _mgr_result(mgr, t_add)["name"] == "ds1"
-
-    t_scan = mgr.submit("dataset", "scan", ["ds1"])
-    _await(mgr, t_scan)
-    assert _mgr_result(mgr, t_scan)["materialized"] is True
-    assert _mgr_result(mgr, t_scan)["rebuilt_partitions"] == ["2024-01-01", "2024-01-02"]
-
-    evs = mgr.events.list_by_task(t_scan.task_id)
-    prog = [(e.progress, e.message) for e in evs if e.message.startswith("ds1: part=")]
-    assert len(prog) == 2  # 每分区一条
-    assert prog[0][0] == pytest.approx(0.5)  # i/total
-    assert "part=2024-01-01（1/2）" in prog[0][1]
-    assert prog[1][0] == pytest.approx(1.0)
-    assert "part=2024-01-02（2/2）" in prog[1][1]
-    assert evs[-1].state == "succeeded"
-    assert evs[-1].progress == 1.0
 
 
 # ---------- async 助手 ----------

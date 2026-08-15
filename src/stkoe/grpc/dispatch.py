@@ -158,12 +158,6 @@ def _positional(args: list[str]) -> list[str]:
     return out
 
 
-def _controller(data_dir=None):
-    from ..table.controller import TableController
-
-    return TableController(data_dir=data_dir)
-
-
 def _arrow_meta(name: str, df, total: int, col_metas) -> str:
     """ArrowTable.meta JSON：rows/total + 返回列的完整列元数据（display_name/unit/formula 等）"""
     known = {}

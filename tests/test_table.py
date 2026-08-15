@@ -352,7 +352,11 @@ def test_task_framework_table_handlers(mgr):
     _await(mgr, t_add2)
     meta2 = _mgr_result(mgr, t_add2)
     assert meta2["name"] == "demo2"
-    assert _meta(TableController(data_dir=mgr.data_dir), "demo2").tags == ("a", "b")
+    from stkoe.graph.service import GraphService
+
+    gsvc = GraphService(data_dir=mgr.data_dir)
+    assert gsvc.table_meta("demo2")["tags"] == ["a", "b"]
+    gsvc.close()
 
     t_get = mgr.submit("table", "get", ["demo", "--where=price>=2"])
     _await(mgr, t_get)
@@ -376,8 +380,12 @@ def test_task_framework_table_handlers(mgr):
     assert sym["display_name"] == "代码"
     assert sym["unit"] == "元"
 
-    meta_check = _meta(TableController(data_dir=mgr.data_dir), "demo")
-    assert meta_check.display_name == "D表"
+    from stkoe.graph.service import GraphService
+
+    gsvc = GraphService(data_dir=mgr.data_dir)
+    meta_check = gsvc.table_meta("demo")
+    gsvc.close()
+    assert meta_check["display_name"] == "D表"
 
     # 追加数据 → s:table scan 显式重扫：changed=True，版本递增
     pl.DataFrame({"sym": ["c"], "price": [3.0]}).write_parquet(
@@ -387,7 +395,9 @@ def test_task_framework_table_handlers(mgr):
     scan_res = _mgr_result(mgr, t_scan)
     assert scan_res["changed"] is True
     assert scan_res["version_after"] > 1  # 经 set/col 已递增，追加数据后再 +1
-    assert _get(TableController(data_dir=mgr.data_dir), "demo").height == 3
+    gsvc = GraphService(data_dir=mgr.data_dir)
+    assert gsvc.table_get("demo").height == 3
+    gsvc.close()
 
     t_del = mgr.submit("table", "delete", ["demo"])
     _await(mgr, t_del)

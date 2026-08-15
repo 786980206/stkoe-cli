@@ -42,18 +42,16 @@ def _ordered(files: tuple[StatFile, ...]) -> tuple[StatFile, ...]:
 
 
 class StatController:
-    """统计控制面：围绕目标（table/dataset）生成/读取分组统计
+    """统计控制面：围绕目标（table/panel/test）生成/读取分组统计
 
-    复用一个 DatasetController 访问目标数据（dataset 实时 join 视图或物化数据）。
+    数据源走 GraphService（table_lazy/panel_lazy/test_data），统计产物只落盘 stats/ 目录。
     """
 
     def __init__(self, data_dir: Path | str | None = None,
                  ignore_cols: tuple[str, ...] = DEFAULT_IGNORE_COLS):
-        from ..dataset.controller import DatasetController
+        from ..settings import load_config
 
-        self._dc = DatasetController(data_dir=data_dir, ignore_cols=ignore_cols)
-        self.data_dir = self._dc.data_dir
-        self.catalog = self._dc.catalog
+        self.data_dir = Path(data_dir) if data_dir else Path(load_config().data_dir)
         self.root = self.data_dir / "stats"
         self.ignore_cols = set(ignore_cols)
 

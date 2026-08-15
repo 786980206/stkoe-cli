@@ -1,19 +1,16 @@
-"""dataset TaskHandler：把 DatasetController 接进任务框架（source="dataset"）
+"""dataset TaskHandler：转发到 GraphService 的 panel 资产（source="dataset" 旧别名）
 
-每个动作一个 Handler，解析位置参数 + ``--flag`` 后调用 DatasetController 的
-async 方法，结果以 JSON 返回。
+V3.0 起 dataset 概念改名为 panel；本模块保持旧 source 可用（行为与 Execute 的
+``e:dataset ...`` 一致，返回 name 用 "panel"）。
 """
 from __future__ import annotations
 
 import asyncio
 import io
 
-import polars as pl
-
 from ..args import parse_flags
 from ..jsonutil import dumps_str
 from ..task.model import TaskResult
-from ..task.progress import worker_on_progress
 from ..task.registry import TaskHandler
 
 
@@ -32,25 +29,27 @@ def _positional(args: list[str]) -> list[str]:
     return out
 
 
-def _controller(ctx):
-    from .controller import DatasetController
+def _service(ctx):
+    from ..graph.service import GraphService
 
-    return DatasetController(data_dir=ctx.data_dir)
+    return GraphService(data_dir=ctx.data_dir)
 
 
 class DatasetAddHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         if len(pos) < 3:
-            raise ValueError("dataset add 需要 dataset 名、index 表与至少一个成员表")
+            raise ValueError("dataset add 需要 dataset 名、index 节点与至少一个成员表")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         keys = None
         if flags.get("keys"):
             keys = [k.strip() for k in flags["keys"].split(",") if k.strip()]
-        dm = await ctl.add(pos[0], pos[1], *pos[2:], keys=keys,
-                           materialize=bool(flags.get("materialize")))
-        return TaskResult(data=dumps_str(dm.to_dict()))
+        dm = await asyncio.to_thread(svc.panel_add, pos[0], pos[1], pos[2:],
+                                     keys=keys, **{
+                                         k: v for k, v in flags.items()
+                                         if k not in ("keys", "materialize")})
+        return TaskResult(data=dumps_str(dm))
 
 
 class DatasetGetHandler(TaskHandler):
@@ -59,10 +58,10 @@ class DatasetGetHandler(TaskHandler):
         if not pos:
             raise ValueError("dataset get 需要 dataset 名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         columns = flags.get("columns") or None
-        df, total = await ctl.get(
-            pos[0],
+        df, total = await asyncio.to_thread(
+            svc.panel_get, pos[0],
             columns=columns.split(",") if columns else None,
             where=flags.get("where"),
             partition=flags.get("partition"),
@@ -86,16 +85,16 @@ class DatasetMetaHandler(TaskHandler):
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("dataset meta 需要 dataset 名")
-        ctl = _controller(ctx)
-        dm = await ctl.meta(pos[0])
-        return TaskResult(data=dumps_str(dm.to_dict()))
+        svc = _service(ctx)
+        dm = await asyncio.to_thread(svc.panel_meta, pos[0])
+        return TaskResult(data=dumps_str(dm))
 
 
 class DatasetListHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
-        ctl = _controller(ctx)
-        dms = await ctl.list()
-        return TaskResult(data=dumps_str([dm.to_dict() for dm in dms]))
+        svc = _service(ctx)
+        dms = await asyncio.to_thread(svc.panel_list)
+        return TaskResult(data=dumps_str(dms))
 
 
 class DatasetSetHandler(TaskHandler):
@@ -106,28 +105,9 @@ class DatasetSetHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         if not flags:
             raise ValueError("dataset set 需要至少一个 --key value")
-        ctl = _controller(ctx)
-        dm = await ctl.set(pos[0], **flags)
-        return TaskResult(data=dumps_str(dm.to_dict()))
-
-
-class DatasetScanHandler(TaskHandler):
-    async def run(self, ctx) -> TaskResult:
-        pos = _positional(ctx.args)
-        flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        loop = asyncio.get_running_loop()
-        on_progress = worker_on_progress(ctx, loop)
-
-        if flags.get("all"):
-            reports = await ctl.scan(all=True, resync=bool(flags.get("resync")),
-                                     on_progress=on_progress)
-            return TaskResult(data=dumps_str([r.to_dict() for r in reports]))
-        if not pos:
-            raise ValueError("dataset scan 需要 dataset 名（或 --all）")
-        report = await ctl.scan(pos[0], resync=bool(flags.get("resync")),
-                                on_progress=on_progress)
-        return TaskResult(data=dumps_str(report.to_dict()))
+        svc = _service(ctx)
+        dm = await asyncio.to_thread(svc.panel_set, pos[0], **flags)
+        return TaskResult(data=dumps_str(dm))
 
 
 class DatasetDeleteHandler(TaskHandler):
@@ -136,8 +116,9 @@ class DatasetDeleteHandler(TaskHandler):
         if not pos:
             raise ValueError("dataset delete 需要 dataset 名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        out = await ctl.delete(pos[0], force=bool(flags.get("force")))
+        svc = _service(ctx)
+        out = await asyncio.to_thread(
+            svc.panel_delete, pos[0], force=bool(flags.get("force")))
         return TaskResult(data=dumps_str(out))
 
 
@@ -148,6 +129,5 @@ def register(registry) -> None:
     registry.register("dataset", "list", DatasetListHandler())
     registry.register("dataset", "", DatasetListHandler())
     registry.register("dataset", "set", DatasetSetHandler())
-    registry.register("dataset", "scan", DatasetScanHandler())
     registry.register("dataset", "delete", DatasetDeleteHandler())
     registry.register("dataset", "del", DatasetDeleteHandler())

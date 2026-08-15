@@ -1,13 +1,8 @@
-"""table TaskHandler：把 TableController 接进任务框架（source="table"）
-
-每个动作一个 Handler，解析位置参数 + ``--flag`` 后调用 TableController 的
-async 方法，结果以 JSON（小结果）或 Arrow IPC（get 的表格数据）返回。
-"""
+"""table TaskHandler：把 GraphService 的 table 资产接进任务框架（source="table"）"""
 from __future__ import annotations
 
+import asyncio
 import io
-
-import polars as pl
 
 from ..args import parse_flags
 from ..jsonutil import dumps_str
@@ -30,25 +25,25 @@ def _positional(args: list[str]) -> list[str]:
     return out
 
 
-def _controller(ctx):
-    from .controller import TableController
+def _service(ctx):
+    from ..graph.service import GraphService
 
-    return TableController(data_dir=ctx.data_dir)
+    return GraphService(data_dir=ctx.data_dir)
 
 
 class TableAddHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         flags = parse_flags(ctx.args)
         pos = _positional(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         if flags.get("all"):
-            reports = await ctl.add("", all=True)
-            return TaskResult(data=dumps_str([r.to_dict() for r in reports]))
+            reports = await asyncio.to_thread(svc.table_add, "", all=True)
+            return TaskResult(data=dumps_str(reports))
         if not pos:
             raise ValueError("table add 需要表名（或 --all）")
         meta = {k: v for k, v in flags.items() if k != "all"}
-        report = await ctl.add(pos[0], meta=meta or None)
-        return TaskResult(data=dumps_str(report.to_dict()))
+        report = await asyncio.to_thread(svc.table_add, pos[0], meta=meta or None)
+        return TaskResult(data=dumps_str(report))
 
 
 class TableGetHandler(TaskHandler):
@@ -57,10 +52,10 @@ class TableGetHandler(TaskHandler):
         if not pos:
             raise ValueError("table get 需要表名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         columns = flags.get("columns") or None
-        df, total = await ctl.get(
-            pos[0],
+        df, total = await asyncio.to_thread(
+            svc.table_get, pos[0],
             columns=columns.split(",") if columns else None,
             where=flags.get("where"),
             partition=flags.get("partition"),
@@ -70,7 +65,8 @@ class TableGetHandler(TaskHandler):
             count_total=True,
         )
         buf = io.BytesIO()
-        df.write_ipc_stream(buf)
+        if df.height:
+            df.write_ipc_stream(buf)
         ref = ctx.put_result("data.arrow", buf.getvalue())
         return TaskResult(
             data=dumps_str({"name": pos[0], "rows": df.height, "total": total,
@@ -85,8 +81,9 @@ class TableDeleteHandler(TaskHandler):
         if not pos:
             raise ValueError("table delete 需要表名")
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
-        out = await ctl.delete(pos[0], force=bool(flags.get("force")))
+        svc = _service(ctx)
+        out = await asyncio.to_thread(
+            svc.table_delete, pos[0], force=bool(flags.get("force")))
         return TaskResult(data=dumps_str(out))
 
 
@@ -94,25 +91,25 @@ class TableScanHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         flags = parse_flags(ctx.args)
         pos = _positional(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         if flags.get("all"):
-            reports = await ctl.scan("", all=True, resync=bool(flags.get("resync")))
-            return TaskResult(data=dumps_str([r.to_dict() for r in reports]))
+            reports = await asyncio.to_thread(svc.table_scan, "", all=True)
+            return TaskResult(data=dumps_str(reports))
         if not pos:
             raise ValueError("table scan 需要表名（或 --all）")
-        report = await ctl.scan(pos[0])
-        return TaskResult(data=dumps_str(report.to_dict()))
+        report = await asyncio.to_thread(svc.table_scan, pos[0])
+        return TaskResult(data=dumps_str(report))
 
 
 class TableListHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         flags = parse_flags(ctx.args)
-        ctl = _controller(ctx)
+        svc = _service(ctx)
         if flags.get("candidate"):
-            cands = await ctl.list(candidate=True)
+            cands = await asyncio.to_thread(svc.table_list, candidate=True)
             return TaskResult(data=dumps_str(cands))
-        metas = await ctl.list()
-        return TaskResult(data=dumps_str([m.to_dict() for m in metas]))
+        metas = await asyncio.to_thread(svc.table_list)
+        return TaskResult(data=dumps_str(metas))
 
 
 class TableMetaHandler(TaskHandler):
@@ -120,9 +117,9 @@ class TableMetaHandler(TaskHandler):
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("table meta 需要表名")
-        ctl = _controller(ctx)
-        meta = await ctl.meta(pos[0])
-        return TaskResult(data=dumps_str(meta.to_dict()))
+        svc = _service(ctx)
+        meta = await asyncio.to_thread(svc.table_meta, pos[0])
+        return TaskResult(data=dumps_str(meta))
 
 
 class TableSetHandler(TaskHandler):
@@ -133,9 +130,9 @@ class TableSetHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         if not flags:
             raise ValueError("table set 需要至少一个 --key value")
-        ctl = _controller(ctx)
-        meta = await ctl.set(pos[0], **flags)
-        return TaskResult(data=dumps_str(meta.to_dict()))
+        svc = _service(ctx)
+        meta = await asyncio.to_thread(svc.table_set, pos[0], **flags)
+        return TaskResult(data=dumps_str(meta))
 
 
 class TableColHandler(TaskHandler):
@@ -146,9 +143,9 @@ class TableColHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         if not flags:
             raise ValueError("table col 需要至少一个 --key value")
-        ctl = _controller(ctx)
-        meta = await ctl.col(pos[0], pos[1], **flags)
-        return TaskResult(data=dumps_str(meta.to_dict()))
+        svc = _service(ctx)
+        meta = await asyncio.to_thread(svc.table_col, pos[0], pos[1], **flags)
+        return TaskResult(data=dumps_str(meta))
 
 
 def register(registry) -> None:

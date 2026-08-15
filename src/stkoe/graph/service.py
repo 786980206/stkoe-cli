@@ -61,8 +61,8 @@ class GraphService:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = GraphStore(str(self._db_path(self.data_dir)))
         self.graph = GraphController(self.store)
-        self.tables_root = self.data_dir / "tables"
-        self.indexs_root = self.data_dir / "indexs"  # index 资产独立物理目录
+        self.tables_root = self.data_dir / "table"
+        self.indexs_root = self.data_dir / "index"  # index 资产独立物理目录
         self.ignore_cols = set(DEFAULT_IGNORE_COLS)
 
     @classmethod
@@ -903,7 +903,7 @@ class GraphService:
         node = self._require_node("factor", name)
         fm = self._factor_meta_dict(name)
         if fm["materialized"] and fm["curated"]:
-            root = self.data_dir / "factors" / name
+            root = self.data_dir / "factor" / name
             if root.exists():
                 lf = pl.scan_parquet(root, hive_partitioning=True)
                 if partition is not None:
@@ -950,7 +950,7 @@ class GraphService:
     def factor_delete(self, name: str, *, force: bool = False) -> dict:
         self._require_node("factor", name)
         self.graph.delete("factor", name, force=force)
-        shutil.rmtree(self.data_dir / "factors" / name, ignore_errors=True)
+        shutil.rmtree(self.data_dir / "factor" / name, ignore_errors=True)
         return {"deleted": name}
 
     def factor_check(self, name: str) -> dict:
@@ -1009,7 +1009,7 @@ class GraphService:
                     "version_after": version_before, "materialized": True,
                     "changed": False, "partition_by": list(extra.get("partition_by") or ())}
         df = self._factor_compute(node)
-        out_dir = self.data_dir / "factors" / name
+        out_dir = self.data_dir / "factor" / name
         out_dir.mkdir(parents=True, exist_ok=True)
         df.write_parquet(out_dir / "data.parquet")
         feature = node.get("feature", "").split(":", 1)[1]
@@ -1109,7 +1109,7 @@ class GraphService:
         node = self._require_node("tester", name)
         tm = self._test_meta_dict(name)
         if tm["materialized"] and tm["curated"]:
-            p = self.data_dir / "factor_tests" / name / "data.parquet"
+            p = self.data_dir / "factor_test" / name / "data.parquet"
             if p.exists():
                 lf = pl.scan_parquet(p)
             else:
@@ -1125,7 +1125,7 @@ class GraphService:
         node = self._require_node("tester", name)
         tm = self._test_meta_dict(name)
         if tm["materialized"] and tm["curated"]:
-            p = self.data_dir / "factor_tests" / name / "data.parquet"
+            p = self.data_dir / "factor_test" / name / "data.parquet"
             if p.exists():
                 return pl.read_parquet(p)
         return self._test_build(node)
@@ -1175,7 +1175,7 @@ class GraphService:
     def test_delete(self, name: str, *, force: bool = False) -> dict:
         self._require_node("tester", name)
         self.graph.delete("tester", name, force=force)
-        shutil.rmtree(self.data_dir / "factor_tests" / name, ignore_errors=True)
+        shutil.rmtree(self.data_dir / "factor_test" / name, ignore_errors=True)
         return {"deleted": name}
 
     def test_check(self, name: str) -> dict:
@@ -1233,7 +1233,7 @@ class GraphService:
                     "changed": False, "rows": 0, "quantiles": spec.quantiles,
                     "periods": list(spec.periods)}
         df = self._test_build(node)
-        out_dir = self.data_dir / "factor_tests" / name
+        out_dir = self.data_dir / "factor_test" / name
         out_dir.mkdir(parents=True, exist_ok=True)
         df.write_parquet(out_dir / "data.parquet")
         cols = [{"name": c, "display_name": c, "data_type": str(t)}

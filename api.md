@@ -80,7 +80,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | config | （空）/ `show` | — | — | JsonData `{"config_file", "grpc-host", "grpc-port", "data-dir", ...extra}` |
 | config | `set` | — | `--<key> <value> ...`（任意键） | JsonData `{"written", "set"}` |
 | task | （空）/ `list` | — | `--state <state>` | JsonData `{"tasks": [...]}`（按创建时间倒序） |
-| mock | `demo` | — | `--n-syms N`（默认 300） `--n-days N`（默认 500，交易日数，从 2024-01-01 起） | JsonData（写入清单：`[{name, path, rows, columns}]`，写 `tables/index` + `tables/m1`，不注册） |
+| mock | `demo` | — | `--n-syms N`（默认 300） `--n-days N`（默认 500，交易日数，从 2024-01-01 起） | JsonData（写入清单：`[{name, path, rows, columns}]`，写 `table/index` + `table/m1`，不注册） |
 | mock | `gen` | `<name>` | `--kind <kind>`（默认 index；`tdcal/common/index/feature/klday/m1`） `--n-syms N` `--n-days N` `--start S` `--end E` `--seed N` `--col C` | JsonData（单表写入清单） |
 | table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键（`--type` 为旧概念，进 extra；类型由 label 承载，table 恒 "table"） | JsonData（TableScanReport） |
 | table | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
@@ -294,7 +294,7 @@ V3.0 panel（原 dataset）为**实时 join 视图**，无物化分区策略（�
   输出结构恒为「样本索引列 + 一列因子列」（列名 = `--factor_col`，默认取 feature 名）
 - **pipeline 算子链**：`|` 分隔的算子调用（如 `nothing()|standardlize()`），每段为 `name()`；
   算子注册制（`register_operator`，当前仅 `nothing()`，原样返回），后续算子按注册即可扩展
-- **物化**：`factor scan` 落盘到 `factors/<name>/data.parquet`（flat 单文件）；
+- **物化**：`factor scan` 落盘到 `factor/<name>/data.parquet`（flat 单文件）；
   **幂等**——依赖签名（上游 feature/sample 的 graph 版本 + engine/pipeline/factor_col hash）
   不变则跳过；`--resync` 强制重建
 - **读取**：物化完成且与源+feature+pipeline 一致（`curated`）读物化 parquet；否则实时基于
@@ -316,7 +316,7 @@ V3.0 panel（原 dataset）为**实时 join 视图**，无物化分区策略（�
   时组内）`
 - **测试列命名**：`--returns/--groupby/--marketcap`（默认 `r/ic/fv`）指定 sample 视图中的
   收益/分组/市值列名；因子列名取 factor 的 `factor_col`
-- **物化**：`test scan` 落盘 `factor_tests/<name>/data.parquet`（flat 单文件）；**幂等**——
+- **物化**：`test scan` 落盘 `factor_test/<name>/data.parquet`（flat 单文件）；**幂等**——
   依赖签名（factor 依赖 hash + spec + 测试列名）不变则跳过；`--resync` 强制重建
 - **读取**：物化且 curated 读 parquet，否则实时构造（不隐式物化）；`set` 改配置
   （returns/groupby/marketcap/spec 键）后物化失效自动回退实时
@@ -324,7 +324,7 @@ V3.0 panel（原 dataset）为**实时 join 视图**，无物化分区策略（�
 - **依赖**：test → factor（删除 factor 需 `--force`）
 - **测试器（stat 集成）**：`stat scan test <name> --kind <kind>` 或
   `stat scan <name> --kind <kind>`（单位置参数简写）运行测试器并把各命名产物写入
-  `stats/test/<name>/<kind>/<output>.parquet`；`stat get` 用 `--partition_by <output>` 读单产物。
+  `stat/test/<name>/<kind>/<output>.parquet`；`stat get` 用 `--partition_by <output>` 读单产物。
   单位置简写在 Execute 与 SubmitTask 两条路径均可用（`s:stat scan <name> --kind <kind>`）
   - `coverage` → `cvg_date`（`date/SF2S/F2T/S2T/X2S` 覆盖率）
   - `ic` → `ic_d{no}`（`IC(d{no})/RankIC(d{no})/GIC(d{no})/RankGIC(d{no})`，按 `date`）
@@ -413,13 +413,13 @@ pending → running → succeeded
 ### 4.5 任务元操作
 
 - `e:task list`：按创建时间倒序，`--state` 过滤。任务项：`task_id, source, action, args, state, progress, created_at, started_at, finished_at, error, result_ref`
-- **大结果落盘**：`table/index/panel/fieldset/sample/stat/factor/test get` 用 `ctx.put_result` 写 `tasks/<task_id>/<name>`（Arrow IPC / parquet），任务项只存 `result_ref`；`s:... get` 的 `data` 含 `{"name","rows","total","columns","result_ref"}`
+- **大结果落盘**：`table/index/panel/fieldset/sample/stat/factor/test get` 用 `ctx.put_result` 写 `task/<task_id>/<name>`（Arrow IPC / parquet），任务项只存 `result_ref`；`s:... get` 的 `data` 含 `{"name","rows","total","columns","result_ref"}`
 - `stop`（服务停止）：先在跑任务统一收尾为 `cancelled`，DB 不遗留 orphan
 
 ### 4.6 `mock` 示例任务与造数
 
 - `s:mock`（空 action）：分 5 步推进进度（progress 0.2~1.0）+ 写日志 + 落盘结果 `{"steps":5}`；支持取消与暂停。可作为协议联调样例。
-- `s:mock demo` / `s:mock gen <name> --kind <kind>`：任务版 mock 造数，把 parquet 写到 `tables/`（与 Execute 行为一致，见 §3.1），不注册 catalog。
+- `s:mock demo` / `s:mock gen <name> --kind <kind>`：任务版 mock 造数，把 parquet 写到 `table/`（与 Execute 行为一致，见 §3.1），不注册 catalog。
 
 ---
 
@@ -439,7 +439,7 @@ pending → running → succeeded
 | `stkoe feature <action> <args...>` | feature 命令（add/set/meta/list/delete/test；纯定义，无物化） |
 | `stkoe factor <action> <args...>` | factor 命令（add/get/meta/list/set/check/scan/delete；可物化） |
 | `stkoe test <action> <args...>` | test 命令（add/get/meta/list/set/check/scan/delete；因子测试数据集） |
-| `stkoe mock demo` | 生成演示源表 index + m1（默认 300 只 × 500 日，写 `tables/`，需 `table add` 注册） |
+| `stkoe mock demo` | 生成演示源表 index + m1（默认 300 只 × 500 日，写 `table/`，需 `table add` 注册） |
 | `stkoe mock gen <name> --kind <kind>` | 参数化生成单张表（tdcal/common/index/feature/klday/m1） |
 | `stkoe task list [--state <state>]` | 任务列表 |
 
@@ -500,26 +500,26 @@ t:<task_id>
 ├── catalog.db                   # V3.0 资产库：图节点/边（登记/依赖/版本/血缘）+ 物理指纹普通表
 │                              #   （stkoe_data_files / stkoe_file_stats，原 catalog.db 表迁移至此）
 ├── tasks.db                   # 任务库（TaskStore / EventStore），独立保留
-├── tasks/<task_id>/           # 任务日志 task.log + 结果文件（ResultStore）
-├── tables/<name>/             # 表（table 资产）parquet（只读，绝不写/删）
-├── indexs/<name>/             # 索引（index 资产）parquet，独立目录（只读，绝不写/删）
-├── factors/<name>/            # factor 物化产物（样本索引 + 1 因子列，flat 单文件 data.parquet）
-├── factor_tests/<name>/       # 因子测试数据集物化产物（data.parquet，flat 单文件）
-└── stats/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 graph）
+├── task/<task_id>/           # 任务日志 task.log + 结果文件（ResultStore）
+├── table/<name>/             # 表（table 资产）parquet（只读，绝不写/删）
+├── index/<name>/             # 索引（index 资产）parquet，独立目录（只读，绝不写/删）
+├── factor/<name>/            # factor 物化产物（样本索引 + 1 因子列，flat 单文件 data.parquet）
+├── factor_test/<name>/       # 因子测试数据集物化产物（data.parquet，flat 单文件）
+└── stat/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 graph）
 ```
 
 - **catalog.db vs tasks.db 分离**：catalog.db 管资产（图节点/边 + 物理指纹表，单文件同事务），
   tasks.db 管任务与事件流（高频写与资产低频强一致分开，避免写锁竞争与 WAL checkpoint 干扰）
 - **catalog.db 已废弃**：不再产生；原 stkoe_objects/stkoe_depends 由 graph 节点/边承载，
   stkoe_data_files/stkoe_file_stats 迁入 catalog.db 普通表（同文件同事务可回滚）
-- **表删除只删登记（graph 节点/指纹），绝不删用户 parquet**（可重新 `add` 发现）；index 资产物理目录为 `indexs/`（与 table 的 `tables/` 分离）
+- **表删除只删登记（graph 节点/指纹），绝不删用户 parquet**（可重新 `add` 发现）；index 资产物理目录为 `index/`（与 table 的 `table/` 分离）
 - **stat 资产不进 graph**：文件夹存在即已扫描，`meta`/`list` 读目录
 - **sample 无物化产物**：只登记于 graph（依赖 fieldset），读取动态构造 fieldset 视图 + 过滤
 - **feature 纯定义**：只登记于 graph，无任何磁盘产物
-- **factor 物化产物**：`factors/<name>/data.parquet`（仅索引列 + 因子列，flat 单文件）；
+- **factor 物化产物**：`factor/<name>/data.parquet`（仅索引列 + 因子列，flat 单文件）；
   幂等——上游 feature/sample 版本 + pipeline/factor_col 签名不变则跳过；删除 factor 时一并清理
-- **factor_test 物化产物**：`factor_tests/<name>/data.parquet`（测试数据集面板，flat 单文件）；
-  测试器产物 `stats/test/<name>/<kind>/<output>.parquet`（stat 命名输出）；删除 test 时一并清理
+- **factor_test 物化产物**：`factor_test/<name>/data.parquet`（测试数据集面板，flat 单文件）；
+  测试器产物 `stat/test/<name>/<kind>/<output>.parquet`（stat 命名输出）；删除 test 时一并清理
 
 ### 8.1 覆盖率统计输出列（ALL_COLS）
 
@@ -534,7 +534,7 @@ t:<task_id>
 ## 9. 典型工作流
 
 ```bash
-# mock 造数（生成演示 parquet 到 tables/，替代 scripts/gen_example_data.py）
+# mock 造数（生成演示 parquet 到 table/，替代 scripts/gen_example_data.py）
 stkoe mock demo
 # 建表/索引（发现资产；index 为独立资产主体）
 stkoe table add index

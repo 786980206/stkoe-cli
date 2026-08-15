@@ -238,7 +238,7 @@ GraphStore(db_path)
       portal 前端"血缘关系"模块（右上角抽屉 + 展开完整页面，Cytoscape.js 渲染）
 - [x] **GraphService 全面接管**：table/index/panel/fieldset/sample/feature/factor/test
       三路径（Execute + SubmitTask + CLI）统一走 graph；catalog.db 废弃（物理指纹表
-      迁入 catalog.db 普通表）；factor/test 物化落盘 factors/、factor_tests/
+      迁入 catalog.db 普通表）；factor/test 物化落盘 factor/、factor_test/
 
 ## 7. 下一步（路线图）
 

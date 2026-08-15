@@ -104,8 +104,8 @@ def test_execute_mock_demo(client, srv):
     assert [r["name"] for r in reports] == ["index", "m1"]
     assert reports[0]["rows"] == 300 * 500
     root = Path(srv.data_dir)
-    assert (root / "indexs" / "index" / "data.parquet").exists()
-    assert (root / "tables" / "m1" / "data.parquet").exists()
+    assert (root / "index" / "index" / "data.parquet").exists()
+    assert (root / "table" / "m1" / "data.parquet").exists()
 
 
 def test_execute_mock_demo_with_flags(client, srv):
@@ -116,7 +116,7 @@ def test_execute_mock_demo_with_flags(client, srv):
     assert header.code == 0
     reports = json.loads(datas[0].json.data)
     assert reports[0]["rows"] == 5 * 3
-    assert (Path(srv.data_dir) / "indexs" / "index" / "data.parquet").exists()
+    assert (Path(srv.data_dir) / "index" / "index" / "data.parquet").exists()
 
 
 def test_execute_mock_gen(client, srv):
@@ -128,7 +128,7 @@ def test_execute_mock_gen(client, srv):
     rep = json.loads(datas[0].json.data)
     assert rep["name"] == "g1"
     assert rep["rows"] == 4 * 3
-    assert (Path(srv.data_dir) / "tables" / "g1" / "data.parquet").exists()
+    assert (Path(srv.data_dir) / "table" / "g1" / "data.parquet").exists()
 
 
 def test_execute_mock_gen_missing_name_error(client):
@@ -153,7 +153,7 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     """Execute 路径 table add/list/meta/get/delete 全链路（与 s:table 任务版对齐）"""
     import polars as pl
 
-    root = Path(srv.data_dir) / "tables" / "demo"
+    root = Path(srv.data_dir) / "table" / "demo"
     root.mkdir(parents=True)
     pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}).write_parquet(root / "p1.parquet")
 
@@ -185,7 +185,7 @@ def test_execute_table_add_list_meta_get_delete(client, srv, tmp_path):
     assert _json(datas, "table")["name"] == "demo"
 
     # add 携带元数据：e:table add demo2 --display_name --tags（--type 为旧概念，进 extra）
-    root2 = Path(srv.data_dir) / "tables" / "demo2"
+    root2 = Path(srv.data_dir) / "table" / "demo2"
     root2.mkdir(parents=True)
     pl.DataFrame({"a": [1]}).write_parquet(root2 / "p.parquet")
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -276,7 +276,7 @@ def test_execute_table_add_duplicate_error(client, srv, tmp_path):
     """重复 add：TableExistsError 以错误 DataHeader 返回（code!=0）"""
     import polars as pl
 
-    root = Path(srv.data_dir) / "tables" / "dup"
+    root = Path(srv.data_dir) / "table" / "dup"
     root.mkdir(parents=True, exist_ok=True)
     pl.DataFrame({"a": [1]}).write_parquet(root / "p1.parquet")
 
@@ -305,7 +305,7 @@ def test_execute_table_scan(client, srv, tmp_path):
     """e:table scan：显式重扫对账（无差异 changed=False；追加文件后 changed=True + 版本递增）"""
     import polars as pl
 
-    root = Path(srv.data_dir) / "tables" / "demo"
+    root = Path(srv.data_dir) / "table" / "demo"
     root.mkdir(parents=True)
     pl.DataFrame({"sym": ["a", "b"], "price": [1.0, 2.0]}).write_parquet(root / "data.parquet")
     header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -334,7 +334,7 @@ def test_execute_table_list_candidate(client, srv, tmp_path):
     """table list --candidate：返回未登记但含 parquet 的目录"""
     import polars as pl
 
-    root = Path(srv.data_dir) / "tables"
+    root = Path(srv.data_dir) / "table"
     (root / "reg").mkdir(parents=True)
     pl.DataFrame({"a": [1]}).write_parquet(root / "reg" / "p.parquet")
     header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -372,7 +372,7 @@ def test_execute_index_list_candidate(client, srv, tmp_path):
     """e:index list --candidate：未登记 index 但含 parquet 的表目录候选"""
     import polars as pl
 
-    root = Path(srv.data_dir) / "indexs"
+    root = Path(srv.data_dir) / "index"
     (root / "reg").mkdir(parents=True)
     pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"]}).write_parquet(root / "reg" / "p.parquet")
     header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -402,11 +402,11 @@ def _seed_panel_chain(client, srv, x2_formula="x*2"):
     import polars as pl
 
     root = Path(srv.data_dir)
-    d = root / "indexs" / "idx"
+    d = root / "index" / "idx"
     d.mkdir(parents=True)
     pl.DataFrame({"sym": ["a", "b"], "x": [1.0, 2.0],
                   "date": ["2026-01-01", "2026-01-02"]}).write_parquet(d / "data.parquet")
-    m = root / "tables" / "mem"
+    m = root / "table" / "mem"
     m.mkdir(parents=True)
     pl.DataFrame({"sym": ["a", "b"], "date": ["2026-01-01", "2026-01-02"],
                   "y": [10.0, 20.0]}).write_parquet(m / "data.parquet")
@@ -538,13 +538,13 @@ def _seed_factor_chain(client, srv, ready=True):
     import polars as pl
 
     root = Path(srv.data_dir)
-    d = root / "indexs" / "idx"
+    d = root / "index" / "idx"
     d.mkdir(parents=True)
     pl.DataFrame({
         "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-01"],
         "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0], "x": [1.0, 2.0],
     }).write_parquet(d / "data.parquet")
-    m = root / "tables" / "mem"
+    m = root / "table" / "mem"
     m.mkdir(parents=True)
     pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01", "2024-01-01"],
                   "price": [1.5, 2.5]}).write_parquet(m / "data.parquet")
@@ -617,7 +617,7 @@ def test_execute_factor_add_get_check_scan_delete(client, srv):
         source="factor", action="scan", args=["fac1"])))
     assert header.code == 0
     assert _json(datas, "factor")["changed"] is True
-    assert (root / "factors" / "fac1" / "data.parquet").exists()
+    assert (root / "factor" / "fac1" / "data.parquet").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="factor", action="delete", args=["fac1"])))
@@ -666,7 +666,7 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
         source="test", action="scan", args=["t1"])))
     assert header.code == 0
     assert _json(datas, "test")["changed"] is True
-    assert (root / "factor_tests" / "t1" / "data.parquet").exists()
+    assert (root / "factor_test" / "t1" / "data.parquet").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="stat", action="scan", args=["t1", "--kind", "ic"])))
@@ -674,7 +674,7 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
     report = _json(datas, "stat")
     assert report["target_type"] == "test"
     assert "ic_d1" in report["partitions"]
-    assert (root / "stats" / "test" / "t1" / "ic" / "ic_d1.parquet").exists()
+    assert (root / "stat" / "test" / "t1" / "ic" / "ic_d1.parquet").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="test", action="delete", args=["t1"])))

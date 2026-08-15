@@ -60,7 +60,7 @@ class DatasetController:
         self._tc = TableController(data_dir=data_dir, ignore_cols=ignore_cols)
         self.data_dir = self._tc.data_dir
         self.catalog = self._tc.catalog
-        self.root = self.data_dir / "datasets"
+        self.root = self.data_dir / "dataset"
         self.ignore_cols = set(ignore_cols)
 
     # ---------- 内部转换 ----------

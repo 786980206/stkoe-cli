@@ -52,14 +52,14 @@ def test_mock_task_full_lifecycle(mgr, tmp_path):
     assert done.progress == 1.0
     assert done.started_at is not None
     assert done.finished_at is not None
-    assert done.result_ref == f"tasks/{task.task_id}/mock_result"
+    assert done.result_ref == f"task/{task.task_id}/mock_result"
 
 
 def test_mock_writes_log_and_result(mgr, tmp_path):
     task = mgr.submit("mock", "", [])
     _collect(mgr, task.task_id)
 
-    log = tmp_path / "data" / "tasks" / task.task_id / "task.log"
+    log = tmp_path / "data" / "task" / task.task_id / "task.log"
     assert log.exists()
     assert "步骤" in log.read_text(encoding="utf-8")
 

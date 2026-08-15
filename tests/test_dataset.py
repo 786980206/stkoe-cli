@@ -32,13 +32,13 @@ def tctl(tmp_path):
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
 def _write_idx(root, name, rows):
     """index 资产写 indexs/ 目录（独立于 tables/）"""
-    d = root / "indexs" / name
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
@@ -222,7 +222,7 @@ def test_scan_incremental_materialize(ctl, tmp_path, tctl):
     tctl2 = TableController(data_dir=tmp_path / "data")
     root = tmp_path / "data"
     extra = pl.DataFrame({"sym": ["e"], "date": ["2024-01-04"], "price": [4.0]})
-    extra.write_parquet(root / "tables" / "index" / "more.parquet")
+    extra.write_parquet(root / "table" / "index" / "more.parquet")
     _run(tctl2.scan("index"))
 
     report = _scan(ctl, "ds1")
@@ -371,6 +371,16 @@ def _await(mgr, task, timeout=5.0):
 
 def _mgr_result(mgr, task):
     import json
+    import time
 
-    evs = mgr.events.list_by_task(task.task_id)
+    from stkoe.task.model import TERMINAL_STATES
+
+    task_id = task.task_id if hasattr(task, "task_id") else task
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        evs = mgr.events.list_by_task(task_id)
+        if evs and evs[-1].state in TERMINAL_STATES:
+            return json.loads(evs[-1].data) if evs[-1].data else None
+        time.sleep(0.01)
+    evs = mgr.events.list_by_task(task_id)
     return json.loads(evs[-1].data) if evs and evs[-1].data else None

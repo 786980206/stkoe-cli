@@ -52,8 +52,8 @@ class TaskManager:
         self.events: EventStore = EventStore(db)
         self.registry: TaskRegistry = TaskRegistry()
         self.scheduler: Scheduler = Scheduler()
-        self.logs: LogStore = LogStore(self.data_dir / "tasks")
-        self.results: ResultStore = ResultStore(self.data_dir / "tasks")
+        self.logs: LogStore = LogStore(self.data_dir / "task")
+        self.results: ResultStore = ResultStore(self.data_dir / "task")
 
         self._lock = threading.RLock()
         self._live: dict[str, Task] = {}  # 运行中任务（终态后移除，按需从 SQLite 读）

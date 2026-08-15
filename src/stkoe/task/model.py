@@ -135,7 +135,7 @@ class TaskContext:
         )
 
     async def log(self, message: str) -> None:
-        """写详细日志：tasks/<task_id>/task.log（不产生事件）"""
+        """写详细日志：task/<task_id>/task.log（不产生事件）"""
         self._manager.log(self._task, message)
 
     def is_cancelled(self) -> bool:
@@ -152,5 +152,5 @@ class TaskContext:
             await asyncio.sleep(0.05)
 
     def put_result(self, name: str, data: bytes) -> str:
-        """把结果写入 ResultStore（tasks/<task_id>/<name>），返回 result_ref"""
+        """把结果写入 ResultStore（task/<task_id>/<name>），返回 result_ref"""
         return self._manager.results.put(self._task.task_id, name, data)

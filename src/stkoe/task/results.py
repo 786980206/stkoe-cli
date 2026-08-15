@@ -1,4 +1,4 @@
-"""结果存储：tasks/<task_id>/<name> 大结果文件（Arrow / Parquet / 临时文件）
+"""结果存储：task/<task_id>/<name> 大结果文件（Arrow / Parquet / 临时文件）
 
 Task 只保存 ``result_ref``（相对 data_dir 的路径），大结果不落地 Task 内存。
 """
@@ -9,7 +9,7 @@ from pathlib import Path
 
 class ResultStore:
     def __init__(self, root: Path):
-        self.root = root  # <data_dir>/tasks
+        self.root = root  # <data_dir>/task
 
     def dir(self, task_id: str) -> Path:
         return self.root / task_id
@@ -20,7 +20,7 @@ class ResultStore:
         d.mkdir(parents=True, exist_ok=True)
         p = d / name
         p.write_bytes(data)
-        return f"tasks/{task_id}/{name}"
+        return f"task/{task_id}/{name}"
 
     def resolve(self, result_ref: str) -> Path:
         """把 result_ref 解析为绝对路径（相对 data_dir）"""

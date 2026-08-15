@@ -1,4 +1,4 @@
-"""任务日志：tasks/<task_id>/task.log（详细日志，与 RPC 事件分离）
+"""任务日志：task/<task_id>/task.log（详细日志，与 RPC 事件分离）
 
 区别：
 - TaskEvent → RPC / 状态（进度/消息/状态）

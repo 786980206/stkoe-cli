@@ -82,7 +82,7 @@ src/stkoe/
 ├── stat/              # 数据统计资产（StatController，async 接口）
 │   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
 │   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
-│   ├── controller.py  # async scan/get/meta/list/delete（cov 写入 stats/ 目录，不进 catalog）
+│   ├── controller.py  # async scan/get/meta/list/delete（cov 写入 stat/ 目录，不进 catalog）
 │   └── handlers.py    # 任务版 Handler（source="stat"，注册进 TaskRegistry）
 ├── mock/              # 演示数据生成（stkoe mock demo/gen，替代 scripts/gen_example_data.py）
 │   ├── gen.py         # 生成器（tdcal/common/index/feature/klday/m1 + demo）+ write（只写盘不注册）
@@ -186,15 +186,15 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
-### 2026-08 index 资产独立物理目录 indexs/（不再共用 tables/）
+### 2026-08 index 资产独立物理目录 index/（不再共用 table/）
 
-- `GraphService` 新增 `indexs_root`（`<data_dir>/indexs/`）：`index add/update/get/meta`
-  扫描/读取 `indexs/<name>/`，与 table 的 `tables/<name>/` 分离（`_asset_root` 按类型选目录）；
-  `index list --candidate` 扫 `indexs/` 下的未登记目录
-- `mock demo`/`mock gen --kind index` 写 `indexs/index`（`mock.write` 加 `subdir` 参数）；
-  测试：index 表写入统一走 `_write_idx`（indexs/），table 保持 `tables/`；stat 的 table 目标
+- `GraphService` 新增 `indexs_root`（`<data_dir>/index/`）：`index add/update/get/meta`
+  扫描/读取 `index/<name>/`，与 table 的 `table/<name>/` 分离（`_asset_root` 按类型选目录）；
+  `index list --candidate` 扫 `index/` 下的未登记目录
+- `mock demo`/`mock gen --kind index` 写 `index/index`（`mock.write` 加 `subdir` 参数）；
+  测试：index 表写入统一走 `_write_idx`（index/），table 保持 `table/`；stat 的 table 目标
   用例改用成员表 m1（index 不再是 table）；全量 286 用例绿
-- 文档：api.md §8 存储布局补 `indexs/` 目录、example.md index 命令改 `index` 前缀
+- 文档：api.md §8 存储布局补 `index/` 目录、example.md index 命令改 `index` 前缀
 
 ### 2026-08 panel add 移除 keys 参数：keys 由 index 推断（symbol_col + datetime_col）
 
@@ -223,10 +223,10 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 ### 2026-08 V3.0 全面切 graph：table/index/panel/fieldset/sample/feature/factor/test 三路径统一走 GraphService + catalog.db 废弃
 
 - **GraphService 新增 factor/test 方法**：factor 实时计算（sample 视图求 feature 公式 →
-  拼索引+因子列 → pipeline 算子链）与物化（`factors/<name>/data.parquet`，flat 单文件，
+  拼索引+因子列 → pipeline 算子链）与物化（`factor/<name>/data.parquet`，flat 单文件，
   幂等签名 = 上游 feature/sample 的 graph 版本 + engine/pipeline/factor_col hash）；
   test 数据构造（sample 视图 + 测试必需列 → `prepare_factor_data`）与物化
-  （`factor_tests/<name>/data.parquet`）；`test_data()` 供 stat 测试器复用
+  （`factor_test/<name>/data.parquet`）；`test_data()` 供 stat 测试器复用
 - **dispatch factor/test 处理器切 GraphService**（Execute）；stat 的 test 目标改走 graph
   （`StatController._scan_test_sync` 用 GraphService.test_data + factor_test/tester.py，
   删除对 V2.0 FactorTestController 的依赖）
@@ -393,7 +393,7 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 - **新增 `mock` 模块**：把 `scripts/gen_example_data.py` 的造数能力内建为 `stkoe mock`
   接口，参考 v1.0 `data/mock.py` 生成器设计（tdcal/common/index/feature/klday/m1 + write）
 - **`stkoe mock demo`**：生成 example.md 演示源表 index + m1（**默认 300 只 × 500 个交易日
-  = 15 万行**，`--n-syms/--n-days` 可调）到 `<data_dir>/tables/`；**只写盘不注册**，仍由
+  = 15 万行**，`--n-syms/--n-days` 可调）到 `<data_dir>/table/`；**只写盘不注册**，仍由
   `table add` 发现登记（保持「发现资产」语义）
 - **`stkoe mock gen <name> --kind <kind>`**：参数化生成单张表（kind：
   tdcal/common/index/feature/klday/m1，`--n-syms/--start/--end/--seed/--col` 可选）
@@ -422,7 +422,7 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
   formula 必填、feature delete 下游仅 factor、test add 补 `--factor_col`、test set 补
   `--spec`、stat 行补单位置简写；§3.7 补 StatScanReport 与 factor_test 四个数据模型；
   §3.10 formula 必填；§3.12 补测试器输出列与任务版简写说明；§4.1 对齐声明修正；§8 补
-  `factor_tests/` 存储目录；AGENTS.md feature 模块 formula 必填、factor set 定义键补 engine；
+  `factor_test/` 存储目录；AGENTS.md feature 模块 formula 必填、factor set 定义键补 engine；
   dispatch.py/proto 注释 source 列表更新
 - 测试：新增 factor set engine 定义键、任务版 test set --spec、任务版 stat 单位置简写
   3 用例，全量 198 用例绿
@@ -437,14 +437,14 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 - **测试列命名**：`--returns/--groupby/--marketcap`（默认 `r/ic/fv`）；因子列取 factor 的
   `factor_col`；`JobSpec` 类 `FactorTesterSpec`（by_group/quantiles/periods/date_range/
   rolling_window）存 meta，`set` 可改（物化失效）
-- **物化** `test scan`：落盘 `factor_tests/<name>/data.parquet`（flat 单文件）；**幂等**——
+- **物化** `test scan`：落盘 `factor_test/<name>/data.parquet`（flat 单文件）；**幂等**——
   依赖签名（factor 依赖 hash + spec + 测试列名）不变则跳过；`--resync` 强制重建
 - **读取**：物化且 curated 读 parquet，否则实时构造，不隐式物化；`test check` 校验构造
   成功 + 含必需列 + 行数 > 0
 - **依赖登记**：test → factor（stkoe_depends），删除 factor 需 `--force`
 - **测试器（stat 集成）**：`stat scan test <name> --kind <kind>`（也支持单位置参数简写
   `stat scan <name> --kind <kind>`），六类测试器（bucket_returns/factor_returns/
-  bucket_turnover/autocorrelation/ic/coverage）产物写 `stats/test/<name>/<kind>/<output>.parquet`；
+  bucket_turnover/autocorrelation/ic/coverage）产物写 `stat/test/<name>/<kind>/<output>.parquet`；
   `stat get/meta/delete` 对 test 目标复用 stat 文件逻辑（单位置参数 → test）
 - **多路径注册**：Execute（dispatch.py）/ SubmitTask（handlers.py）/ CLI（cli.py）三处对齐；
   `api.md` §3.1/§3.12/§4.1/§4.5/§5/§8/§9 同步
@@ -460,7 +460,7 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 - **算子注册表**（engine.py）：`FactorOperator` 接口 + `register_operator`/`get_operator`，
   当前仅 `nothing()`（恒等）；pipeline 语法 `|` 分隔的 `name()`（如
   `nothing()|standardlize()`），`parse_pipeline` 逐段解析，后续算子注册即可扩展
-- **物化** `factor scan`：落盘 `factors/<name>/`，**布局镜像源 dataset**（源已分区则按同
+- **物化** `factor scan`：落盘 `factor/<name>/`，**布局镜像源 dataset**（源已分区则按同
   分区键/粒度 `part=<v>/data.parquet`，否则单文件）；**幂等**——依赖签名（sample 的 dataset
   data_key + feature formula + pipeline）不变则跳过；`--resync` 强制重建
 - **读取**：物化且 curated 读物化 parquet（含 hive 分区列 `part`），否则实时基于 sample
@@ -540,7 +540,7 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 ### 2026-08 stat 数据统计资产（coverage 覆盖率）+ CLI stat 子命令
 
 - **新增 `stat` 模块**：`stkoe stat scan <target_type> <name> [--kind coverage]` 扫描
-  `table` 或 `dataset` 目标，写 `stats/<target_type>/<name>/<kind>/` 目录下 parquet 文件：
+  `table` 或 `dataset` 目标，写 `stat/<target_type>/<name>/<kind>/` 目录下 parquet 文件：
   分区 = `["all", *索引列]`（dataset 取 keys，table 取非 tool 列），每分区一个文件；
   `stat get <...> [--partition_by <p>]` 读取全部或指定分区
 - **覆盖率统计**（calc.py 按 dtype 分桶）：`group | field | data_type | count | null_count |

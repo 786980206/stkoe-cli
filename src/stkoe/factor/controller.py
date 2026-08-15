@@ -52,7 +52,7 @@ class FactorController:
         self._sc = SampleController(data_dir=data_dir, ignore_cols=ignore_cols)
         self.data_dir = self._sc.data_dir
         self.catalog = self._sc.catalog
-        self.root = self.data_dir / "factors"
+        self.root = self.data_dir / "factor"
 
     # ---------- 内部转换 ----------
 

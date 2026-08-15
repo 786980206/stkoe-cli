@@ -72,7 +72,7 @@ class TableController:
         if data_dir is None:
             data_dir = load_config().data_dir
         self.data_dir = Path(data_dir).expanduser()
-        self.root = self.data_dir / "tables"
+        self.root = self.data_dir / "table"
         self.catalog = Catalog(self.data_dir / "catalog.db")
         self.ignore_cols = set(ignore_cols)
 

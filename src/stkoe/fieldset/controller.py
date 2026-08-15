@@ -49,7 +49,7 @@ class FieldsetController:
         self._dc = DatasetController(data_dir=data_dir, ignore_cols=ignore_cols)
         self.data_dir = self._dc.data_dir
         self.catalog = self._dc.catalog
-        self.root = self.data_dir / "fieldsets"
+        self.root = self.data_dir / "fieldset"
 
     # ---------- 内部转换 ----------
 

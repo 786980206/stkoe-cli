@@ -214,7 +214,7 @@ def resolve_data_dir(data_dir=None) -> Path:
     return Path(load_config().data_dir).expanduser()
 
 
-def write(data_dir, name: str, df: pl.DataFrame, subdir: str = "tables") -> dict:
+def write(data_dir, name: str, df: pl.DataFrame, subdir: str = "table") -> dict:
     """写 ``<data_dir>/<subdir>/<name>/data.parquet``（不注册，供 add 发现）
 
     index 类表写 ``indexs/``（V3 起 index 资产独立目录），其余写 ``tables/``。
@@ -231,7 +231,7 @@ def demo(data_dir=None, n_syms: int = DEMO_N_SYMS,
          n_days: int = DEMO_N_DAYS) -> list[dict]:
     """生成 example.md 演示源表 index + m1，返回写入清单"""
     return [write(data_dir, "index", demo_index(n_syms=n_syms, n_days=n_days),
-                  subdir="indexs"),
+                  subdir="index"),
             write(data_dir, "m1", demo_m1(n_syms=n_syms, n_days=n_days))]
 
 
@@ -256,7 +256,7 @@ def gen(name: str, kind: str, *, data_dir=None, n_syms: int = 10,
     else:
         raise ValueError(f"未知 mock kind: {kind}（可用: "
                          "tdcal/common/index/feature/klday/m1）")
-    subdir = "indexs" if kind == "index" else "tables"
+    subdir = "index" if kind == "index" else "table"
     return write(data_dir, name, df, subdir=subdir)
 
 

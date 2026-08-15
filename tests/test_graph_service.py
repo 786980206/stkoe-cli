@@ -22,16 +22,16 @@ from stkoe.graph.service import GraphService
 def svc():
     base = os.path.join(os.environ.get("TEMP", "."), "gql_svc_test")
     shutil.rmtree(base, ignore_errors=True)
-    for sub in ("tables", "indexs"):
+    for sub in ("table", "index"):
         for d in ("index", "m1", "m2"):
             os.makedirs(os.path.join(base, sub, d), exist_ok=True)
-    # index 资产物理目录为 indexs/
+    # index 资产物理目录为 index/
     pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
-                  "code": [1, 2]}).write_parquet(os.path.join(base, "indexs", "index", "data.parquet"))
+                  "code": [1, 2]}).write_parquet(os.path.join(base, "index", "index", "data.parquet"))
     pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
-                  "price": [1.5, 2.5]}).write_parquet(os.path.join(base, "tables", "m1", "data.parquet"))
+                  "price": [1.5, 2.5]}).write_parquet(os.path.join(base, "table", "m1", "data.parquet"))
     pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
-                  "vol": [100, 200]}).write_parquet(os.path.join(base, "tables", "m2", "data.parquet"))
+                  "vol": [100, 200]}).write_parquet(os.path.join(base, "table", "m2", "data.parquet"))
     s = GraphService(base)
     yield s
     s.close()
@@ -83,7 +83,7 @@ class TestTableGraph:
         # 追加文件：changed=True + 版本递增 + 下游 panel 置脏
         pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"],
                       "price": [3.5]}).write_parquet(
-            os.path.join(svc.data_dir, "tables", "m1", "more.parquet"))
+            os.path.join(svc.data_dir, "table", "m1", "more.parquet"))
         r2 = svc.table_scan("m1")
         assert r2["changed"] is True
         assert r2["version_after"] > v0
@@ -175,9 +175,9 @@ class TestIndexGraph:
     def test_index_list_candidate(self, svc):
         """index list --candidate：indexs/ 下未登记为 index 但含 parquet 的目录"""
         for n in ("m1", "m2"):
-            os.makedirs(os.path.join(svc.data_dir, "indexs", n), exist_ok=True)
+            os.makedirs(os.path.join(svc.data_dir, "index", n), exist_ok=True)
             pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"]}).write_parquet(
-                os.path.join(svc.data_dir, "indexs", n, "data.parquet"))
+                os.path.join(svc.data_dir, "index", n, "data.parquet"))
         svc.index_add("index")  # 登记 index（indexs/index）
         cands = svc.index_list(candidate=True)
         assert "m1" in cands and "m2" in cands
@@ -238,7 +238,7 @@ class TestFactorGraph:
         s2 = svc.factor_scan("fac1")  # 幂等
         assert s2["changed"] is False
         assert svc.factor_meta("fac1")["curated"] is True
-        assert (svc.data_dir / "factors" / "fac1" / "data.parquet").exists()
+        assert (svc.data_dir / "factor" / "fac1" / "data.parquet").exists()
 
     def test_factor_add_requires_registered(self, svc):
         self._chain(svc)
@@ -267,7 +267,7 @@ class TestTesterGraph:
             pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
                           "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
                           "code": [1, 2]}).write_parquet(
-                os.path.join(svc.data_dir, "indexs", "index", "data.parquet"))
+                os.path.join(svc.data_dir, "index", "index", "data.parquet"))
         svc.table_add("m1")
         svc.index_add("index")
         svc.panel_add("ds1", "index", ["m1"])
@@ -310,7 +310,7 @@ class TestTesterGraph:
         s2 = svc.test_scan("t1")  # 幂等
         assert s2["changed"] is False
         assert svc.test_meta("t1")["curated"] is True
-        assert (svc.data_dir / "factor_tests" / "t1" / "data.parquet").exists()
+        assert (svc.data_dir / "factor_test" / "t1" / "data.parquet").exists()
 
         d = svc.test_data("t1")
         assert d.height == 2

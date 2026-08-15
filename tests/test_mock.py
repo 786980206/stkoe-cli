@@ -98,8 +98,8 @@ def test_generators_deterministic_with_seed():
 
 def test_write_creates_flat_parquet(tmp_path):
     df = demo_index(n_syms=4, n_days=3)
-    rep = write(tmp_path / "data", "index", df, subdir="indexs")
-    path = tmp_path / "data" / "indexs" / "index" / "data.parquet"
+    rep = write(tmp_path / "data", "index", df, subdir="index")
+    path = tmp_path / "data" / "index" / "index" / "data.parquet"
     assert path.exists()
     assert rep["name"] == "index"
     assert rep["rows"] == 12
@@ -111,14 +111,14 @@ def test_demo_writes_index_and_m1(tmp_path):
     reports = demo(tmp_path / "data", n_syms=10, n_days=5)
     assert [r["name"] for r in reports] == ["index", "m1"]
     assert reports[0]["rows"] == 50
-    assert (tmp_path / "data" / "indexs" / "index" / "data.parquet").exists()
-    assert (tmp_path / "data" / "tables" / "m1" / "data.parquet").exists()
+    assert (tmp_path / "data" / "index" / "index" / "data.parquet").exists()
+    assert (tmp_path / "data" / "table" / "m1" / "data.parquet").exists()
 
 
 def test_gen_single_table(tmp_path):
     rep = gen("g1", "klday", data_dir=tmp_path / "data", seed=1)
     assert rep["name"] == "g1"
-    assert (tmp_path / "data" / "tables" / "g1" / "data.parquet").exists()
+    assert (tmp_path / "data" / "table" / "g1" / "data.parquet").exists()
     assert pl.read_parquet(rep["path"]).height == 30
 
 
@@ -171,8 +171,8 @@ def test_task_mock_demo(mgr):
     assert done.state == "succeeded"
     reports = _mgr_result(mgr, task)
     assert [r["name"] for r in reports] == ["index", "m1"]
-    assert (mgr.data_dir / "indexs" / "index" / "data.parquet").exists()
-    assert (mgr.data_dir / "tables" / "m1" / "data.parquet").exists()
+    assert (mgr.data_dir / "index" / "index" / "data.parquet").exists()
+    assert (mgr.data_dir / "table" / "m1" / "data.parquet").exists()
 
 
 def test_task_mock_gen(mgr):
@@ -184,7 +184,7 @@ def test_task_mock_gen(mgr):
     rep = _mgr_result(mgr, task)
     assert rep["name"] == "g1"
     assert rep["rows"] == 4 * 3
-    assert (mgr.data_dir / "tables" / "g1" / "data.parquet").exists()
+    assert (mgr.data_dir / "table" / "g1" / "data.parquet").exists()
 
 
 def test_task_mock_gen_missing_name_fails(mgr):

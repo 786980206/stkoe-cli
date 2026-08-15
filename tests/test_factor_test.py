@@ -25,13 +25,13 @@ def ctl(tmp_path):
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
 def _write_idx(root, name, rows):
     """index 资产写 indexs/ 目录（独立于 tables/）"""
-    d = root / "indexs" / name
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
@@ -263,7 +263,7 @@ def test_scan_materializes(ctl, tmp_path):
     assert tm.materialized is True
     assert tm.curated is True
     assert len(tm.columns) == 11
-    assert (tmp_path / "data" / "factor_tests" / "t1" / "data.parquet").exists()
+    assert (tmp_path / "data" / "factor_test" / "t1" / "data.parquet").exists()
 
 
 def test_scan_idempotent(ctl, tmp_path):
@@ -346,7 +346,7 @@ def test_delete_test(ctl, tmp_path):
     assert out == {"deleted": "t1"}
     with pytest.raises(FactorTestNotFoundError):
         _run(ctl.meta("t1"))
-    assert not (tmp_path / "data" / "factor_tests" / "t1").exists()
+    assert not (tmp_path / "data" / "factor_test" / "t1").exists()
 
 
 def test_list(ctl, tmp_path):
@@ -373,7 +373,7 @@ def test_stat_scan_test_target(tmp_path):
     assert report.target_type == "test"
     assert report.target_name == "t1"
     assert set(report.partitions) == {"ic_d1", "ic_d5", "ic_d10"}
-    out_dir = tmp_path / "data" / "stats" / "test" / "t1" / "ic"
+    out_dir = tmp_path / "data" / "stat" / "test" / "t1" / "ic"
     assert (out_dir / "ic_d1.parquet").exists()
 
 
@@ -405,7 +405,7 @@ def test_stat_all_testers(tmp_path):
     for kind in TESTER_KINDS:
         report = _run(st.scan("test", "t1", kind=kind))
         assert report.files, f"{kind} 应产出文件"
-        assert all((tmp_path / "data" / "stats" / f.rel_path).exists()
+        assert all((tmp_path / "data" / "stat" / f.rel_path).exists()
                    for f in report.files)
 
 

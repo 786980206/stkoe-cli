@@ -23,13 +23,13 @@ def ctl(tmp_path):
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
 def _write_idx(root, name, rows):
     """index 资产写 indexs/ 目录（独立于 tables/）"""
-    d = root / "indexs" / name
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
@@ -222,7 +222,7 @@ def test_scan_materialize_and_read(ctl, tmp_path):
     rep = _run(ctl.scan("fac1"))
     assert rep.changed is True
     assert rep.partition_by == ()
-    assert (tmp_path / "data" / "factors" / "fac1" / "data.parquet").exists()
+    assert (tmp_path / "data" / "factor" / "fac1" / "data.parquet").exists()
 
     fm = _meta(ctl, "fac1")
     assert fm.materialized is True

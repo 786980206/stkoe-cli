@@ -55,7 +55,7 @@ class FactorTestController:
         self._fc = FactorController(data_dir=data_dir, ignore_cols=ignore_cols)
         self.data_dir = self._fc.data_dir
         self.catalog = self._fc.catalog
-        self.root = self.data_dir / "factor_tests"
+        self.root = self.data_dir / "factor_test"
 
     # ---------- 内部转换 ----------
 
@@ -468,7 +468,7 @@ class FactorTestController:
 
         tm = self._describe_sync(name)
         meta = self._catalog_meta(name)
-        out_dir = self.data_dir / "stats" / "test" / name / kind
+        out_dir = self.data_dir / "stat" / "test" / name / kind
         if tm.materialized and tm.curated:
             data = pl.read_parquet(self._root(name) / "data.parquet")
         else:
@@ -484,7 +484,7 @@ class FactorTestController:
             p = out_dir / f"{out_name}.parquet"
             df.write_parquet(p)
             files.append(StatFile(partition=out_name,
-                                  rel_path=p.relative_to(self.data_dir / "stats"),
+                                  rel_path=p.relative_to(self.data_dir / "stat"),
                                   rows=df.height, size=p.stat().st_size))
         return _ordered(tuple(files))
 

@@ -23,13 +23,13 @@ def ctl(tmp_path):
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
 def _write_idx(root, name, rows):
     """index 资产写 indexs/ 目录（独立于 tables/）"""
-    d = root / "indexs" / name
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 

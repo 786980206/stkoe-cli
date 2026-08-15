@@ -52,7 +52,7 @@ class StatController:
         from ..settings import load_config
 
         self.data_dir = Path(data_dir) if data_dir else Path(load_config().data_dir)
-        self.root = self.data_dir / "stats"
+        self.root = self.data_dir / "stat"
         self.ignore_cols = set(ignore_cols)
 
     # ---------- 路径 / 分组解析 ----------
@@ -177,7 +177,7 @@ class StatController:
         if target_type == "table":
             svc = self._graph_service()
             try:
-                root = svc.data_dir / "tables" / target_name
+                root = svc.data_dir / "table" / target_name
             finally:
                 svc.close()
         elif target_type in ("dataset", "panel"):

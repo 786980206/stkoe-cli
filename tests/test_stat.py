@@ -31,13 +31,13 @@ def tctl(tmp_path):
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
 def _write_idx(root, name, rows):
     """index 资产写 indexs/ 目录（独立于 tables/）"""
-    d = root / "indexs" / name
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
@@ -90,9 +90,9 @@ def test_scan_generates_partition_files(ctl, tmp_path, tctl):
     parts = {f.partition: f for f in report.files}
     assert set(parts) == {"all", "sym", "date"}
     for f in parts.values():
-        assert (root / "stats" / f.rel_path).exists()
+        assert (root / "stat" / f.rel_path).exists()
 
-    out_dir = root / "stats" / "panel" / "ds1" / "coverage"
+    out_dir = root / "stat" / "panel" / "ds1" / "coverage"
     assert (out_dir / "all.parquet").exists()
     assert (out_dir / "sym.parquet").exists()
     assert (out_dir / "date.parquet").exists()
@@ -165,7 +165,7 @@ def test_table_target_scan(ctl, tmp_path, tctl):
 
 def _write_hive(root, name, parts, row_cnt=1):
     """写 hive 分区表：parts=[（key, value), ...] → tables/<name>/k1=v1/.../data.parquet"""
-    tdir = root / "tables" / name
+    tdir = root / "table" / name
     sizes = {}
     for i, (k, v) in enumerate(parts):
         d = tdir / f"{k}={v}"

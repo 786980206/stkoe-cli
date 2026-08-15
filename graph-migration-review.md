@@ -82,7 +82,7 @@
 - V2.0：`dataset scan`/`fieldset scan` 真实落盘（datasets/、fieldsets/）+ curated 读。
 - graph：panel **无物化**（每次实时 join）；`fieldset_scan` 只 `resolve` 标记
   `materialized=True`，**无物理产物**（返回 fields_count/rows 但不落盘）。
-- factor/test 有物化（新实现，落盘 factors/、factor_tests/）。
+- factor/test 有物化（新实现，落盘 factor/、factor_test/）。
 - **后果**：大 panel 反复实时 join 无加速；`fieldset scan` 名不副实（没落盘却报 materialized）；
   V2.0 的"物化产物加速读取"能力丢失。
 - **修法方向**：补齐 panel/fieldset 物化（scan 落盘 + curated 读，镜像 V2.0 行为）或改命令

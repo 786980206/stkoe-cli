@@ -38,7 +38,7 @@ stkoe 数据服务（gRPC）：管理**表 / 数据集 / 衍生指标 / 样本�
     `table/index → panel → fieldset → sample → factor`
 - **GraphService**（`graph/service.py`）：table/index/panel/fieldset/sample/feature/factor/test
   统一服务——登记/依赖/版本进 graph；物理指纹表（stkoe_data_files/stkoe_file_stats）
-  迁入 catalog.db 普通表；factor/test 物化落盘 `factors/`、`factor_tests/`（幂等）；
+  迁入 catalog.db 普通表；factor/test 物化落盘 `factor/`、`factor_test/`（幂等）；
   Execute（dispatch）与 SubmitTask（任务版 handler）三路径对齐
 - **`graph` 命令（gRPC Execute，JSON 返回）**：`e:graph lineage [--node][--depth]` /
   `e:graph nodes [--type]` / `e:graph stats`

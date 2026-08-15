@@ -14,21 +14,21 @@
 export STKOE_CONFIG=./stkoe.example.json
 uv run -m stkoe config set --data-dir ./example-data
 
-# 0.2 mock 造数：生成两张演示 parquet 源表到 example-data/tables/
+# 0.2 mock 造数：生成两张演示 parquet 源表到 example-data/table/
 uv run -m stkoe mock demo
 ```
 
 > 说明：stkoe 只「发现」磁盘上的 parquet（`table add`），不会替你生成数据；
 > `stkoe mock demo` 用 polars 造了两张演示表（默认 **300 只股票 × 500 个交易日 = 15 万行**）：
-> index 表写到 `indexs/index`（index 资产独立目录），m1 写到 `tables/m1`；也可用 `--n-syms/--n-days`
+> index 表写到 `index/index`（index 资产独立目录），m1 写到 `table/m1`；也可用 `--n-syms/--n-days`
 > 调整规模。单表可用 `uv run -m stkoe mock gen <name> --kind <kind>` 参数化生成
 > （`--kind index/m1/tdcal/common/feature/klday`，`--n-syms/--n-days/--start/--end/--seed` 可选）。
 
 ## 1. 发现表资产
 
 ```bash
-uv run -m stkoe index add index --symbol-col sym --datetime-col date   # 注册 index（发现 indexs/index，独立资产）
-uv run -m stkoe table add m1                    # 注册 m1（发现 tables/m1）
+uv run -m stkoe index add index --symbol-col sym --datetime-col date   # 注册 index（发现 index/index，独立资产）
+uv run -m stkoe table add m1                    # 注册 m1（发现 table/m1）
 uv run -m stkoe index list             # 已注册 index 清单（--candidate 可看候选目录）
 uv run -m stkoe index meta index       # index 元数据（含 symbol/datetime 列）
 uv run -m stkoe index get index --where "date >= '2024-01-02'" --limit 5   # 谓词裁剪读取
@@ -77,7 +77,7 @@ uv run -m stkoe feature test ma5 --sample sp1               # 在样本池视图
 ```bash
 uv run -m stkoe factor add fac1 --feature ma5 --sample sp1 --pipeline "nothing()"
 uv run -m stkoe factor check fac1                           # 计算成功 + 恰好 1 列因子列
-uv run -m stkoe factor update fac1                          # 物化 factors/fac1/data.parquet（上游就绪才可更新，幂等）
+uv run -m stkoe factor update fac1                          # 物化 factor/fac1/data.parquet（上游就绪才可更新，幂等）
 uv run -m stkoe factor get fac1 --limit 5                   # 读因子（样本索引 + 因子列）
 ```
 
@@ -86,7 +86,7 @@ uv run -m stkoe factor get fac1 --limit 5                   # 读因子（样本
 ```bash
 uv run -m stkoe test add t1 --factor fac1 --returns r --groupby ic --marketcap fv
 uv run -m stkoe test check t1                               # 构造成功 + 含必需列 + 行数 > 0
-uv run -m stkoe test update t1                              # 物化 factor_tests/t1/data.parquet（上游就绪才可更新）
+uv run -m stkoe test update t1                              # 物化 factor_test/t1/data.parquet（上游就绪才可更新）
 uv run -m stkoe test get t1 --limit 5                       # 测试面板（d{no}/factor_quantile 等）
 ```
 
@@ -105,7 +105,7 @@ uv run -m stkoe stat scan test t1 --kind coverage
 uv run -m stkoe stat get t1 --kind ic --partition_by ic_d1
 ```
 
-产物落在 `stats/test/t1/<kind>/<output>.parquet`（`ic_d{no}` / `rtn_date` / `fr_d{no}` 等）。
+产物落在 `stat/test/t1/<kind>/<output>.parquet`（`ic_d{no}` / `rtn_date` / `fr_d{no}` 等）。
 
 ## 10.（可选）后台任务路径 + mock 示例
 
@@ -118,7 +118,7 @@ uv run -m stkoe serve
 # 用单文件 REPL 客户端演示任务版：mock 造数 + 后台物化
 uv run -m python gclient.py
 stkoe> s:mock                        # 任务版示例：5 步进度 + 日志 + 落盘结果
-stkoe> s:mock demo                   # 任务版 mock 造数（写 tables/index + tables/m1）
+stkoe> s:mock demo                   # 任务版 mock 造数（写 table/index + table/m1）
 stkoe> s:mock gen mytable --kind klday --n-syms 20   # 任务版参数化生成
 stkoe> s:test update t1              # 后台物化测试数据集（订阅到终态；scan 为旧名别名）
 stkoe> s:stat scan t1 --kind ic      # 后台跑 IC 测试器（单位置简写同样可用）

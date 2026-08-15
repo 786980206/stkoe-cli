@@ -23,7 +23,7 @@ def ctl(tmp_path):
 
 
 def _write_single(root, name, rows, columns=("sym", "price")):
-    d = root / "tables" / name
+    d = root / "table" / name
     d.mkdir(parents=True, exist_ok=True)
     if isinstance(rows, pl.DataFrame):
         df = rows
@@ -71,7 +71,7 @@ def test_list_candidates(ctl, tmp_path):
     _write_single(root, "reg", {"sym": ["a"], "price": [1.0]})
     _add(ctl, "reg")
     _write_single(root, "cand", {"sym": ["b"], "price": [2.0]})
-    (root / "tables" / "empty").mkdir(parents=True)
+    (root / "table" / "empty").mkdir(parents=True)
 
     assert _run(ctl.list(candidate=True)) == ["cand"]
     # 默认仍输出已注册表
@@ -157,7 +157,7 @@ def test_scan_refresh_updates_catalog(ctl, tmp_path):
     assert r.version_after == 1  # 无差异不 bump
 
     pl.DataFrame({"sym": ["c"], "price": [3.0]}).write_parquet(
-        root / "tables" / "demo" / "more.parquet")
+        root / "table" / "demo" / "more.parquet")
     r = _run(ctl.scan("demo"))
     assert r.changed is True
     assert r.version_after == 2
@@ -169,7 +169,7 @@ def test_scan_refresh_updates_catalog(ctl, tmp_path):
 
 def test_get_reads_partitioned_hive(ctl, tmp_path):
     root = tmp_path / "data"
-    d = root / "tables" / "parted"
+    d = root / "table" / "parted"
     (d / "date=2024-01-01").mkdir(parents=True)
     (d / "date=2024-01-02").mkdir(parents=True)
     pl.DataFrame({"sym": ["a"], "price": [1.0]}).write_parquet(d / "date=2024-01-01" / "f.parquet")
@@ -195,7 +195,7 @@ def test_get_reads_partitioned_hive(ctl, tmp_path):
 def test_get_auto_sync_on_change(ctl, tmp_path):
     """读前快检：磁盘数据变更后自动重扫，get 返回新数据"""
     root = tmp_path / "data"
-    d = root / "tables" / "demo"
+    d = root / "table" / "demo"
     d.mkdir(parents=True)
     pl.DataFrame({"sym": ["a"], "price": [1.0]}).write_parquet(d / "data.parquet")
     _add(ctl, "demo")
@@ -304,7 +304,7 @@ def test_delete_removes_registration_keeps_data(ctl, tmp_path):
     with pytest.raises(TableNotFoundError):
         _meta(ctl, "demo")
     # 用户数据文件仍在
-    assert (tmp_path / "data" / "tables" / "demo" / "data.parquet").exists()
+    assert (tmp_path / "data" / "table" / "demo" / "data.parquet").exists()
 
     with pytest.raises(TableNotFoundError):
         _delete(ctl, "demo")
@@ -389,7 +389,7 @@ def test_task_framework_table_handlers(mgr):
 
     # 追加数据 → s:table scan 显式重扫：changed=True，版本递增
     pl.DataFrame({"sym": ["c"], "price": [3.0]}).write_parquet(
-        mgr.data_dir / "tables" / "demo" / "more.parquet")
+        mgr.data_dir / "table" / "demo" / "more.parquet")
     t_scan = mgr.submit("table", "scan", ["demo"])
     _await(mgr, t_scan)
     scan_res = _mgr_result(mgr, t_scan)
@@ -461,8 +461,18 @@ def _await(mgr, task, timeout=5.0):
 
 
 def _mgr_result(mgr, task):
-    """取任务最后一个事件携带的 data（JSON 字符串）"""
+    """取任务最后一个事件携带的 data（JSON 字符串；轮询等终态事件落库）"""
     import json
+    import time
 
-    evs = mgr.events.list_by_task(task.task_id)
+    from stkoe.task.model import TERMINAL_STATES
+
+    task_id = task.task_id if hasattr(task, "task_id") else task
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        evs = mgr.events.list_by_task(task_id)
+        if evs and evs[-1].state in TERMINAL_STATES:
+            return json.loads(evs[-1].data) if evs[-1].data else None
+        time.sleep(0.01)
+    evs = mgr.events.list_by_task(task_id)
     return json.loads(evs[-1].data) if evs and evs[-1].data else None

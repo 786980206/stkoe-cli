@@ -612,10 +612,27 @@ class GraphService:
                 seen.add(cc["name"])
         return self._norm_cols(cols)
 
+    def _panel_hash(self, node: dict) -> str:
+        """panel 物化签名 = 上游 index/table 版本 + tables(join) + keys。"""
+        index = node.get("index", "").split(":", 1)[1]
+        parts = [f"index:{index}:{self._require_node('index', index).get('version', 0)}"]
+        for t, j in (node.get("tables") or {}).items():
+            parts.append(f"table:{t}:{self._require_node('table', t).get('version', 0)}:{j}")
+        parts.append(f"keys:{','.join(node.get('keys') or ())}")
+        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
     def panel_meta(self, name: str) -> dict:
         node = self._require_node("panel", name)
         meta = self.graph._meta(node)
+        extra = dict(meta.get("extra") or {})
+        materialized = bool(node.get("materialized") or extra.get("materialized"))
+        dep_hash = extra.get("dependency_hash") or ""
         meta["columns"] = self._panel_columns(node)
+        meta["keys"] = list(node.get("keys") or ())
+        meta["materialized"] = materialized
+        meta["materialized_at"] = extra.get("materialized_at")
+        meta["curated"] = materialized and dep_hash == self._panel_hash(node)
+        meta["extra"] = extra
         return meta
 
     def panel_list(self) -> list:
@@ -626,21 +643,29 @@ class GraphService:
         return self.graph.set("panel", name, **kw)
 
     def panel_update(self, name: str) -> dict:
-        """panel 更新：传导检查上游（index/成员表）就绪 → 实时 join 可构造 → 标记有效。
-
-        panel 为实时 join 视图（无物化），update 语义 = 确认上游就绪并置 valid=True。
-        """
+        """panel 更新：传导检查上游（index/成员表）就绪 → join 视图物化落盘
+        ``panel/<name>/data.parquet`` + 铸版本（积累事件）+ 边水位对齐。"""
         self.graph.assert_ready("panel", name)
+        node = self._require_node("panel", name)
         joined, _ = self._panel_lazy(name)
         rows = joined.select(pl.len()).collect().item()
-        self.store.patch_node(node_id("panel", name), valid=True,
-                              update_time=_now_iso())
-        return {"name": name, "valid": True, "rows": rows,
-                "version": self.store.get_node(node_id("panel", name))["version"]}
+        out_dir = self.data_dir / "panel" / name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        joined.collect().write_parquet(out_dir / "data.parquet")
+        consumed = {src_id: src.get("version", 0)
+                    for src_id, src in self._upstream_sources(node_id("panel", name))}
+        m = self.graph.resolve("panel", name, extra={
+            "dependency_hash": self._panel_hash(node),
+            "consumed_versions": consumed,
+            "materialized_at": _now_iso(),
+        })
+        return {"name": name, "valid": True, "materialized": True, "rows": rows,
+                "version": m["version"]}
 
     def panel_delete(self, name: str, *, force: bool = False) -> dict:
         self._require_node("panel", name)
         self.graph.delete("panel", name, force=force)
+        shutil.rmtree(self.data_dir / "panel" / name, ignore_errors=True)
         return {"deleted": name}
 
     def _panel_lazy(self, name: str, where: pl.Expr | str | None = None) -> tuple[pl.LazyFrame, list[str]]:
@@ -695,7 +720,15 @@ class GraphService:
                   where: pl.Expr | str | None = None, partition=None,
                   exclude_tool: bool = False, limit=None, offset=None,
                   count_total: bool = False):
-        """实时 join 视图：index 为左表，member 表 left join on keys。"""
+        """panel 视图：物化且 curated → 读物化 parquet；否则实时 join。"""
+        meta = self.panel_meta(name)
+        root = self.data_dir / "panel" / name
+        if meta["curated"] and (root / "data.parquet").exists():
+            lf = pl.scan_parquet(root, hive_partitioning=True)
+            if where is not None:
+                lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
+            return self._collect_page(lf, columns=columns, exclude_tool=exclude_tool,
+                                      limit=limit, offset=offset, count_total=count_total)
         joined, _ = self._panel_lazy(name, where)
         return self._collect_page(joined, columns=columns, exclude_tool=exclude_tool,
                                   limit=limit, offset=offset, count_total=count_total)
@@ -708,10 +741,28 @@ class GraphService:
     # fieldset（衍生指标集：graph 登记；check/scan 用 panel 视图 + 公式引擎）
     # =====================================================================
 
+    def _fieldset_hash(self, node: dict) -> str:
+        """fieldset 物化签名 = panel 版本 + 已校验字段公式 + engine。"""
+        panel = node.get("dataset", "").split(":", 1)[1]
+        parts = [f"panel:{panel}:{self._require_node('panel', panel).get('version', 0)}"]
+        for fname, f in (node.get("fields") or {}).items():
+            if f.get("validated"):
+                parts.append(f"{fname}:{f.get('formula', '')}")
+        parts.append(f"engine:{node.get('engine', 'polars')}")
+        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
     def _fieldset_meta_node(self, name: str) -> dict:
         node = self._require_node("fieldset", name)
         meta = self.graph._meta(node)
-        meta["keys"] = self._panel_keys(node.get("dataset", "").split(":", 1)[1])
+        extra = dict(meta.get("extra") or {})
+        keys = self._panel_keys(node.get("dataset", "").split(":", 1)[1])
+        materialized = bool(node.get("materialized") or extra.get("materialized"))
+        dep_hash = extra.get("dependency_hash") or ""
+        meta["keys"] = keys
+        meta["materialized"] = materialized
+        meta["materialized_at"] = extra.get("materialized_at")
+        meta["curated"] = materialized and dep_hash == self._fieldset_hash(node)
+        meta["extra"] = extra
         return meta
 
     def _panel_keys(self, panel: str) -> list[str]:
@@ -720,10 +771,24 @@ class GraphService:
 
     def _fieldset_view_lf(self, name: str, *, fields_only: bool = False,
                           where: pl.Expr | str | None = None) -> tuple[pl.LazyFrame, list[str]]:
-        """fieldset 视图：panel 全列 + 已校验衍生字段（fields_only 时仅 keys+字段）。"""
+        """fieldset 视图：panel 全列 + 已校验衍生字段（fields_only 时仅 keys+字段）。
+
+        物化且 curated → 衍生字段读物化 parquet（fields_only 直接返回；
+        否则与 panel 视图 join）。
+        """
         node = self._require_node("fieldset", name)
         panel = node.get("dataset", "").split(":", 1)[1]
         keys = self._panel_keys(panel)
+        fm = self._fieldset_meta_node(name)
+        root = self.data_dir / "fieldset" / name
+        if fm["curated"] and (root / "data.parquet").exists():
+            lf = pl.scan_parquet(root, hive_partitioning=True)
+            if where is not None:
+                lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
+            if fields_only:
+                return lf, keys
+            base, _ = self._panel_lazy(panel)
+            return base.join(lf, on=keys, how="left"), keys
         base, _ = self._panel_lazy(panel, where)
         fields = [FieldMeta.from_dict(f) for f in (node.get("fields") or {}).values()
                   if f.get("validated")]
@@ -790,9 +855,10 @@ class GraphService:
                                   count_total=count_total)
 
     def fieldset_update(self, name: str, *, resync: bool = False) -> dict:
-        """fieldset 更新：传导检查上游（panel 链）就绪 → 校验已校验字段 → resolve 标记有效。
+        """fieldset 更新：传导检查上游（panel 链）就绪 → 衍生字段物化落盘
+        ``fieldset/<name>/data.parquet``（keys + 已校验字段）+ 铸版本 + 水位对齐。
 
-        物化语义 = 校验通过 + 节点有效（物理产物后续接入）；scan 为旧名别名。
+        scan 为旧名别名。
         """
         self.graph.assert_ready("fieldset", name)
         node = self._require_node("fieldset", name)
@@ -801,7 +867,16 @@ class GraphService:
         engine = get_fieldset_engine(node.get("engine") or "polars")
         out = engine.scan(base, keys, [FieldMeta.from_dict(f) for f in fields])
         rows = out.select(pl.len()).collect().item()
-        m = self.graph.resolve("fieldset", name)
+        out_dir = self.data_dir / "fieldset" / name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out.collect().write_parquet(out_dir / "data.parquet")
+        consumed = {src_id: src.get("version", 0)
+                    for src_id, src in self._upstream_sources(node_id("fieldset", name))}
+        m = self.graph.resolve("fieldset", name, extra={
+            "dependency_hash": self._fieldset_hash(node),
+            "consumed_versions": consumed,
+            "materialized_at": _now_iso(),
+        })
         return {"name": name, "materialized": True, "valid": True, "rows": rows,
                 "fields_count": len(fields), "version": m["version"]}
 
@@ -870,16 +945,16 @@ class GraphService:
         return self.graph.set("sample", name, **kw)
 
     def sample_update(self, name: str) -> dict:
-        """sample 更新：传导检查上游（fieldset 链）就绪 → 过滤视图可构造 → 标记有效。
+        """sample 更新：传导检查上游（fieldset 链）就绪 → 过滤视图可构造 → 铸版本。
 
-        sample 无物化，update 语义 = 确认上游就绪并置 valid=True。
+        sample 无物化；update = 确认上游就绪并铸版本（消费的积累事件入 version_list，
+        无新事件不空 bump），出边水位对齐。
         """
         self.graph.assert_ready("sample", name)
         self._sample_view_lf(name).select(pl.len()).collect()
-        self.store.patch_node(node_id("sample", name), valid=True,
-                              update_time=_now_iso())
+        m = self.graph.resolve("sample", name, mark_materialized=False)
         return {"name": name, "valid": True,
-                "version": self.store.get_node(node_id("sample", name))["version"]}
+                "version": m["version"]}
 
     def sample_delete(self, name: str, *, force: bool = False) -> dict:
         self._require_node("sample", name)
@@ -906,12 +981,11 @@ class GraphService:
         return self.graph.set("feature", name, **kw)
 
     def feature_update(self, name: str) -> dict:
-        """feature 更新：纯定义资产（无上游），标记有效即可。"""
+        """feature 更新：纯定义资产（无上游），标记有效并铸版本（无事件不空 bump）。"""
         self.graph.assert_ready("feature", name)
-        self.store.patch_node(node_id("feature", name), valid=True,
-                              update_time=_now_iso())
+        m = self.graph.resolve("feature", name, mark_materialized=False)
         return {"name": name, "valid": True,
-                "version": self.store.get_node(node_id("feature", name))["version"]}
+                "version": m["version"]}
 
     def feature_delete(self, name: str, *, force: bool = False) -> dict:
         self._require_node("feature", name)

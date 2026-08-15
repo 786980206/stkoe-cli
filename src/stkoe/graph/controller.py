@@ -425,11 +425,14 @@ class GraphController:
         """公开接口：该资产积累的更新事件（on_change 输出形态）。"""
         return self._accumulated(self._require(asset_type, name))
 
-    def resolve(self, asset_type: str, name: str) -> dict:
+    def resolve(self, asset_type: str, name: str, *, mark_materialized: bool = True,
+                extra: dict | None = None) -> dict:
         """重算单节点：积累事件 → storage 物化 → 版本递增 + 出边水位对齐。
 
         - 有积累事件时：铸新版本并把合并事件写入 version_list（下游据此感知变更）；
           无积累事件（如定义变更后的首次校验）只置 valid/materialized，不空 bump；
+        - ``mark_materialized=False``：无物化资产（sample/feature）不置 materialized；
+        - ``extra``：并入节点 extra（物化哈希/水位等），不额外 bump；
         - 出边 required_version 对齐为被依赖方当前版本。
         """
         props = self._require(asset_type, name)
@@ -440,8 +443,13 @@ class GraphController:
         node = AssetMeta.from_dict(self._meta(props))
         self._storage.materialize(node, accumulated)
 
-        patches: dict[str, Any] = {"valid": True, "materialized": True,
-                                   "update_time": _now_iso()}
+        patches: dict[str, Any] = {"valid": True, "update_time": _now_iso()}
+        if mark_materialized:
+            patches["materialized"] = True
+        if extra:
+            cur_extra = dict(props.get("extra") or {})
+            cur_extra.update(extra)
+            patches["extra"] = cur_extra
         if accumulated["upsert"] is not None or accumulated["delete"] is not None:
             patches.update(self._bump(
                 props, accumulated["upsert"] or accumulated["delete"]))

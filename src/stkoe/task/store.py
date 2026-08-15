@@ -153,9 +153,17 @@ class EventStore:
         self._db.commit()
 
     def max_seq(self, task_id: str) -> int:
+        """任务当前最大事件 seq（无事件 0）。
+
+        防御：连接跨线程共享（check_same_thread=False），并发下 fetchone 可能返回
+        None（cursor 状态被另一线程的 execute 干扰）——保守回退 0（最多全量 replay，
+        不丢数据、不崩溃）。
+        """
         row = self._db.execute(
             "SELECT MAX(seq) FROM task_event WHERE task_id=?", (task_id,)).fetchone()
-        return row[0] or 0
+        if row is None or row[0] is None:
+            return 0
+        return row[0]
 
     def list_by_task(self, task_id: str, after_seq: int = 0) -> list[TaskEvent]:
         rows = self._db.execute(

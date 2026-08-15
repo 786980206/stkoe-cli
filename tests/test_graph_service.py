@@ -294,6 +294,106 @@ class TestPanelGraph:
         svc.panel_delete("ds1")
         assert svc.store.get_node("panel:ds1") is None
 
+    def test_panel_update_materializes(self, svc):
+        """panel update：join 视图物化落盘 panel/<name>/ + get 读物化"""
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        assert svc.panel_meta("ds1")["materialized"] is False
+        r = svc.panel_update("ds1")
+        assert r["materialized"] is True
+        assert (svc.data_dir / "panel" / "ds1" / "data.parquet").exists()
+        m = svc.panel_meta("ds1")
+        assert m["materialized"] is True and m["curated"] is True
+        df, total = svc.panel_get("ds1", count_total=True)
+        assert df.height == 2 and total == 2
+        assert df.columns == ["sym", "date", "code", "price"]
+
+    def test_panel_update_bumps_version_and_invalidates_curated(self, svc):
+        """源头变化 → panel 置脏 + curated 失效 → update 铸版本恢复"""
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.panel_update("ds1")
+        assert svc.panel_meta("ds1")["curated"] is True
+        v0 = svc.panel_meta("ds1")["version"]
+
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        m = svc.panel_meta("ds1")
+        assert m["valid"] is False  # 置脏
+        assert m["curated"] is False  # 依赖 hash 变（index 版本推进）
+        r = svc.panel_update("ds1")
+        assert r["version"] != v0  # 铸版本（消费积累事件）
+        assert svc.panel_meta("ds1")["curated"] is True
+
+
+class TestFieldsetSampleGraph:
+    """fieldset 衍生字段物化 + sample 铸版本。"""
+
+    def _chain(self, svc):
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_check("fs1", "x2")
+
+    def test_fieldset_update_materializes_derived_fields(self, svc):
+        """fieldset update：衍生字段（keys + 已校验字段）落盘 + get 拼接/fields_only"""
+        self._chain(svc)
+        svc.panel_update("ds1")
+        assert svc.fieldset_meta("fs1")["materialized"] is False
+        r = svc.fieldset_update("fs1")
+        assert r["materialized"] is True
+        assert (svc.data_dir / "fieldset" / "fs1" / "data.parquet").exists()
+        m = svc.fieldset_meta("fs1")
+        assert m["curated"] is True
+        # fields_only 读物化字段（keys + x2）
+        df, total = svc.fieldset_get("fs1", fields_only=True, count_total=True)
+        assert df.columns == ["sym", "date", "x2"]
+        assert total == 2
+        assert sorted(df["x2"].to_list()) == [2.0, 4.0]
+        # 全视图 = panel + x2
+        df2, total2 = svc.fieldset_get("fs1", count_total=True)
+        assert {"sym", "date", "code", "price", "x2"} <= set(df2.columns)
+        assert total2 == 2
+
+    def test_fieldset_curated_invalidated_on_upstream_change(self, svc):
+        self._chain(svc)
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")
+        assert svc.fieldset_meta("fs1")["curated"] is True
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        assert svc.fieldset_meta("fs1")["curated"] is False  # panel 版本变化 → 签名变
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")
+        assert svc.fieldset_meta("fs1")["curated"] is True
+
+    def test_sample_update_bumps_version_on_chain_change(self, svc):
+        """源头变化 → 全链 update → sample 铸版本（积累事件入 version_list）"""
+        self._chain(svc)
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")
+        svc.sample_add("sp1", "fs1")
+        svc.sample_update("sp1")
+        v0 = svc.store.get_node("sample:sp1")["version"]
+
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")
+        svc.sample_update("sp1")
+        v1 = svc.store.get_node("sample:sp1")["version"]
+        assert v1 != v0  # 铸版本
+        # 版本事件已记录（sample 消费了上游事件）
+        node = svc.store.get_node("sample:sp1")
+        assert str(v1) in node["version_list"]
+
 
 class TestIndexGraph:
     def test_index_list_candidate(self, svc):

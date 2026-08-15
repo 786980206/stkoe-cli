@@ -212,6 +212,26 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 中间节点铸版本 + panel/fieldset 物化（P1 落地）
+
+- **panel/sample/feature update 统一走 `graph.resolve` 收口**：`resolve` 新增
+  `mark_materialized`（无物化资产不置 materialized）与 `extra`（物化哈希/水位并入 extra，
+  不额外 bump）参数；有积累事件 → 铸版本 + 合并事件入 version_list + 出边 required_version
+  对齐，无事件不空 bump（幂等）——E4 事件水位链断档修复
+- **panel 物化**：`panel_update` 把 join 视图落盘 `panel/<name>/data.parquet`
+  （`_panel_hash` 依赖上游版本签名 + consumed 水位）；`panel_get` 物化且 curated 读物化、
+  否则实时 join；上游变化 → curated 失效回退实时；`panel_delete` 清理物化目录
+- **fieldset 衍生字段物化**：`fieldset_update` 把 keys + 已校验字段落盘
+  `fieldset/<name>/data.parquet`（`_fieldset_hash` = panel 版本 + 字段公式 + engine）；
+  `_fieldset_view_lf` 物化且 curated 读物化字段（fields_only 直接返回 / 全视图 join panel）
+- **fix: task max_seq 防御**：连接跨线程共享（check_same_thread=False）下并发 fetchone 可能
+  返回 None → `row[0]` 崩溃（subscribe replay 偶发 flaky 的 root cause）；改为
+  None/空值回退 0（最多全量 replay，不崩不丢）
+- 测试：panel 物化/curated 失效/版本推进、fieldset 字段物化/curated、sample 链上铸版本
+  （version_list 记录）5 例；全量 190 用例绿
+- 文档：graph-v3-gap.md E3/E4 标 ✅、结论 P1 落地、P2 剩余（panel/fieldset 增量、symbol_scope
+  提取、version_list 裁剪等）
+
 ### 2026-08 V3 Event 增量闭环 P0：范围化事件 + factor/test 增量物化
 
 - **P0-1 物理变化 → 范围化事件**（`service._change_events`）：

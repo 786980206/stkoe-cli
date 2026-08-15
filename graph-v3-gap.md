@@ -19,23 +19,24 @@
 - **定义**：`action: Literal["upsert", "delete"]`，物理删除 → delete 事件 → 下游按范围删对应数据。
 - **当前（已修）**：removed 文件 → `action="delete"` 事件（范围来自 catalog 指纹 `partition_path` 的分区值；flat 无分区则 None 全集）；一次 scan 同时有增删时**记两个版本事件**（upsert + delete 各一次 bump）。
 
-### E3【已修 ✅（factor/test）】增量物化未落地（update = 全量重算 / 标记有效）
+### E3【已修 ✅】增量物化未落地（update = 全量重算 / 标记有效）
 
 - **定义**（PanelHandler.update → materialize）：积累事件合并出 `{upsert, delete}` → **按范围从上游提取增量数据 upsert 进现有物化存储、按范围 delete 现有数据** → 边水位对齐 + 节点有效。
-- **当前（已修 factor/test）**：
+- **当前（已修）**：
   - **factor / test update 增量物化**：`_upstream_scope` 从全部源头（table/index）收集 `version > consumed` 的积累事件 → datetime 区间；已有物化且区间明确时，读旧物化 + 范围外保留 + 仅重算范围内行（`_factor_compute`/`_test_build` 带 `dt_range`）合并写回；`extra.consumed_versions` 记录各源头水位（供下次判定）；`--resync` 或首次/无范围 → 全量重算兜底；
-  - panel / sample / feature 仍无物化（实时构造，update 只置 valid）——README 路线图 **panel 物化（scan 落盘）** 待办；
-  - fieldset update 仍未真实落盘（只 resolve 标记，物化假象）——待办。
-- **剩余**：`symbol_scope` 未参与过滤（按时间区间重算覆盖该区间全部标的）；fieldset 真物化 + 增量。
+  - **panel update 物化**：join 视图落盘 `panel/<name>/data.parquet`，`panel_get` 物化且 curated 读物化、否则实时 join；`_panel_hash` 依赖上游版本 → 上游变化 curated 失效回退实时；
+  - **fieldset update 物化衍生字段**：keys + 已校验字段落盘 `fieldset/<name>/data.parquet`，`_fieldset_view_lf` 物化且 curated 读物化字段（fields_only 直接返回 / 全视图与 panel join）；
+  - sample / feature 仍无物化（实时构造，update 只铸版本）。
+- **剩余**：panel/fieldset 物化暂无增量（全量重算 + curated 失效兜底）；`symbol_scope` 未参与过滤。
 
-### E4 边水位线（required_version）维护不完整
+### E4【已修 ✅】边水位线（required_version）维护不完整
 
 - **定义**：materialize 成功后必须"把边的 required_version 跟 source 节点 version 对齐 + 节点状态改有效"。
-- **当前**：
-  - `graph.resolve` 做了出边水位对齐——**只有 fieldset_update 走 resolve**；
-  - `panel_update` / `sample_update` / `feature_update` 直接 `patch valid`，**不调 resolve、不铸版本、不记录合并事件**；
-  - 后果：事件水位链在**中间节点断档**——源头 table/index 有事件，末端 fieldset/factor/test 全量重算（掩盖问题），但中间 panel/sample/feature 的 `version_list` 恒空、出边 `required_version` 永不推进，依赖它们的下游若走 accumulate 只能拿到源头事件、拿不到"中间层已消费/重算"的事件。
-- **性质**：水位线语义在部分节点上是断的；`accumulate(version_list, required_version)` 的"水位之后"过滤在这些链路上不可信。
+- **当前（已修）**：`graph.resolve` 支持 `mark_materialized`/`extra` 参数；**panel/sample/feature
+  update 统一走 resolve**——有积累事件则铸版本并记入 version_list、出边 required_version
+  对齐被依赖方当前版本、无事件不空 bump（幂等）。事件水位链在中间节点不再断档
+  （`_upstream_scope` 仍从源头收集，但中间节点自身的事件日志已开始积累）。
+- **性质**：`accumulate(version_list, required_version)` 的"水位之后"过滤现在全链可信。
 
 ### E5 resolve 的"自身变更事件"记录语义混淆
 
@@ -80,11 +81,11 @@
 
 ## 三、结论与建议优先级
 
-1. **P0 ✅ 已落地（本轮）**：物理 diff → 范围化事件（`_change_events`，datetime 区间 + delete 事件）；
+1. **P0 ✅ 已落地**：物理 diff → 范围化事件（`_change_events`，datetime 区间 + delete 事件）；
    factor/test update 增量物化（`_upstream_scope` 源头水位 + `dt_range` 区间重算 + 合并写回 + `--resync` 兜底）。
-2. **P1（水位一致性）**：panel/sample/feature update 不铸版本、不记合并事件——事件水位链在中间节点断档
-   （当前 factor/test 增量从源头直接收集事件，绕过了中间节点，但中间节点自身的事件日志仍空；
-   若未来 panel 物化落地或需要"中间层已消费"语义，需让中间节点 update 统一收口）。
-3. **P1（resolve 事件语义）**：记录"本次重算产生的字段范围"而非直接透传上游事件；upsert/delete 分别记录。
-4. **P2**：fieldset 真实物化 + 增量；symbol_scope 提取（读数据页）；stat 是否纳入图资产；index 唯一性校验；
-   version_list 裁剪（按 consumed 水位清理已消费事件）。
+2. **P1 ✅ 已落地**：panel/sample/feature update 统一走 `resolve`（铸版本 + 事件入 version_list +
+   出边水位对齐）；**panel update 物化**（join 视图落盘 + get 读物化 + curated 失效回退）；
+   **fieldset update 物化衍生字段**（keys + 已校验字段落盘 + 视图拼接读物化）。
+3. **P2 剩余**：panel/fieldset 物化的增量路径（当前全量重算 + curated 失效兜底，可复用 factor
+   的 `dt_range` 机制）；symbol_scope 提取（读数据页）；fieldset `fields` 变更的 curated 联动；
+   stat 是否纳入图资产；index 唯一性校验；version_list 裁剪（按 consumed 水位清理已消费事件）。

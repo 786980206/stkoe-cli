@@ -186,6 +186,16 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 index 资产独立物理目录 indexs/（不再共用 tables/）
+
+- `GraphService` 新增 `indexs_root`（`<data_dir>/indexs/`）：`index add/update/get/meta`
+  扫描/读取 `indexs/<name>/`，与 table 的 `tables/<name>/` 分离（`_asset_root` 按类型选目录）；
+  `index list --candidate` 扫 `indexs/` 下的未登记目录
+- `mock demo`/`mock gen --kind index` 写 `indexs/index`（`mock.write` 加 `subdir` 参数）；
+  测试：index 表写入统一走 `_write_idx`（indexs/），table 保持 `tables/`；stat 的 table 目标
+  用例改用成员表 m1（index 不再是 table）；全量 286 用例绿
+- 文档：api.md §8 存储布局补 `indexs/` 目录、example.md index 命令改 `index` 前缀
+
 ### 2026-08 panel add 移除 keys 参数：keys 由 index 推断（symbol_col + datetime_col）
 
 - `panel add` / `dataset add` 不再接受 `--keys`：panel 的索引键 = index 节点的

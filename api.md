@@ -501,7 +501,8 @@ t:<task_id>
 │                              #   （stkoe_data_files / stkoe_file_stats，原 catalog.db 表迁移至此）
 ├── tasks.db                   # 任务库（TaskStore / EventStore），独立保留
 ├── tasks/<task_id>/           # 任务日志 task.log + 结果文件（ResultStore）
-├── tables/<name>/             # 用户 parquet（只读，绝不写/删）
+├── tables/<name>/             # 表（table 资产）parquet（只读，绝不写/删）
+├── indexs/<name>/             # 索引（index 资产）parquet，独立目录（只读，绝不写/删）
 ├── factors/<name>/            # factor 物化产物（样本索引 + 1 因子列，flat 单文件 data.parquet）
 ├── factor_tests/<name>/       # 因子测试数据集物化产物（data.parquet，flat 单文件）
 └── stats/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 graph）
@@ -511,7 +512,7 @@ t:<task_id>
   tasks.db 管任务与事件流（高频写与资产低频强一致分开，避免写锁竞争与 WAL checkpoint 干扰）
 - **catalog.db 已废弃**：不再产生；原 stkoe_objects/stkoe_depends 由 graph 节点/边承载，
   stkoe_data_files/stkoe_file_stats 迁入 catalog.db 普通表（同文件同事务可回滚）
-- **表删除只删登记（graph 节点/指纹），绝不删用户 parquet**（可重新 `add` 发现）
+- **表删除只删登记（graph 节点/指纹），绝不删用户 parquet**（可重新 `add` 发现）；index 资产物理目录为 `indexs/`（与 table 的 `tables/` 分离）
 - **stat 资产不进 graph**：文件夹存在即已扫描，`meta`/`list` 读目录
 - **sample 无物化产物**：只登记于 graph（依赖 fieldset），读取动态构造 fieldset 视图 + 过滤
 - **feature 纯定义**：只登记于 graph，无任何磁盘产物

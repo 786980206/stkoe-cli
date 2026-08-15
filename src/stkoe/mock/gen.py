@@ -214,9 +214,12 @@ def resolve_data_dir(data_dir=None) -> Path:
     return Path(load_config().data_dir).expanduser()
 
 
-def write(data_dir, name: str, df: pl.DataFrame) -> dict:
-    """写 ``tables/<name>/data.parquet``（不注册，供 table add 发现）"""
-    d = resolve_data_dir(data_dir) / "tables" / name
+def write(data_dir, name: str, df: pl.DataFrame, subdir: str = "tables") -> dict:
+    """写 ``<data_dir>/<subdir>/<name>/data.parquet``（不注册，供 add 发现）
+
+    index 类表写 ``indexs/``（V3 起 index 资产独立目录），其余写 ``tables/``。
+    """
+    d = resolve_data_dir(data_dir) / subdir / name
     d.mkdir(parents=True, exist_ok=True)
     path = d / "data.parquet"
     df.write_parquet(path)
@@ -227,7 +230,8 @@ def write(data_dir, name: str, df: pl.DataFrame) -> dict:
 def demo(data_dir=None, n_syms: int = DEMO_N_SYMS,
          n_days: int = DEMO_N_DAYS) -> list[dict]:
     """生成 example.md 演示源表 index + m1，返回写入清单"""
-    return [write(data_dir, "index", demo_index(n_syms=n_syms, n_days=n_days)),
+    return [write(data_dir, "index", demo_index(n_syms=n_syms, n_days=n_days),
+                  subdir="indexs"),
             write(data_dir, "m1", demo_m1(n_syms=n_syms, n_days=n_days))]
 
 
@@ -252,7 +256,8 @@ def gen(name: str, kind: str, *, data_dir=None, n_syms: int = 10,
     else:
         raise ValueError(f"未知 mock kind: {kind}（可用: "
                          "tdcal/common/index/feature/klday/m1）")
-    return write(data_dir, name, df)
+    subdir = "indexs" if kind == "index" else "tables"
+    return write(data_dir, name, df, subdir=subdir)
 
 
 __all__ = ["INDUSTRIES", "tdcal", "common", "index", "m1", "feature", "klday",

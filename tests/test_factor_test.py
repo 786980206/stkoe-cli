@@ -29,6 +29,12 @@ def _write(root, name, rows):
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
+def _write_idx(root, name, rows):
+    """index 资产写 indexs/ 目录（独立于 tables/）"""
+    d = root / "indexs" / name
+    d.mkdir(parents=True, exist_ok=True)
+    rows.write_parquet(d / "data.parquet")
+
 
 def _run(coro):
     import asyncio
@@ -91,13 +97,12 @@ def _gsetup(tmp_path):
         {"sym": "c", "date": "2024-01-02", "r": 0.03, "ic": "G2",
          "fv": 3.0, "x": 3.0},
     ]
-    _write(root, "idx", pl.DataFrame(rows))
+    _write_idx(root, "idx", pl.DataFrame(rows))
     _write(root, "mem", pl.DataFrame(
         {"sym": ["a", "b", "c"] * 2, "date": ["2024-01-01"] * 3 + ["2024-01-02"] * 3}))
     from stkoe.graph.service import GraphService
 
     svc = GraphService(data_dir=root)
-    svc.table_add("idx")
     svc.table_add("mem")
     svc.index_add("idx", symbol_col="sym", datetime_col="date")
     svc.panel_add("ds", "idx", ["mem"])  # keys 由 index 推断

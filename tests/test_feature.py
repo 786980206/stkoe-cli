@@ -27,6 +27,12 @@ def _write(root, name, rows):
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
+def _write_idx(root, name, rows):
+    """index 资产写 indexs/ 目录（独立于 tables/）"""
+    d = root / "indexs" / name
+    d.mkdir(parents=True, exist_ok=True)
+    rows.write_parquet(d / "data.parquet")
+
 
 def _setup_source(tmp_path):
     """源：idx 表 + dataset ds（keys=k）+ sample sp1（formula 过滤）"""
@@ -54,7 +60,7 @@ def _setup_source(tmp_path):
 
 def _gsetup(root):
     """graph 语义造数：idx/mem 表 → index(sym/date) → panel ds → fieldset fs1 → sample sp1"""
-    _write(root, "idx", pl.DataFrame({
+    _write_idx(root, "idx", pl.DataFrame({
         "sym": ["a", "b", "c"],
         "x": [1.0, 2.0, 3.0],
         "date": ["2026-01-01", "2026-01-02", "2026-01-03"],
@@ -64,7 +70,6 @@ def _gsetup(root):
     from stkoe.graph.service import GraphService
 
     svc = GraphService(data_dir=root)
-    svc.table_add("idx")
     svc.table_add("mem")
     svc.index_add("idx")
     svc.panel_add("ds", "idx", ["mem"])  # keys 由 index 推断 [sym, date]

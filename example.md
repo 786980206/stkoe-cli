@@ -19,20 +19,19 @@ uv run -m stkoe mock demo
 ```
 
 > 说明：stkoe 只「发现」磁盘上的 parquet（`table add`），不会替你生成数据；
-> `stkoe mock demo` 用 polars 造了两张演示表（默认 **300 只股票 × 500 个交易日 = 15 万行**）
-> 到配置数据目录的 `tables/`，可接着用 `table add` 登记；也可用 `--n-syms/--n-days`
+> `stkoe mock demo` 用 polars 造了两张演示表（默认 **300 只股票 × 500 个交易日 = 15 万行**）：
+> index 表写到 `indexs/index`（index 资产独立目录），m1 写到 `tables/m1`；也可用 `--n-syms/--n-days`
 > 调整规模。单表可用 `uv run -m stkoe mock gen <name> --kind <kind>` 参数化生成
 > （`--kind index/m1/tdcal/common/feature/klday`，`--n-syms/--n-days/--start/--end/--seed` 可选）。
 
 ## 1. 发现表资产
 
 ```bash
-uv run -m stkoe table add index            # 注册 index（发现 data.parquet）
-uv run -m stkoe index add index --symbol-col sym --datetime-col date   # index 为独立资产（symbol/datetime 列）
-uv run -m stkoe table add m1                    # 注册 m1
-uv run -m stkoe table list             # 已注册表清单
-uv run -m stkoe table meta index       # 表元数据（含列信息）
-uv run -m stkoe table get index --where "date >= '2024-01-02'" --limit 5   # 谓词裁剪读取
+uv run -m stkoe index add index --symbol-col sym --datetime-col date   # 注册 index（发现 indexs/index，独立资产）
+uv run -m stkoe table add m1                    # 注册 m1（发现 tables/m1）
+uv run -m stkoe index list             # 已注册 index 清单（--candidate 可看候选目录）
+uv run -m stkoe index meta index       # index 元数据（含 symbol/datetime 列）
+uv run -m stkoe index get index --where "date >= '2024-01-02'" --limit 5   # 谓词裁剪读取
 ```
 
 ## 2. 逻辑数据集（panel：实时 join 视图，无物化）

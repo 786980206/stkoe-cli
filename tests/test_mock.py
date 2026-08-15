@@ -98,8 +98,8 @@ def test_generators_deterministic_with_seed():
 
 def test_write_creates_flat_parquet(tmp_path):
     df = demo_index(n_syms=4, n_days=3)
-    rep = write(tmp_path / "data", "index", df)
-    path = tmp_path / "data" / "tables" / "index" / "data.parquet"
+    rep = write(tmp_path / "data", "index", df, subdir="indexs")
+    path = tmp_path / "data" / "indexs" / "index" / "data.parquet"
     assert path.exists()
     assert rep["name"] == "index"
     assert rep["rows"] == 12
@@ -111,7 +111,7 @@ def test_demo_writes_index_and_m1(tmp_path):
     reports = demo(tmp_path / "data", n_syms=10, n_days=5)
     assert [r["name"] for r in reports] == ["index", "m1"]
     assert reports[0]["rows"] == 50
-    assert (tmp_path / "data" / "tables" / "index" / "data.parquet").exists()
+    assert (tmp_path / "data" / "indexs" / "index" / "data.parquet").exists()
     assert (tmp_path / "data" / "tables" / "m1" / "data.parquet").exists()
 
 
@@ -127,21 +127,19 @@ def test_gen_unknown_kind_error(tmp_path):
         gen("x", "bogus", data_dir=tmp_path / "data")
 
 
-# ---------- 发现语义：mock 只写盘，table add 才登记 ----------
+# ---------- 发现语义：mock 只写盘，add 才登记 ----------
 
-def test_table_add_discovers_mock_tables(tmp_path):
-    from stkoe.table import TableController
+def test_add_discovers_mock_tables(tmp_path):
+    """demo 写 indexs/index + tables/m1；index 走 index add、m1 走 table add 才登记"""
+    from stkoe.graph.service import GraphService
 
     demo(tmp_path / "data", n_syms=10, n_days=5)
-    ctl = TableController(data_dir=tmp_path / "data")
-
-    import asyncio
-
-    asyncio.run(ctl.add("index"))
-    asyncio.run(ctl.add("m1"))
-    names = [m.name for m in asyncio.run(ctl.list())]
-    assert names == ["index", "m1"]
-    df = asyncio.run(ctl.get("index"))
+    svc = GraphService(data_dir=tmp_path / "data")
+    svc.table_add("m1")
+    svc.index_add("index")
+    assert [t["name"] for t in svc.table_list()] == ["m1"]
+    assert [i["name"] for i in svc.index_list()] == ["index"]
+    df = svc.index_get("index")
     assert df.height == 50
 
 
@@ -173,7 +171,7 @@ def test_task_mock_demo(mgr):
     assert done.state == "succeeded"
     reports = _mgr_result(mgr, task)
     assert [r["name"] for r in reports] == ["index", "m1"]
-    assert (mgr.data_dir / "tables" / "index" / "data.parquet").exists()
+    assert (mgr.data_dir / "indexs" / "index" / "data.parquet").exists()
     assert (mgr.data_dir / "tables" / "m1" / "data.parquet").exists()
 
 

@@ -35,10 +35,16 @@ def _write(root, name, rows):
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
+def _write_idx(root, name, rows):
+    """index 资产写 indexs/ 目录（独立于 tables/）"""
+    d = root / "indexs" / name
+    d.mkdir(parents=True, exist_ok=True)
+    rows.write_parquet(d / "data.parquet")
+
 
 def _gsetup(root):
     """graph 语义造数：index/m1 表 → index 节点 → panel ds1（keys=sym,date）"""
-    _write(root, "index", pl.DataFrame({
+    _write_idx(root, "index", pl.DataFrame({
         "sym": ["a", "b", "c"],
         "date": ["2024-01-01", "2024-01-02", "2024-01-03"],
         "price": [1.0, 2.0, 3.0],
@@ -53,7 +59,6 @@ def _gsetup(root):
     from stkoe.graph.service import GraphService
 
     svc = GraphService(data_dir=root)
-    svc.table_add("index")
     svc.table_add("m1")
     svc.index_add("index")
     svc.panel_add("ds1", "index", ["m1"])  # keys 由 index 推断
@@ -150,13 +155,12 @@ def test_list_and_delete(ctl, tmp_path, tctl):
 
 
 def test_table_target_scan(ctl, tmp_path, tctl):
-    """table 目标：索引 = 非工具列"""
+    """table 目标：索引 = 非工具列（index 为独立资产，扫成员表 m1）"""
     _setup_sources(tmp_path, tctl)
-    report = _scan(ctl, "table", "index")
+    report = _scan(ctl, "table", "m1")
     parts = set(report.partitions)
     assert "all" in parts
-    assert "optime" not in parts  # 工具列剔除
-    assert "sym" in parts and "date" in parts and "price" in parts
+    assert "sym" in parts and "date" in parts and "name" in parts
 
 
 def _write_hive(root, name, parts, row_cnt=1):
@@ -200,13 +204,13 @@ def test_storage_scan_hive_table(ctl, tmp_path, tctl):
 def test_storage_scan_flat_table(ctl, tmp_path, tctl):
     """storage（table 无分区）：只有 all 行，partition_by/partition_value=__all__"""
     _setup_sources(tmp_path, tctl)
-    report = _scan(ctl, "table", "index", kind="storage")
+    report = _scan(ctl, "table", "m1", kind="storage")
     assert report.partitions == ("all",)
-    df = _get(ctl, "table", "index", kind="storage", partition_by="all")
+    df = _get(ctl, "table", "m1", kind="storage", partition_by="all")
     assert df.height == 1
     row = df.row(0)
     assert row[0] == "__all__" and row[1] == "__all__"
-    assert row[3] == 1  # index 表单个 data.parquet
+    assert row[3] == 1  # m1 表单个 data.parquet
 
 
 def test_storage_scan_get_all(ctl, tmp_path, tctl):

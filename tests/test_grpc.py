@@ -104,7 +104,7 @@ def test_execute_mock_demo(client, srv):
     assert [r["name"] for r in reports] == ["index", "m1"]
     assert reports[0]["rows"] == 300 * 500
     root = Path(srv.data_dir)
-    assert (root / "tables" / "index" / "data.parquet").exists()
+    assert (root / "indexs" / "index" / "data.parquet").exists()
     assert (root / "tables" / "m1" / "data.parquet").exists()
 
 
@@ -116,7 +116,7 @@ def test_execute_mock_demo_with_flags(client, srv):
     assert header.code == 0
     reports = json.loads(datas[0].json.data)
     assert reports[0]["rows"] == 5 * 3
-    assert (Path(srv.data_dir) / "tables" / "index" / "data.parquet").exists()
+    assert (Path(srv.data_dir) / "indexs" / "index" / "data.parquet").exists()
 
 
 def test_execute_mock_gen(client, srv):
@@ -372,7 +372,7 @@ def test_execute_index_list_candidate(client, srv, tmp_path):
     """e:index list --candidate：未登记 index 但含 parquet 的表目录候选"""
     import polars as pl
 
-    root = Path(srv.data_dir) / "tables"
+    root = Path(srv.data_dir) / "indexs"
     (root / "reg").mkdir(parents=True)
     pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"]}).write_parquet(root / "reg" / "p.parquet")
     header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -402,7 +402,7 @@ def _seed_panel_chain(client, srv, x2_formula="x*2"):
     import polars as pl
 
     root = Path(srv.data_dir)
-    d = root / "tables" / "idx"
+    d = root / "indexs" / "idx"
     d.mkdir(parents=True)
     pl.DataFrame({"sym": ["a", "b"], "x": [1.0, 2.0],
                   "date": ["2026-01-01", "2026-01-02"]}).write_parquet(d / "data.parquet")
@@ -412,7 +412,6 @@ def _seed_panel_chain(client, srv, x2_formula="x*2"):
                   "y": [10.0, 20.0]}).write_parquet(m / "data.parquet")
 
     for src, action, args in [
-        ("table", "add", ["idx"]),
         ("table", "add", ["mem"]),
         ("index", "add", ["idx"]),
         ("panel", "add", ["ds", "idx", "mem"]),  # keys 由 index 推断 [sym, date]
@@ -539,7 +538,7 @@ def _seed_factor_chain(client, srv, ready=True):
     import polars as pl
 
     root = Path(srv.data_dir)
-    d = root / "tables" / "idx"
+    d = root / "indexs" / "idx"
     d.mkdir(parents=True)
     pl.DataFrame({
         "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-01"],
@@ -551,7 +550,6 @@ def _seed_factor_chain(client, srv, ready=True):
                   "price": [1.5, 2.5]}).write_parquet(m / "data.parquet")
 
     for src, action, args in [
-        ("table", "add", ["idx"]),
         ("table", "add", ["mem"]),
         ("index", "add", ["idx"]),
         ("panel", "add", ["ds", "idx", "mem"]),  # keys 由 index 推断 [sym, date]

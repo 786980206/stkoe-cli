@@ -62,6 +62,7 @@ class GraphService:
         self.store = GraphStore(str(self._db_path(self.data_dir)))
         self.graph = GraphController(self.store)
         self.tables_root = self.data_dir / "tables"
+        self.indexs_root = self.data_dir / "indexs"  # index 资产独立物理目录
         self.ignore_cols = set(DEFAULT_IGNORE_COLS)
 
     @classmethod
@@ -86,6 +87,15 @@ class GraphService:
 
     def _root(self, name: str) -> Path:
         return self.tables_root / name
+
+    def _index_root(self, name: str) -> Path:
+        return self.indexs_root / name
+
+    def _asset_root(self, asset_type: str, name: str) -> Path:
+        """按资产类型取物理目录：index 走 indexs/，其余走 tables/。"""
+        if asset_type == "index":
+            return self._index_root(name)
+        return self._root(name)
 
     def _require_node(self, asset_type: str, name: str) -> dict:
         node = self.store.get_node(node_id(asset_type, name))
@@ -122,9 +132,10 @@ class GraphService:
         node = self._require_node(asset_type, name)
         files = self._files(node_id(asset_type, name))
         part_count = len({f["partition"] for f in files if f["partition"]})
-        disk = T.disk_files(self._root(name))
+        root = self._asset_root(asset_type, name)
+        disk = T.disk_files(root)
         consistent = bool(node.get("signature")) and \
-            node["signature"] == T.signature(disk) if self._root(name).exists() else True
+            node["signature"] == T.signature(disk) if root.exists() else True
         return {
             "name": name,
             "version": node.get("version", 0),
@@ -152,7 +163,7 @@ class GraphService:
         - 非首次且变化：指纹替换 + 节点 patch + ``notify_change``（铸版本 + 下游置脏）
         - 无变化：不 bump 版本
         """
-        root = self._root(name)
+        root = self._asset_root(asset_type, name)
         if not root.exists():
             raise TableNotFoundError(f"table dir not found: {root}")
         disk = T.disk_files(root)
@@ -244,7 +255,7 @@ class GraphService:
 
     def _ensure_fresh(self, asset_type: str, name: str) -> None:
         """读前快检：签名一致则继续；不一致自动 scan（未登记则隐式注册）。"""
-        root = self._root(name)
+        root = self._asset_root(asset_type, name)
         if not root.exists():
             return
         node = self.store.get_node(node_id(asset_type, name))
@@ -262,7 +273,7 @@ class GraphService:
         files = prune_files(self.store.connection, nid, partition, where)
         if not files:
             return pl.LazyFrame()
-        paths = [self._root(name) / f["rel_path"] for f in files]
+        paths = [self._asset_root(asset_type, name) / f["rel_path"] for f in files]
         lf = pl.scan_parquet(paths, hive_partitioning=True)
         if where is not None:
             lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
@@ -380,7 +391,7 @@ class GraphService:
 
     def index_add(self, name: str, *, symbol_col: str = "sym", datetime_col: str = "date",
                   materialize_partition: str = "yearly", meta: dict | None = None) -> dict:
-        root = self._root(name)
+        root = self._index_root(name)
         if not root.exists():
             raise TableNotFoundError(f"index dir not found: {root}")
         if self.store.get_node(node_id("index", name)) is not None:
@@ -404,10 +415,10 @@ class GraphService:
     def index_list(self, *, candidate: bool = False) -> list:
         """index 清单；candidate=True 返回未登记为 index 但含 parquet 的表目录。"""
         if candidate:
-            if not self.tables_root.exists():
+            if not self.indexs_root.exists():
                 return []
             out = []
-            for d in sorted(x for x in self.tables_root.iterdir() if x.is_dir()):
+            for d in sorted(x for x in self.indexs_root.iterdir() if x.is_dir()):
                 if self.store.get_node(node_id("index", d.name)) is None \
                         and any(d.rglob("*.parquet")):
                     out.append(d.name)
@@ -438,7 +449,7 @@ class GraphService:
         return self.index_update(name, all=all)
 
     def index_data_key(self, name: str) -> str:
-        root = self._root(name)
+        root = self._index_root(name)
         if not root.exists():
             return ""
         self._ensure_fresh("index", name)

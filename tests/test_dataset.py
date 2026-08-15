@@ -36,6 +36,12 @@ def _write(root, name, rows):
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
+def _write_idx(root, name, rows):
+    """index 资产写 indexs/ 目录（独立于 tables/）"""
+    d = root / "indexs" / name
+    d.mkdir(parents=True, exist_ok=True)
+    rows.write_parquet(d / "data.parquet")
+
 
 def _setup_sources(tmp_path, tctl):
     """建 index 表（sym,date,price）+ 成员表（sym,date,name,industry）"""
@@ -277,14 +283,13 @@ def test_task_framework_dataset_handlers(mgr):
     from stkoe.graph.service import GraphService
 
     root = mgr.data_dir
-    _write(root, "index", pl.DataFrame({
+    _write_idx(root, "index", pl.DataFrame({
         "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
         "price": [1.0, 2.0], "optime": ["2024-01-01 08:00:00"] * 2}))
     _write(root, "m1", pl.DataFrame({
         "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
         "name": ["AA", "BB"], "industry": ["金融", "科技"]}))
     gsvc = GraphService(data_dir=root)
-    gsvc.table_add("index")
     gsvc.table_add("m1")
     gsvc.index_add("index")
     gsvc.close()

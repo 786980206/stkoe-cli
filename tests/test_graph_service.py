@@ -22,10 +22,12 @@ from stkoe.graph.service import GraphService
 def svc():
     base = os.path.join(os.environ.get("TEMP", "."), "gql_svc_test")
     shutil.rmtree(base, ignore_errors=True)
-    for d in ("index", "m1", "m2"):
-        os.makedirs(os.path.join(base, "tables", d), exist_ok=True)
+    for sub in ("tables", "indexs"):
+        for d in ("index", "m1", "m2"):
+            os.makedirs(os.path.join(base, sub, d), exist_ok=True)
+    # index 资产物理目录为 indexs/
     pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
-                  "code": [1, 2]}).write_parquet(os.path.join(base, "tables", "index", "data.parquet"))
+                  "code": [1, 2]}).write_parquet(os.path.join(base, "indexs", "index", "data.parquet"))
     pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
                   "price": [1.5, 2.5]}).write_parquet(os.path.join(base, "tables", "m1", "data.parquet"))
     pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
@@ -137,7 +139,6 @@ class TestIndexGraph:
 
 class TestPanelGraph:
     def test_panel_add_edges(self, svc):
-        svc.table_add("index")
         svc.table_add("m1")
         svc.table_add("m2")
         svc.index_add("index")
@@ -150,7 +151,6 @@ class TestPanelGraph:
         assert targets == ["index:index", "table:m1", "table:m2"]
 
     def test_panel_get_join_and_columns(self, svc):
-        svc.table_add("index")
         svc.table_add("m1")
         svc.table_add("m2")
         svc.index_add("index")
@@ -173,10 +173,12 @@ class TestPanelGraph:
 
 class TestIndexGraph:
     def test_index_list_candidate(self, svc):
-        """index list --candidate：未登记为 index 但含 parquet 的目录（可同时已登记 table）"""
-        svc.table_add("m1")       # 只登记 table，不 index
-        svc.table_add("m2")       # 只登记 table，不 index
-        svc.index_add("index")    # 登记 index（index:index）
+        """index list --candidate：indexs/ 下未登记为 index 但含 parquet 的目录"""
+        for n in ("m1", "m2"):
+            os.makedirs(os.path.join(svc.data_dir, "indexs", n), exist_ok=True)
+            pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"]}).write_parquet(
+                os.path.join(svc.data_dir, "indexs", n, "data.parquet"))
+        svc.index_add("index")  # 登记 index（indexs/index）
         cands = svc.index_list(candidate=True)
         assert "m1" in cands and "m2" in cands
         assert "index" not in cands  # 已登记 index 的不作候选
@@ -188,7 +190,6 @@ class TestFactorGraph:
     """factor：feature 公式 + sample 视图 + pipeline 算子链（graph 登记，scan 物化）。"""
 
     def _chain(self, svc, with_ready=True):
-        svc.table_add("index")
         svc.table_add("m1")
         svc.index_add("index")
         svc.panel_add("ds1", "index", ["m1"])
@@ -266,8 +267,7 @@ class TestTesterGraph:
             pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
                           "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
                           "code": [1, 2]}).write_parquet(
-                os.path.join(svc.data_dir, "tables", "index", "data.parquet"))
-        svc.table_add("index")
+                os.path.join(svc.data_dir, "indexs", "index", "data.parquet"))
         svc.table_add("m1")
         svc.index_add("index")
         svc.panel_add("ds1", "index", ["m1"])

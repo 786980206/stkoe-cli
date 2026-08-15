@@ -167,9 +167,35 @@ src/stkoe/
 ### 测试
 
 - `tests/test_grpc.py`：`srv`/`client` fixture（StkoeServer 起真实 gRPC，port=0 自动分配）
-- `tests/test_table.py`：controller 直测 + 任务版链路（`_await`/`_mgr_result` 助手）
+- `tests/test_*.py`：各资产**任务版链路**测试（graph 语义，`_await`/`_mgr_result` 助手轮询
+  终态事件落库再取 JSON）；源头造数统一走各文件的 `_gsetup`（GraphService 建链 + 依次
+  update 就绪）与 `_write_idx`（index/ 目录）
 - 流式断言用 `_collect`（先 DataHeader，再数据消息）
-- 全量 220 用例，多连跑需稳定（曾修过时序竞态，新增用例注意时序敏感）
+- **V2.0 死代码 controller 直测已移入 `V2.0/tests/`**（test_table/dataset/fieldset/sample/
+  feature/factor/factor_test.py，共 113 例）：默认全量不收集（pyproject `testpaths=["tests"]`
+  + `norecursedirs` 排除 V2.0）；如需运行 `.venv/Scripts/python.exe -m pytest
+  V2.0/tests/test_table.py -q`（死代码 controller 仍可从 `src/stkoe/<mod>/controller.py` 导入）。
+  V2.0/tests 其余文件（test_grpc/stat/task_manager 等）是 f290378 的历史基线快照，与当前
+  代码不兼容、默认不运行
+- 全量 173 用例约 40s（V3 graph/gRPC/任务链路为主），多连跑需稳定；**改动后优先只跑相关
+  文件**：`.venv/Scripts/python.exe -m pytest tests/test_graph.py tests/test_grpc.py -q`
+
+#### 测试提速与排查经验（V2→V3 迁移中总结）
+
+1. **全量 pytest 是最大耗时项**：V3 前全量 ~60s，其中约一半（113 例）是 V2.0 死代码
+   controller 的回归测试——测的是已废弃实现，对当前 graph 代码无价值。已移出默认全量，
+   全量降到 ~40s。**小改动不要跑全量**，只跑相关测试文件即可。
+2. **批量文本替换易误伤**：一次替换多处（如 `_root(` → `_asset_root(asset_type,...)`）会命中
+   无 `asset_type` 变量的方法（NameError），或漏掉带路径前缀的写法（`os.path.join(base,
+   "tables")`）。对策：替换前先 grep 列出全部匹配点逐条确认；替换后立即跑相关测试，
+   报错先怀疑替换误伤。
+3. **edit 频繁遇「file changed」**：文件被其他工具/命令改动后 edit 需先 read；批量改多个
+   文件时按顺序 read→edit，避免来回重读。
+4. **任务版用例偶发 flaky**：终态事件落库与轮询存在竞态，`_mgr_result`/`_result` 助手会
+   轮询等终态事件落库再取 JSON；新增任务版断言务必走 helper，不要立刻读 `mgr.get()`。
+5. **全量测试命令**：`.venv/Scripts/python.exe -m pytest tests -q`（沙箱内 uv 不可用，本机用
+   预建 .venv）；Windows NVMe 上 SQLite fsync 快，Linux 慢文件系统注意 I/O 等待（曾因此
+   全量 222s → 105s，见变更记录「SQLite catalog 减少 fsync」）。
 
 ## 当前状态与下一步
 
@@ -185,6 +211,19 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 3. 列级血缘（列节点图）、version_list 裁剪、图算法（PageRank 等）
 
 ## 近期变更记录
+
+### 2026-08 V2.0 死代码测试移出默认全量（tests → V2.0/tests）+ 测试经验沉淀
+
+- **拆分 7 个混合测试文件**：tests/test_{table,dataset,fieldset,sample,feature,factor,
+  factor_test}.py 各自保留 graph 语义的任务版链路用例（`test_task_framework_*`；
+  factor_test 另保留 stat 测试器集成用例），V2.0 死代码 controller 直测（共 113 例）移入
+  `V2.0/tests/` 同名文件。默认 pytest 不收集：`testpaths=["tests"]` + norecursedirs 排除 V2.0
+- 移入文件头部注明归档性质与单独运行命令；V2.0/tests 其余文件是 f290378 历史基线快照
+  （与当前代码不兼容），未被改动；原始基线测试可从 git f290378 恢复
+- 效果：全量 286 例 → 默认全量 173 例（约 60s → 约 40s）；用例总数不变（173+113=286），
+  移入的死代码测试仍可单独运行全绿
+- AGENTS.md「测试」节补「测试提速与排查经验」：全量耗时主因 / 批量替换误伤 /
+  edit 需先 read / 任务版轮询 helper / 只跑相关测试
 
 ### 2026-08 index 资产独立物理目录 index/（不再共用 table/）
 

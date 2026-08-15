@@ -116,8 +116,12 @@ SubmitTask / SubscribeTask / TaskControl / Health。`(source, action)` 全量命
 ## 测试
 
 ```bash
-uv run pytest -q        # 全量 271 用例（graph 模块 48 例 + gRPC/资产模块）
+uv run pytest -q        # 默认全量 173 用例（graph 模块 48 例 + gRPC/资产任务版链路），约 40s
 ```
+
+- V2.0 死代码 controller 直测（113 例）已归档到 `V2.0/tests/`（默认不收集）；
+  如需运行：`.venv/Scripts/python.exe -m pytest V2.0/tests/test_table.py -q`
+- 改动后优先只跑相关文件：`.venv/Scripts/python.exe -m pytest tests/test_graph.py tests/test_grpc.py -q`
 
 ## 目录结构
 

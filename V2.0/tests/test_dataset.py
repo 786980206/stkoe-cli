@@ -1,21 +1,17 @@
 # -*- coding: utf-8 -*-
-"""DatasetController 测试：add/get/meta/list/scan/delete + left join 行数语义 + 物化 + 任务框架接入"""
+"""V2.0 死代码 DatasetController 回归测试（默认全量不收集；如需单独运行：
+.venv/Scripts/python.exe -m pytest V2.0/tests/test_dataset.py -q）
+
+V3.0 起 dataset（panel）资产走 GraphService（src/stkoe/graph/service.py），
+本文件保留对 src/stkoe/dataset/controller.py（死代码）的行为回归存档。
+原始 V2.0 基线测试见 git f290378（V2.0 全量备份）。
+"""
 import datetime
 
 import polars as pl
 import pytest
 
 from stkoe.dataset import DatasetController, DatasetExistsError, DatasetNotFoundError
-
-
-@pytest.fixture()
-def mgr(tmp_path):
-    from stkoe.task import TaskManager
-
-    m = TaskManager(data_dir=tmp_path / "data")
-    m.start()
-    yield m
-    m.stop()
 
 
 @pytest.fixture()
@@ -32,7 +28,13 @@ def tctl(tmp_path):
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
+    d.mkdir(parents=True, exist_ok=True)
+    rows.write_parquet(d / "data.parquet")
+
+def _write_idx(root, name, rows):
+    """index 资产写 index/ 目录（独立于 table/）"""
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
@@ -216,7 +218,7 @@ def test_scan_incremental_materialize(ctl, tmp_path, tctl):
     tctl2 = TableController(data_dir=tmp_path / "data")
     root = tmp_path / "data"
     extra = pl.DataFrame({"sym": ["e"], "date": ["2024-01-04"], "price": [4.0]})
-    extra.write_parquet(root / "tables" / "index" / "more.parquet")
+    extra.write_parquet(root / "table" / "index" / "more.parquet")
     _run(tctl2.scan("index"))
 
     report = _scan(ctl, "ds1")
@@ -272,91 +274,6 @@ def test_table_delete_blocked_by_dataset_dep(tctl, ctl, tmp_path):
         _run(tc.delete("index"))
 
 
-def test_task_framework_dataset_handlers(mgr):
-    """dataset handlers 注册进任务框架：add→meta→get 全链路"""
-    from stkoe.table import TableController
-
-    tctl = TableController(data_dir=mgr.data_dir)
-    root = mgr.data_dir
-    _write(root, "index", pl.DataFrame({
-        "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
-        "price": [1.0, 2.0], "optime": ["2024-01-01 08:00:00"] * 2}))
-    _write(root, "m1", pl.DataFrame({
-        "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
-        "name": ["AA", "BB"], "industry": ["金融", "科技"]}))
-    for t in ("index", "m1"):
-        _run(tctl.add(t, meta={"type": "index"} if t == "index" else None))
-
-    t_add = mgr.submit("dataset", "add", ["ds1", "index", "m1", "--keys", "sym,date"])
-    _await(mgr, t_add)
-    add_res = _mgr_result(mgr, t_add)
-    assert add_res["name"] == "ds1"
-    assert add_res["materialized"] is False  # add 只注册
-
-    t_scan = mgr.submit("dataset", "scan", ["ds1"])
-    _await(mgr, t_scan)
-    assert _mgr_result(mgr, t_scan)["materialized"] is True  # scan 才物化
-
-    t_meta = mgr.submit("dataset", "meta", ["ds1"])
-    _await(mgr, t_meta)
-    assert _mgr_result(mgr, t_meta)["index_table"] == "index"
-
-    t_list = mgr.submit("dataset", "list", [])
-    _await(mgr, t_list)
-    assert [d["name"] for d in _mgr_result(mgr, t_list)] == ["ds1"]
-
-    t_get = mgr.submit("dataset", "get", ["ds1"])
-    _await(mgr, t_get)
-    assert _mgr_result(mgr, t_get)["rows"] == 2
-
-    t_del = mgr.submit("dataset", "delete", ["ds1"])
-    _await(mgr, t_del)
-    assert _mgr_result(mgr, t_del) == {"deleted": "ds1"}
-
-
-def test_task_scan_reports_partition_progress(mgr):
-    """s:dataset scan 多分区物化：ctx.update 逐分区上报进度（progress=i/total）"""
-    from stkoe.table import TableController
-
-    root = mgr.data_dir
-    idx_root = root / "tables" / "idx"
-    for d in ("2024-01-01", "2024-01-02"):
-        p = idx_root / f"dt={d}"
-        p.mkdir(parents=True)
-        pl.DataFrame({
-            "sym": [d], "price": [1.0],
-            "dt": [datetime.date(2024, 1, int(d[-2:]))],
-        }).write_parquet(p / "f.parquet")
-    (root / "tables" / "m1").mkdir(parents=True)
-    pl.DataFrame({
-        "sym": ["2024-01-01", "2024-01-02"],
-        "dt": [datetime.date(2024, 1, 1), datetime.date(2024, 1, 2)],
-        "name": ["AA", "BB"],
-    }).write_parquet(root / "tables" / "m1" / "f.parquet")
-    tctl = TableController(data_dir=mgr.data_dir)
-    _run(tctl.add("idx", meta={"type": "index"}))
-    _run(tctl.add("m1"))
-
-    t_add = mgr.submit("dataset", "add", ["ds1", "idx", "m1", "--keys", "dt,sym"])
-    _await(mgr, t_add)
-    assert _mgr_result(mgr, t_add)["name"] == "ds1"
-
-    t_scan = mgr.submit("dataset", "scan", ["ds1"])
-    _await(mgr, t_scan)
-    assert _mgr_result(mgr, t_scan)["materialized"] is True
-    assert _mgr_result(mgr, t_scan)["rebuilt_partitions"] == ["2024-01-01", "2024-01-02"]
-
-    evs = mgr.events.list_by_task(t_scan.task_id)
-    prog = [(e.progress, e.message) for e in evs if e.message.startswith("ds1: part=")]
-    assert len(prog) == 2  # 每分区一条
-    assert prog[0][0] == pytest.approx(0.5)  # i/total
-    assert "part=2024-01-01（1/2）" in prog[0][1]
-    assert prog[1][0] == pytest.approx(1.0)
-    assert "part=2024-01-02（2/2）" in prog[1][1]
-    assert evs[-1].state == "succeeded"
-    assert evs[-1].progress == 1.0
-
-
 # ---------- async 助手 ----------
 
 def _run(awaitable):
@@ -391,26 +308,3 @@ def _scan(ctl, name, **kw):
 
 def _delete(ctl, name, **kw):
     return _run(ctl.delete(name, **kw))
-
-
-# ---------- 任务框架助手 ----------
-
-def _await(mgr, task, timeout=5.0):
-    import time
-
-    from stkoe.task.model import TERMINAL_STATES
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        cur = mgr.get(task.task_id)
-        if cur is not None and cur.state in TERMINAL_STATES:
-            return cur
-        time.sleep(0.02)
-    raise TimeoutError(f"task not terminal: {mgr.get(task.task_id).state}")
-
-
-def _mgr_result(mgr, task):
-    import json
-
-    evs = mgr.events.list_by_task(task.task_id)
-    return json.loads(evs[-1].data) if evs and evs[-1].data else None

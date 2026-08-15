@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""FactorController 测试：CRUD、实时计算、check、scan 物化、pipeline 算子链、依赖阻断、任务版"""
+"""V2.0 死代码 FactorController 回归测试（默认全量不收集；如需单独运行：
+.venv/Scripts/python.exe -m pytest V2.0/tests/test_factor.py -q）
+
+V3.0 起 factor 资产走 GraphService（src/stkoe/graph/service.py），
+本文件保留对 src/stkoe/factor/controller.py（死代码）的行为回归存档。
+原始 V2.0 基线测试见 git f290378（V2.0 全量备份）。
+"""
 import polars as pl
 import pytest
 
@@ -8,22 +14,18 @@ from stkoe.factor.engine import engine_names, get_engine, operator_names, parse_
 
 
 @pytest.fixture()
-def mgr(tmp_path):
-    from stkoe.task import TaskManager
-
-    m = TaskManager(data_dir=tmp_path / "data")
-    m.start()
-    yield m
-    m.stop()
-
-
-@pytest.fixture()
 def ctl(tmp_path):
     return FactorController(data_dir=tmp_path / "data")
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
+    d.mkdir(parents=True, exist_ok=True)
+    rows.write_parquet(d / "data.parquet")
+
+def _write_idx(root, name, rows):
+    """index 资产写 index/ 目录（独立于 table/）"""
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
@@ -192,7 +194,7 @@ def test_scan_materialize_and_read(ctl, tmp_path):
     rep = _run(ctl.scan("fac1"))
     assert rep.changed is True
     assert rep.partition_by == ()
-    assert (tmp_path / "data" / "factors" / "fac1" / "data.parquet").exists()
+    assert (tmp_path / "data" / "factor" / "fac1" / "data.parquet").exists()
 
     fm = _meta(ctl, "fac1")
     assert fm.materialized is True
@@ -286,49 +288,6 @@ def test_scan_all(ctl, tmp_path):
     assert [r.name for r in reports] == ["fac1"]
 
 
-def test_task_framework_factor_handlers(mgr):
-    """任务版：factor add → check → get（result 落盘）→ scan → delete 全链路"""
-    from stkoe.dataset import DatasetController
-    from stkoe.feature import FeatureController
-    from stkoe.sample import SampleController
-    from stkoe.table import TableController
-
-    root = mgr.data_dir
-    _write(root, "idx", pl.DataFrame({"k": ["a", "b"], "x": [1.0, 2.0]}))
-    tctl = TableController(data_dir=root)
-    _run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    _run(dc.add("ds", "idx", keys=["k"]))
-    sc = SampleController(data_dir=root)
-    _run(sc.add("sp1", dataset="ds"))
-    fc = FeatureController(data_dir=root)
-    _run(fc.add("f1", formula="x*2"))
-
-    t_add = mgr.submit("factor", "add", ["fac1", "--feature", "f1",
-                                         "--sample", "sp1"])
-    _await(mgr, t_add)
-    assert _mgr_result(mgr, t_add)["name"] == "fac1"
-
-    t_get = mgr.submit("factor", "get", ["fac1"])
-    _await(mgr, t_get)
-    get_res = _mgr_result(mgr, t_get)
-    assert get_res["columns"] == ["k", "f1"]
-    assert get_res["result_ref"]
-    assert get_res["rows"] == 2
-
-    t_check = mgr.submit("factor", "check", ["fac1"])
-    _await(mgr, t_check)
-    assert _mgr_result(mgr, t_check)["ok"] is True
-
-    t_scan = mgr.submit("factor", "scan", ["fac1"])
-    _await(mgr, t_scan)
-    assert _mgr_result(mgr, t_scan)["changed"] is True
-
-    t_del = mgr.submit("factor", "del", ["fac1"])
-    _await(mgr, t_del)
-    assert _mgr_result(mgr, t_del) == {"deleted": "fac1"}
-
-
 # ---------- async 助手 ----------
 
 def _run(awaitable):
@@ -351,26 +310,3 @@ def _meta(ctl, name):
 
 def _check(ctl, name):
     return _run(ctl.check(name))
-
-
-# ---------- 任务框架助手 ----------
-
-def _await(mgr, task, timeout=5.0):
-    import time
-
-    from stkoe.task.model import TERMINAL_STATES
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        cur = mgr.get(task.task_id)
-        if cur is not None and cur.state in TERMINAL_STATES:
-            return cur
-        time.sleep(0.02)
-    raise TimeoutError(f"task not terminal: {mgr.get(task.task_id).state}")
-
-
-def _mgr_result(mgr, task):
-    import json
-
-    evs = mgr.events.list_by_task(task.task_id)
-    return json.loads(evs[-1].data) if evs and evs[-1].data else None

@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""FeatureController 测试：因子定义 CRUD、test 在 sample 上求值/校验、任务版链路"""
+"""V2.0 死代码 FeatureController 回归测试（默认全量不收集；如需单独运行：
+.venv/Scripts/python.exe -m pytest V2.0/tests/test_feature.py -q）
+
+V3.0 起 feature 资产走 GraphService（src/stkoe/graph/service.py），
+本文件保留对 src/stkoe/feature/controller.py（死代码）的行为回归存档。
+原始 V2.0 基线测试见 git f290378（V2.0 全量备份）。
+"""
 import polars as pl
 import pytest
 
@@ -8,22 +14,18 @@ from stkoe.feature.engine import engine_names, get_engine
 
 
 @pytest.fixture()
-def mgr(tmp_path):
-    from stkoe.task import TaskManager
-
-    m = TaskManager(data_dir=tmp_path / "data")
-    m.start()
-    yield m
-    m.stop()
-
-
-@pytest.fixture()
 def ctl(tmp_path):
     return FeatureController(data_dir=tmp_path / "data")
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
+    d.mkdir(parents=True, exist_ok=True)
+    rows.write_parquet(d / "data.parquet")
+
+def _write_idx(root, name, rows):
+    """index 资产写 index/ 目录（独立于 table/）"""
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
@@ -165,48 +167,6 @@ def test_delete_sample_not_blocked_by_feature(ctl, tmp_path):
     assert _meta(ctl, "f1").name == "f1"
 
 
-def test_task_framework_feature_handlers(mgr):
-    """任务版：feature add → test → set → del 全链路"""
-    from stkoe.table import TableController
-
-    from stkoe.dataset import DatasetController
-
-    from stkoe.sample import SampleController
-
-    root = mgr.data_dir
-    _write(root, "idx", pl.DataFrame({
-        "k": ["a", "b"], "x": [1.0, 2.0], "optime": ["2024-01-01 08:00:00"] * 2}))
-    tctl = TableController(data_dir=root)
-    _run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    _run(dc.add("ds", "idx", keys=["k"]))
-    sc = SampleController(data_dir=root)
-    _run(sc.add("sp1", dataset="ds"))
-
-    t_add = mgr.submit("feature", "add", ["f1", "--formula", "x*2"])
-    _await(mgr, t_add)
-    assert _mgr_result(mgr, t_add)["name"] == "f1"
-
-    t_test = mgr.submit("feature", "test", ["f1", "--sample", "sp1"])
-    _await(mgr, t_test)
-    res = _mgr_result(mgr, t_test)
-    assert res["ok"] is True
-    assert res["valid"] is True
-    assert res["result_ref"]
-
-    t_set = mgr.submit("feature", "set", ["f1", "--formula", "x*3"])
-    _await(mgr, t_set)
-    assert _mgr_result(mgr, t_set)["formula"] == "x*3"
-
-    t_list = mgr.submit("feature", "list", [])
-    _await(mgr, t_list)
-    assert [ft["name"] for ft in _mgr_result(mgr, t_list)] == ["f1"]
-
-    t_del = mgr.submit("feature", "del", ["f1"])
-    _await(mgr, t_del)
-    assert _mgr_result(mgr, t_del) == {"deleted": "f1"}
-
-
 # ---------- async 助手 ----------
 
 def _run(awaitable):
@@ -221,26 +181,3 @@ def _add(ctl, name, **kw):
 
 def _meta(ctl, name):
     return _run(ctl.meta(name))
-
-
-# ---------- 任务框架助手 ----------
-
-def _await(mgr, task, timeout=5.0):
-    import time
-
-    from stkoe.task.model import TERMINAL_STATES
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        cur = mgr.get(task.task_id)
-        if cur is not None and cur.state in TERMINAL_STATES:
-            return cur
-        time.sleep(0.02)
-    raise TimeoutError(f"task not terminal: {mgr.get(task.task_id).state}")
-
-
-def _mgr_result(mgr, task):
-    import json
-
-    evs = mgr.events.list_by_task(task.task_id)
-    return json.loads(evs[-1].data) if evs and evs[-1].data else None

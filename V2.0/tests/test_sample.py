@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""SampleController 测试：样本池 CRUD、dataset_with_fieldset 过滤、check 有效性、依赖阻断、任务版链路"""
+"""V2.0 死代码 SampleController 回归测试（默认全量不收集；如需单独运行：
+.venv/Scripts/python.exe -m pytest V2.0/tests/test_sample.py -q）
+
+V3.0 起 sample 资产走 GraphService（src/stkoe/graph/service.py），
+本文件保留对 src/stkoe/sample/controller.py（死代码）的行为回归存档。
+原始 V2.0 基线测试见 git f290378（V2.0 全量备份）。
+"""
 import polars as pl
 import pytest
 
@@ -8,22 +14,18 @@ from stkoe.sample.engine import engine_names, get_engine
 
 
 @pytest.fixture()
-def mgr(tmp_path):
-    from stkoe.task import TaskManager
-
-    m = TaskManager(data_dir=tmp_path / "data")
-    m.start()
-    yield m
-    m.stop()
-
-
-@pytest.fixture()
 def ctl(tmp_path):
     return SampleController(data_dir=tmp_path / "data")
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
+    d.mkdir(parents=True, exist_ok=True)
+    rows.write_parquet(d / "data.parquet")
+
+def _write_idx(root, name, rows):
+    """index 资产写 index/ 目录（独立于 table/）"""
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
@@ -195,52 +197,6 @@ def test_list(ctl, tmp_path):
     assert [sm.name for sm in _run(ctl.list())] == ["s1", "s2"]
 
 
-def test_task_framework_sample_handlers(mgr):
-    """任务版：sample add → check → get（含 fieldset 衍生列 + result 落盘）→ delete"""
-    from stkoe.table import TableController
-
-    from stkoe.dataset import DatasetController
-
-    from stkoe.fieldset import FieldsetController
-
-    root = mgr.data_dir
-    _write(root, "idx", pl.DataFrame({
-        "k": ["a", "b", "c"],
-        "x": [1.0, 2.0, 3.0],
-        "date": ["2026-01-01", "2026-01-02", "2026-01-03"],
-    }))
-    tctl = TableController(data_dir=root)
-    _run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    _run(dc.add("ds", "idx", keys=["k"]))
-    fs = FieldsetController(data_dir=root)
-    _run(fs.add("fs1", dataset="ds"))
-    _run(fs.add_field("fs1", "x2", formula="x*2"))
-    _run(fs.check("fs1", "x2"))
-
-    t_add = mgr.submit("sample", "add", ["s1", "--dataset", "ds", "--formula", "x>=2.0"])
-    _await(mgr, t_add)
-    assert _mgr_result(mgr, t_add)["name"] == "s1"
-
-    t_check = mgr.submit("sample", "check", ["s1"])
-    _await(mgr, t_check)
-    assert _mgr_result(mgr, t_check)["ok"] is True
-
-    t_get = mgr.submit("sample", "get", ["s1"])
-    _await(mgr, t_get)
-    get_res = _mgr_result(mgr, t_get)
-    assert get_res["columns"] == ["k", "x", "date", "x2"]
-    assert get_res["result_ref"]
-
-    t_set = mgr.submit("sample", "set", ["s1", "--formula", "x==1.0"])
-    _await(mgr, t_set)
-    assert _mgr_result(mgr, t_set)["formula"] == "x==1.0"
-
-    t_del = mgr.submit("sample", "del", ["s1"])
-    _await(mgr, t_del)
-    assert _mgr_result(mgr, t_del) == {"deleted": "s1"}
-
-
 # ---------- async 助手 ----------
 
 def _run(awaitable):
@@ -259,26 +215,3 @@ def _get(ctl, name, **kw):
 
 def _check(ctl, name):
     return _run(ctl.check(name))
-
-
-# ---------- 任务框架助手 ----------
-
-def _await(mgr, task, timeout=5.0):
-    import time
-
-    from stkoe.task.model import TERMINAL_STATES
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        cur = mgr.get(task.task_id)
-        if cur is not None and cur.state in TERMINAL_STATES:
-            return cur
-        time.sleep(0.02)
-    raise TimeoutError(f"task not terminal: {mgr.get(task.task_id).state}")
-
-
-def _mgr_result(mgr, task):
-    import json
-
-    evs = mgr.events.list_by_task(task.task_id)
-    return json.loads(evs[-1].data) if evs and evs[-1].data else None

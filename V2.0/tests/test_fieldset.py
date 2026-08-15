@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""FieldsetController 测试：指标集/指标的 CRUD、check/test/scan 物化、依赖阻断、任务版链路"""
+"""V2.0 死代码 FieldsetController 回归测试（默认全量不收集；如需单独运行：
+.venv/Scripts/python.exe -m pytest V2.0/tests/test_fieldset.py -q）
+
+V3.0 起 fieldset 资产走 GraphService（src/stkoe/graph/service.py），
+本文件保留对 src/stkoe/fieldset/controller.py（死代码）的行为回归存档。
+原始 V2.0 基线测试见 git f290378（V2.0 全量备份）。
+"""
 import polars as pl
 import pytest
 
@@ -8,22 +14,18 @@ from stkoe.fieldset.engine import engine_names, get_engine
 
 
 @pytest.fixture()
-def mgr(tmp_path):
-    from stkoe.task import TaskManager
-
-    m = TaskManager(data_dir=tmp_path / "data")
-    m.start()
-    yield m
-    m.stop()
-
-
-@pytest.fixture()
 def ctl(tmp_path):
     return FieldsetController(data_dir=tmp_path / "data")
 
 
 def _write(root, name, rows):
-    d = root / "tables" / name
+    d = root / "table" / name
+    d.mkdir(parents=True, exist_ok=True)
+    rows.write_parquet(d / "data.parquet")
+
+def _write_idx(root, name, rows):
+    """index 资产写 index/ 目录（独立于 table/）"""
+    d = root / "index" / name
     d.mkdir(parents=True, exist_ok=True)
     rows.write_parquet(d / "data.parquet")
 
@@ -210,51 +212,6 @@ def test_list(ctl, tmp_path):
     assert [m.name for m in _run(ctl.list())] == ["fs1", "fs2"]
 
 
-def test_task_framework_fieldset_handlers(mgr):
-    """任务版：fieldset add→add_field→check→scan 全链路 + 结果落盘"""
-    from stkoe.table import TableController
-
-    from stkoe.dataset import DatasetController
-
-    root = mgr.data_dir
-    _write(root, "idx", pl.DataFrame({
-        "k": ["a", "b"], "x": [1.0, 2.0], "optime": ["2024-01-01 08:00:00"] * 2}))
-    tctl = TableController(data_dir=root)
-    _run(tctl.add("idx", meta={"type": "index"}))
-    dc = DatasetController(data_dir=root)
-    _run(dc.add("ds", "idx", keys=["k"]))
-
-    t_add = mgr.submit("fieldset", "add", ["fs1", "--dataset", "ds"])
-    _await(mgr, t_add)
-    assert _mgr_result(mgr, t_add)["name"] == "fs1"
-
-    t_field = mgr.submit("fieldset", "add", ["fs1", "x2", "--formula", "x*2"])
-    _await(mgr, t_field)
-    t_check = mgr.submit("fieldset", "check", ["fs1", "x2"])
-    _await(mgr, t_check)
-    assert _mgr_result(mgr, t_check)[0]["ok"] is True
-
-    t_scan = mgr.submit("fieldset", "scan", ["fs1"])
-    _await(mgr, t_scan)
-    assert _mgr_result(mgr, t_scan)["materialized"] is True
-
-    t_get = mgr.submit("fieldset", "get", ["fs1"])
-    _await(mgr, t_get)
-    get_res = _mgr_result(mgr, t_get)
-    assert get_res["columns"] == ["k", "x", "x2"]  # 默认含 dataset 列（idx: k/x）
-    assert get_res["result_ref"]
-
-    # --fields-only 仅返回衍生数据（keys + 指标）
-    t_get_fs = mgr.submit("fieldset", "get", ["fs1", "--fields-only"])
-    _await(mgr, t_get_fs)
-    assert _mgr_result(mgr, t_get_fs)["columns"] == ["k", "x2"]
-
-    # 引擎/测试任务
-    t_test = mgr.submit("fieldset", "test", ["fs1", "--formula", "x+1"])
-    _await(mgr, t_test)
-    assert _mgr_result(mgr, t_test)["ok"] is True
-
-
 # ---------- async 助手 ----------
 
 def _run(awaitable):
@@ -293,26 +250,3 @@ def _meta(ctl, name):
 
 def _field_of(fm, name):
     return next(f for f in fm.fields if f.name == name)
-
-
-# ---------- 任务框架助手 ----------
-
-def _await(mgr, task, timeout=5.0):
-    import time
-
-    from stkoe.task.model import TERMINAL_STATES
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        cur = mgr.get(task.task_id)
-        if cur is not None and cur.state in TERMINAL_STATES:
-            return cur
-        time.sleep(0.02)
-    raise TimeoutError(f"task not terminal: {mgr.get(task.task_id).state}")
-
-
-def _mgr_result(mgr, task):
-    import json
-
-    evs = mgr.events.list_by_task(task.task_id)
-    return json.loads(evs[-1].data) if evs and evs[-1].data else None

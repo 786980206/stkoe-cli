@@ -9,7 +9,7 @@
 
 - **source**：`version` / `config` / `table` / `index` / `panel`（原 `dataset`，旧别名仍可用）/ `fieldset` / `sample` / `feature` / `factor` / `test` / `stat` / `task` / `mock` / `graph`
 - **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `scan` / `check` / `test` / `delete`（`del` 别名）/ `show`
-- **单侧动词例外**：`mock`（空 action）仅 SubmitTask 可用（示例任务，见 §4.6）；`mock demo`/`mock gen` 双路径可用（见 §3.1/§4.1）；`task` 仅 Execute 可用（任务元操作，见 §4.5）；`graph` 仅 Execute 可用（血缘图 JSON 查询，见 §3.1/§3.13）
+- **单侧动词例外**：`mock`（空 action）仅 SubmitTask 可用（示例任务，见 §4.6）；`mock demo`/`mock gen` 双路径可用（见 §3.1/§4.1）；`task` 仅 Execute 可用（任务元操作，见 §4.5）；`graph` 仅 Execute + CLI 可用（血缘图 JSON 查询，无任务版，见 §3.1/§3.13）
 - **args**：action 之后的位置参数 + `--key value` flag
 
 同一业务命令有**双路径**，行为对齐：
@@ -339,7 +339,7 @@ V3.0 panel（原 dataset）为**实时 join 视图**，无物化分区策略（�
   - `factor_returns` → `fr_d{no}`（`fw_ls/fw_raw/fw_ind/fw_ind_raw/eq_raw/eq_ind/ls/top_raw/
     bottom_raw/ls_ind/hold/mkt` + `*_cum` 累计序列，按 `date`）
 
-### 3.13 `graph` 血缘图（V3.0 graphqlite 图数据，仅 Execute）
+### 3.13 `graph` 血缘图（V3.0 graphqlite 图数据，Execute + CLI；无任务版）
 
 - **数据来源**：`<data-dir>/catalog.db`（graphqlite 嵌入式图库，资产血缘 DEPENDS 边，
   见 graph-design.md）；库不存在时返回空图（`node_count=0`）
@@ -373,7 +373,7 @@ V3.0 panel（原 dataset）为**实时 join 视图**，无物化分区策略（�
 
 `SubmitTask(source, action, args)` 立即返回 `header + task_id`（`code=0` 成功）。任务在独立事件循环线程执行。
 
-支持的 `source/action` 与 Execute 命令表（§3.1）对齐（version/config/table/index/panel/fieldset/sample/feature/factor/test/stat 全部动作；`mock demo`/`mock gen` 与 Execute 对齐、`mock`（空 action）仅任务版、`task` 仅 Execute，见 §1），结果放在**终态事件的 `data`**（JSON 字符串）。
+支持的 `source/action` 与 Execute 命令表（§3.1）对齐（table/index/panel/fieldset/sample/feature/factor/test/stat/mock 全部动作；`task` 仅 Execute、`graph` 仅 Execute/CLI（无任务版），见 §1），结果放在**终态事件的 `data`**（JSON 字符串）。
 
 ### 4.2 事件流（SubscribeTask）
 
@@ -446,6 +446,9 @@ pending → running → succeeded
 | `stkoe mock demo` | 生成演示源表 index + m1（默认 300 只 × 500 日，写 `table/`，需 `table add` 注册） |
 | `stkoe mock gen <name> --kind <kind>` | 参数化生成单张表（tdcal/common/index/feature/klday/m1） |
 | `stkoe task list [--state <state>]` | 任务列表 |
+| `stkoe graph lineage [--node <type:name>] [--depth N]` | 血缘图（Cytoscape elements JSON，与 `e:graph ...` 一致） |
+| `stkoe graph nodes [--type <t>]` | 节点摘要列表 |
+| `stkoe graph stats` | 节点/边统计 |
 
 CLI 的 `table/index/panel/stat` 表格结果以 ` <table <name>: N 字节 IPC> ` 形式占位打印。
 

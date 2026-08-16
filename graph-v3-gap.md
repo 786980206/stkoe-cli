@@ -117,14 +117,14 @@
 
 ---
 
-## 四、评审遗留（graph-migration-review.md 已归档，未解决项迁移至此）
+## 四、评审遗留（graph-migration-review.md 已归档，4 项已全部解决 ✅）
 
-原「V2 → V3 迁移评审」13 项中 11 项已解决（§1/§3/§4/§5/§6/§7/§11/§12 全部 + §2/§9 部分），
-其余为打磨项：
+原「V2 → V3 迁移评审」13 项全部收敛：§1/§3/§4/§5/§6/§7/§11/§12 及 §2 已随 V3 落地解决；
+§8/§9/§10/§13 于 2026-08 收尾：
 
-| # | 事项 | 现状 |
+| # | 事项 | 解决 |
 |---|---|---|
-| §8 | 错误体系统一：`service._require_node` 对非 table 资产抛 `TableNotFoundError`（语义错位，对外 message 正确；dispatch 层统一转 CommandError） | 打磨项 |
-| §9 | 三路径补齐：`index`/`panel` 无 SubmitTask 任务版（`s:index`/`s:panel` 不可用）；CLI 无 `graph` 子命令（lineage/nodes/stats 仅 Execute，portal 经 gRPC 调用不受影响） | 打磨项 |
-| §10 | 返回字段形态：sample/factor/test 的 meta columns 仍简化（`{name, data_type}`）；scan 返回字段已按 V3 定稿（api.md 为准） | 打磨项 |
-| §13 | 图读取重复：`dispatch._graph_store` 与 GraphService 各自开 catalog.db（只读场景 OK，连接管理分散） | 打磨项 |
+| §8 | 错误体系统一：`service._require_node` 对非 table 资产抛 `TableNotFoundError`（语义错位） | ✅ `_require_node`/`_scan_sync`/`table_add`/`index_add`/`fieldset_check` 全改抛 `AssetNotFoundError`；stat 的 test 目标 catch 同步 |
+| §9 | 三路径补齐：`index`/`panel` 无 SubmitTask 任务版；CLI 无 `graph` 子命令 | ✅ 新增 `index/handlers.py` + `panel/handlers.py`（dataset 改别名注册层，实现一份）；CLI `stkoe graph lineage/nodes/stats` |
+| §10 | 返回字段形态：sample/factor/test 的 meta columns 简化 | ✅ `_sample_view_cols` 全键（panel 列继承 ColumnMeta、fieldset 字段继承 FieldMeta）；sample_meta 改 V2.0 形态；index meta 补 symbol_col 等专属键 |
+| §13 | 图读取重复：`dispatch._graph_store` 与 GraphService 各自开 catalog.db | ✅ `GraphService.open_graph_store` 类方法收口（命名回退/缺省 data_dir 只此一处），dispatch 薄转发 |

@@ -49,7 +49,11 @@ src/stkoe/
 │   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
 │   └── handlers.py    # 任务版 Handler（source="table"，注册进 TaskRegistry）
 ├── dataset/           # 逻辑数据集（旧别名 → panel，走 GraphService）
-│   └── handlers.py    # 任务版 Handler（source="dataset"，注册进 TaskRegistry）
+│   └── handlers.py    # 任务版 Handler（source="dataset" 旧别名，注册 panel 实现）
+├── index/             # 索引资产（symbol/datetime 列，独立物理目录 index/，走 GraphService）
+│   └── handlers.py    # 任务版 Handler（source="index"，注册进 TaskRegistry）
+├── panel/             # 逻辑数据集（index 表 + 成员表 join，走 GraphService）
+│   └── handlers.py    # 任务版 Handler（source="panel"，注册进 TaskRegistry）
 ├── fieldset/          # 衍生指标集（走 GraphService）
 │   ├── spec.py        # FieldMeta dataclass
 │   ├── engine.py      # 公式引擎插件（CalcEngine + register/get；仅 polars）
@@ -222,12 +226,28 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 **下一步**（详见 README「路线图」）：
 1. 列级血缘（列节点图）、图算法（PageRank 等）
-2. 三路径补齐（迁移评审遗留）：index/panel 任务版 handler（`s:index`/`s:panel`）、
-   CLI graph 子命令（graph 目前仅 Execute）
-3. 错误体系统一（`service._require_node` 对非 table 资产抛 `TableNotFoundError` 语义错位）
-4. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
+2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 评审遗留 4 项全部解决（§8/§9/§10/§13）
+
+- **§8 错误体系统一**：`service` 的 `_require_node`/`_scan_sync`/`table_add`/`index_add`/
+  `fieldset_check` 不再抛 `TableNotFoundError`（'panel not registered' 报 Table 错语义错位），
+  全改 `AssetNotFoundError`；stat 的 test 目标未注册 catch 同步；顺带清理死导入 DependencyError
+- **§9 三路径补齐**：新增 `index/handlers.py` 与 `panel/handlers.py` 任务版（s:index/s:panel，
+  get 走 put_result IPC），`dataset/handlers.py` 改为别名注册层（实现只留一份）；
+  CLI 新增 `stkoe graph lineage/nodes/stats` 子命令（复用 Execute 分发）；修
+  `_graph_store` 缺省 data_dir 回退 load_config（CLI 此前恒空图）
+- **§10 返回字段完整化**：`_sample_view_cols` 升级为完整列元数据（panel 列继承 ColumnMeta
+  全键 + fieldset 字段继承 FieldMeta，未知列回退 name+data_type）；`sample_meta` 从
+  AssetMeta 扁平形态改为 V2.0 形态 dict（keys/columns/valid，与 factor/test 对齐）；
+  `_meta_dict` 补 index 专属键（symbol_col/datetime_col/materialize_partition）
+- **§13 图读取收口**：新增 `GraphService.open_graph_store` 类方法（缺省 data_dir +
+  expanduser + catalog.db/graph.db 命名回退 + 不存在返回 None），`dispatch._graph_store`
+  改薄转发——连接管理/命名回退只此一处
+- 测试：+4 用例（§8 错误类型 / s:index / s:panel 任务版 / CLI graph），全量 200 用例绿
+- 文档：api.md（graph 单侧例外/CLI 表格/§3.13 标题 + 任务版说明）、graph-v3-gap.md 评审遗留全 ✅
 
 ### 2026-08 版本 0.7.0（tag v0.7.0）：V3.0 全量落地收尾——文档清理 + 会话存档归档
 
@@ -238,8 +258,8 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
   §7/§11/§12 及部分 §2/§9），未解决项（§8 错误体系统一、§9 index/panel 任务版 + CLI graph、
   §13 图读取重复、§10 返回字段形态）已并入 graph-v3-gap.md「评审遗留」清单跟踪
 - **README 命令示例修正**：`dataset add --keys` → `panel add`（keys 由 index 推断）；
-  `stkoe graph lineage/nodes/stats` → 注明仅 gRPC Execute 通道（CLI 无 graph 子命令，
-  用 gclient.py 的 `e:graph ...`）
+  `stkoe graph lineage/nodes/stats` 当时 CLI 无 graph 子命令（用 gclient 的 `e:graph ...`），
+  已由后续 §9 补上 CLI graph 子命令（见下方变更记录）
 - **pyproject 版本 0.6.0 → 0.7.0**（V3.0 graph 重构 + 冗余清理 + P0/P1/P2/E5 + 优化全部落地）
 - 测试：全量 196 用例绿
 

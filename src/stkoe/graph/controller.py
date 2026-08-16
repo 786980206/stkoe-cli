@@ -86,15 +86,34 @@ class GraphController:
         return AssetMeta.from_dict(props).to_dict()
 
     def _bump(self, props: dict, event: DataChangeEvent) -> dict:
-        """铸新版本（高精度时间戳）+ 事件入 version_list（返回增量属性）。"""
+        """铸新版本（高精度时间戳）+ 事件入 version_list（返回增量属性）。
+
+        顺带按下游消费水位裁剪 version_list：所有下游边 ``required_version`` 之前
+        的事件已被下游消费，可安全删除，防节点属性随版本无限增长。
+        """
         version = new_version()
         version_list = dict(props.get("version_list") or {})
         version_list[str(version)] = event.to_dict()
+        self._prune_version_list(props, version_list)
         return {
             "version": version,
             "version_list": version_list,
             "update_time": _now_iso(),
         }
+
+    def _prune_version_list(self, props: dict, version_list: dict) -> None:
+        """裁剪已消费事件：``version <= min(下游边 required_version)`` 的事件可删。
+
+        下游边 required_version 表示"下游已消费到该节点的哪个版本"；
+        只删已消费部分，``> min_rv`` 的保留（accumulate 仍可取到未消费事件）。
+        """
+        nid = node_id(props.get("type", ""), props.get("name", ""))
+        edges = self._store.dependents(nid)
+        if not edges:
+            return
+        min_rv = min(int(e.get("required_version", 0)) for e in edges)
+        for v in [k for k in version_list if int(k) <= min_rv]:
+            version_list.pop(v)
 
     def _mark_stale(self, node_id: str) -> None:
         """把节点标记为失效（valid=False, materialized=False）。"""
@@ -173,10 +192,13 @@ class GraphController:
         label = TYPE_TO_LABEL[asset_type] if asset_type else None
         return [self._meta(p) for p in self._store.list_nodes(label)]
 
-    def set(self, asset_type: str, name: str, *, definition: bool = False, **kwargs: Any) -> dict:
+    def set(self, asset_type: str, name: str, *, definition: bool = False,
+            self_invalidate: bool = True, **kwargs: Any) -> dict:
         """更新节点属性。
 
-        - 定义键（见 DEFINITION_KEYS）变更 → 下游置脏（valid=False）；
+        - 定义键（见 DEFINITION_KEYS）变更 → 自身失效（valid/materialized=False，
+          ``self_invalidate=False`` 可跳过，如 check 写回 validated 属状态更新）
+          + 下游置脏（valid=False）；
         - 未识别键一律进 extra；每次 set 版本递增并记事件。
         """
         props = self._require(asset_type, name)
@@ -212,8 +234,10 @@ class GraphController:
 
         with self._store.txn():
             self._store.patch_node(nid, **patch)
-            # 定义键变更或显式 definition=True → 下游失效
+            # 定义键变更或显式 definition=True → 自身失效 + 下游失效
             if definition or (data_keys & def_keys):
+                if self_invalidate:
+                    self._mark_stale(nid)
                 self._propagate_stale(nid)
         return self._meta(self._store.get_node(nid))
 

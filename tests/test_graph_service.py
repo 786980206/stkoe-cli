@@ -193,6 +193,25 @@ class TestIndexGraph:
         svc.table_add("m1")
         assert {n["type"] for n in svc.store.list_nodes()} == {"index", "table"}
 
+    def test_index_add_requires_unique_keys(self, tmp_path):
+        """v3.0-def：index 的 (symbol, datetime) 组合必须唯一，重复拒绝登记"""
+        import shutil
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_idx_unique")
+        shutil.rmtree(base, ignore_errors=True)
+        os.makedirs(os.path.join(base, "index", "dup"), exist_ok=True)
+        pl.DataFrame({"sym": ["a", "a"], "date": ["2024-01-01", "2024-01-01"],
+                      "code": [1, 2]}).write_parquet(
+            os.path.join(base, "index", "dup", "data.parquet"))
+        try:
+            s = GraphService(base)
+            with pytest.raises(ValueError, match="不唯一"):
+                s.index_add("dup")
+            assert s.store.get_node("index:dup") is None  # 未登记
+            s.close()
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
     def test_index_crud(self, svc):
         svc.index_add("index")
         m = svc.index_meta("index")
@@ -267,6 +286,7 @@ class TestPanelGraph:
             s.table_add("mem")
             s.index_add("idx", symbol_col="sym", datetime_col="date")
             s.panel_add("ds1", "idx", ["mem:asof"])
+            s.panel_update("ds1")  # get 三态：未物化报错，先物化
             df, total = s.panel_get("ds1", count_total=True)
             assert total == 2
             assert df["x"].to_list() == [10.0, 10.0]  # 01/03 backward → 01/02 的 x
@@ -279,6 +299,7 @@ class TestPanelGraph:
         svc.table_add("m2")
         svc.index_add("index")
         svc.panel_add("ds1", "index", ["m1", "m2"])
+        svc.panel_update("ds1")  # get 三态：先物化
         df, total = svc.panel_get("ds1", count_total=True)
         assert df.height == 2 and total == 2
         assert df.columns == ["sym", "date", "code", "price", "vol"]
@@ -286,6 +307,31 @@ class TestPanelGraph:
         src = {c["name"]: c["source_table"] for c in m["columns"]}
         assert src == {"sym": "index", "date": "index", "code": "index",
                        "price": "m1", "vol": "m2"}
+
+    def test_panel_update_incremental_by_scope(self, svc, monkeypatch):
+        """P2-3：源头新增日期 → panel update 增量（_panel_lazy 带 dt 区间过滤）"""
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.panel_update("ds1")  # 首次全量（2 行）
+        assert svc.panel_get("ds1").height == 2
+
+        calls: list = []
+        orig = GraphService._panel_lazy
+
+        def spy(self, name, **kw):
+            calls.append(kw.get("where"))
+            return orig(self, name, **kw)
+
+        monkeypatch.setattr(GraphService, "_panel_lazy", spy)
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        svc.panel_update("ds1")
+        assert any(c is not None for c in calls[-2:]), "增量应带 dt 区间过滤"
+        df = svc.panel_get("ds1")
+        assert df.height == 3
+        assert sorted(df["date"].to_list()) == ["2024-01-01", "2024-01-01", "2024-01-02"]
 
     def test_panel_delete(self, svc):
         svc.table_add("m1")
@@ -394,6 +440,46 @@ class TestFieldsetSampleGraph:
         node = svc.store.get_node("sample:sp1")
         assert str(v1) in node["version_list"]
 
+    def test_fieldset_add_field_invalidates_self(self, svc):
+        """P2-4：fieldset 加字段（定义变化）→ 自身物化失效；check 写回 validated 不额外置脏"""
+        self._chain(svc)
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")
+        assert svc.fieldset_meta("fs1")["materialized"] is True
+        svc.fieldset_add_field("fs1", "x3", "code * 3")
+        m = svc.fieldset_meta("fs1")
+        assert m["materialized"] is False  # 定义变化 → 自身物化失效
+        assert m["valid"] is False
+        # check 写回 validated（状态更新）→ 不额外置脏也不恢复 valid（等 update）
+        svc.fieldset_check("fs1", "x3")
+        m2 = svc.fieldset_meta("fs1")
+        assert m2["materialized"] is False
+        assert m2["valid"] is False
+        # update 恢复物化
+        svc.fieldset_update("fs1")
+        m3 = svc.fieldset_meta("fs1")
+        assert m3["materialized"] is True and m3["curated"] is True
+        df, _ = svc.fieldset_get("fs1", fields_only=True, count_total=True)
+        assert "x3" in df.columns
+
+    def test_fieldset_update_incremental_by_scope(self, svc):
+        """P2-3：源头新增日期 → fieldset update 增量（只重算区间字段，旧行保留）"""
+        self._chain(svc)
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")  # 首次全量（2 行）
+        df0, _ = svc.fieldset_get("fs1", fields_only=True, count_total=True)
+        assert df0.height == 2
+
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")
+        df, total = svc.fieldset_get("fs1", fields_only=True, count_total=True)
+        assert df.height == 3 and total == 3
+        assert sorted(df["date"].to_list()) == ["2024-01-01", "2024-01-01", "2024-01-02"]
+        assert sorted(df["x2"].to_list()) == [2.0, 4.0, 6.0]
+
 
 class TestIndexGraph:
     def test_index_list_candidate(self, svc):
@@ -462,15 +548,15 @@ class TestFactorGraph:
 
         r = svc.factor_check("fac1")
         assert r["ok"] is True
-        df, total = svc.factor_get("fac1", count_total=True)
-        assert df.height == 2 and total == 2
-        assert df.columns == ["sym", "date", "f1"]
 
         # 上游未就绪（链上有 valid=False）→ factor update 被传导拦截
         import pytest
 
         with pytest.raises(Exception):
             svc.factor_update("fac1")
+        # get 三态：未物化 → 报错提示先 update
+        with pytest.raises(ValueError, match="未物化"):
+            svc.factor_get("fac1")
 
         # 依次传导 update：panel → fieldset → sample → feature → factor(scan 别名)
         svc.panel_update("ds1")
@@ -479,11 +565,15 @@ class TestFactorGraph:
         svc.feature_update("f1")
         s1 = svc.factor_scan("fac1")
         assert s1["changed"] is True
-        assert s1["version_after"] > s1["version_before"]
+        assert s1["version_after"] >= s1["version_before"]  # 无事件首物化不空 bump
         s2 = svc.factor_scan("fac1")  # 幂等
         assert s2["changed"] is False
         assert svc.factor_meta("fac1")["curated"] is True
         assert (svc.data_dir / "factor" / "fac1" / "data.parquet").exists()
+        # 物化后 get 读物化
+        df, total = svc.factor_get("fac1", count_total=True)
+        assert df.height == 2 and total == 2
+        assert df.columns == ["sym", "date", "f1"]
 
     def test_factor_add_requires_registered(self, svc):
         self._chain(svc)
@@ -534,9 +624,9 @@ class TestFactorGraph:
         assert df.height == 3
         assert sorted(df["date"].to_list()) == ["2024-01-01", "2024-01-01", "2024-01-02"]
         assert sorted(df["f1"].to_list()) == [2.0, 4.0, 6.0]
-        # consumed 水位已记录（供下次增量判定）
-        node = svc.store.get_node("factor:fac1")
-        assert (node.get("extra") or {}).get("consumed_versions")
+        # 边水位已对齐（供下次沿链增量判定）
+        deps = svc.store.deps_of("factor:fac1")
+        assert all(e.get("required_version", 0) > 0 for e in deps)
 
     def test_factor_update_resync_full(self, svc, monkeypatch):
         """P0-2：--resync 强制全量（compute 不带 dt_range）"""
@@ -593,13 +683,11 @@ class TestTesterGraph:
         assert tm["sample"] == "sp1"
         assert tm["keys"] == ["sym", "date"]
 
-        df, total = svc.test_get("t1", count_total=True)
-        assert df.height == 2 and total == 2
-        assert "factor_quantile" in df.columns
-        assert "d1" in df.columns
-
         r = svc.test_check("t1")
         assert r["ok"] is True
+        # get 三态：未物化 → 报错提示先 update
+        with pytest.raises(ValueError, match="未物化"):
+            svc.test_get("t1")
 
         s1 = svc.test_scan("t1")
         assert s1["changed"] is True
@@ -609,6 +697,11 @@ class TestTesterGraph:
         assert svc.test_meta("t1")["curated"] is True
         assert (svc.data_dir / "factor_test" / "t1" / "data.parquet").exists()
 
+        # 物化后 get/data 读物化
+        df, total = svc.test_get("t1", count_total=True)
+        assert df.height == 2 and total == 2
+        assert "factor_quantile" in df.columns
+        assert "d1" in df.columns
         d = svc.test_data("t1")
         assert d.height == 2
 

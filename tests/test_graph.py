@@ -389,6 +389,21 @@ class TestEventFlow:
         assert len(m["version_list"]) == before + 1  # 一次重算只 bump 一次
         assert sorted(m["version_list"][str(m["version"])]["symbol_scope"]) == ["a", "b"]
 
+    def test_version_list_pruned_by_consumed(self, lineage):
+        """version_list 裁剪：被下游消费（边 required_version 对齐）的事件被清理。"""
+        for _ in range(3):
+            IndexHandler.notify_change(lineage, "index",
+                                       event=DataChangeEvent(action="upsert"))
+        assert len(lineage.store.get_node("index:index")["version_list"]) == 3
+        # ds1 消费：出边 required_version 对齐 index 当前版本
+        PanelHandler.update(lineage, "ds1")
+        for _ in range(3):
+            IndexHandler.notify_change(lineage, "index",
+                                       event=DataChangeEvent(action="upsert"))
+        vl = lineage.store.get_node("index:index")["version_list"]
+        # 前 3 条已被消费（<= min_rv）→ 裁剪，只剩后 3 条
+        assert len(vl) == 3, f"version_list 应被裁剪: {vl}"
+
     def test_cycle_detected(self, ctrl):
         # 直接用 store 造环：a→b→a，且两者均失效
         st = ctrl.store

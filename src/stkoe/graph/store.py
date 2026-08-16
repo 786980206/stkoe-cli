@@ -351,34 +351,33 @@ class GraphStore:
     # ---------- 血缘遍历 ----------
 
     def _walk(self, start: str, outgoing: bool, depth: int | None) -> list[dict]:
-        """BFS 血缘遍历（带环保护）。
+        """血缘遍历：**逐层批量 Cypher**（每层一次 ``MATCH ... WHERE a.id IN $ids``）。
 
-        outgoing=True → 上游（依赖链）：沿出边；outgoing=False → 下游（影响链）：沿入边。
-        返回 [{id, type, name, depth, required_version}]，按深度升序。
+        - 比变长路径 ``length(p)`` 可靠（graphqlite 对多跳路径的 length 返回 1）；
+        - 比逐节点查询高效（一次查询一层，批量 IN 拿下一层 + 边属性）；
+        - 返回 [{id, type, name, depth, required_version}]，按深度升序（BFS 序）。
         """
         seen: set[str] = set()
         out: list[dict] = []
-        level: list[tuple[str, int]] = [(start, 0)]
+        level = [start]
+        d = 0
         max_depth = depth if depth is not None else 1 << 30
-        while level:
-            nxt = []
-            for nid, dist in level:
-                edges = self.deps_of(nid) if outgoing else self.dependents(nid)
-                for e in edges:
-                    other = e["target"] if outgoing else e["source"]
-                    if other in seen:
-                        continue
-                    seen.add(other)
-                    t, name = split_node_id(other)
-                    out.append({
-                        "id": other,
-                        "type": t,
-                        "name": name,
-                        "depth": dist + 1,
-                        "required_version": e.get("required_version", 0),
-                    })
-                    if dist + 1 < max_depth:
-                        nxt.append((other, dist + 1))
+        while level and d < max_depth:
+            d += 1
+            rel = "-[r:DEPENDS]->" if outgoing else "<-[r:DEPENDS]-"
+            q = (f"MATCH (a){rel}(n) WHERE a.id IN $ids "
+                 f"RETURN DISTINCT n.id AS id, r.required_version AS rv")
+            rows = self._cypher(q, {"ids": level})
+            nxt: list[str] = []
+            for row in rows:
+                nid = row.get("id")
+                if nid is None or nid in seen:
+                    continue
+                seen.add(nid)
+                t, name = split_node_id(nid)
+                out.append({"id": nid, "type": t, "name": name, "depth": d,
+                            "required_version": int(row.get("rv") or 0)})
+                nxt.append(nid)
             level = nxt
         return out
 

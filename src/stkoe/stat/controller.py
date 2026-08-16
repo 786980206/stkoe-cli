@@ -1,10 +1,10 @@
-"""STAT 模块：dataset / table 目标的统计资产（StatController，async 接口）
+"""STAT 模块：panel / table 目标的统计资产（StatController，async 接口）
 
 定位：
 - 统计是独立资产：与数据解耦（目标只管数据，统计归统计），产物写 ``stats/`` 目录
-- 目标：table 或 dataset；产物目录 ``stats/<target_type>/<target_name>/<kind>/``
+- 目标：table 或 panel；产物目录 ``stats/<target_type>/<target_name>/<kind>/``
 - 分组文件：``all.parquet``（全量统计）+ 按目标索引分组逐分区文件
-  （dataset 索引 = 主键 keys；table = 非工具列），命名 ``<partition>.parquet``
+  （panel 索引 = 主键 keys；table = 非工具列），命名 ``<partition>.parquet``
 - ``stat scan`` 生成/更新分组产物（幂等，重算覆盖）；``stat get`` 读文件
 """
 from __future__ import annotations
@@ -66,13 +66,13 @@ class StatController:
         return GraphService(data_dir=self.data_dir)
 
     def _index_cols(self, target_type: str, target_name: str) -> list[str]:
-        """目标索引列：panel（原 dataset）用主键 keys；table 用非工具列（走 graph）"""
+        """目标索引列：panel 用主键 keys；table 用非工具列（走 graph）"""
         svc = self._graph_service()
         try:
             if target_type == "table":
                 cols = svc.table_meta(target_name)["columns"]
                 return [c["name"] for c in cols if c["name"] not in self.ignore_cols]
-            if target_type in ("dataset", "panel"):
+            if target_type == "panel":
                 return list(svc.panel_meta(target_name)["keys"])
         finally:
             svc.close()
@@ -87,7 +87,7 @@ class StatController:
         try:
             if target_type == "table":
                 return svc.table_lazy(target_name, exclude_tool=True)
-            if target_type in ("dataset", "panel"):
+            if target_type == "panel":
                 return svc.panel_lazy(target_name)
         finally:
             svc.close()
@@ -180,7 +180,7 @@ class StatController:
                 root = svc.data_dir / "table" / target_name
             finally:
                 svc.close()
-        elif target_type in ("dataset", "panel"):
+        elif target_type == "panel":
             raise StatTargetError("storage 统计不支持 panel（无物化目录）")
         else:
             raise StatTargetError(f"unsupported stat target: {target_type}")

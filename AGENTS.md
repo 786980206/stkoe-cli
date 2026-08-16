@@ -48,8 +48,6 @@ src/stkoe/
 │   ├── util.py        # parquet 指纹/布局识别/footer/差异/signature
 │   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
 │   └── handlers.py    # 任务版 Handler（source="table"，注册进 TaskRegistry）
-├── dataset/           # 逻辑数据集（旧别名 → panel，走 GraphService）
-│   └── handlers.py    # 任务版 Handler（source="dataset" 旧别名，注册 panel 实现）
 ├── index/             # 索引资产（symbol/datetime 列，独立物理目录 index/，走 GraphService）
 │   └── handlers.py    # 任务版 Handler（source="index"，注册进 TaskRegistry）
 ├── panel/             # 逻辑数据集（index 表 + 成员表 join，走 GraphService）
@@ -111,7 +109,8 @@ src/stkoe/
 
 ### GraphService 设计约束（V3.0 全局）
 
-1. **scan → update 语义**：上游传导就绪检查（`assert_ready` BFS 全链 valid）；源头不齐失败
+1. **update 语义**（源头 update=重扫对账；scan 旧名已清理）：上游传导就绪检查
+   （`assert_ready` BFS 全链 valid）；源头不齐失败
 2. **下游物化按 index 的 `materialize_partition` 时间桶分区**：panel/fieldset/factor/test
    统一继承其 index 的物化粒度（yearly/monthly/daily，默认 yearly）分桶落盘
    （`part=<YYYY>[/<YYYY-MM>[/<YYYY-MM-DD>]]/data.parquet`，文件内保留 part 列；
@@ -183,7 +182,7 @@ src/stkoe/
 业务统一走 GraphService。仍有效的物理约定由 `graph/service.py` 承担：
 
 1. **绝不写/删用户 parquet**：`table_delete` 只删 graph 节点/指纹登记，数据目录保留（可重新 add）
-2. `table_add` 是"发现资产"语义：目录不存在报错、已注册报 `TableExistsError`（更新用 scan/update）
+2. `table_add` 是"发现资产"语义：目录不存在报错、已注册报 `TableExistsError`（更新用 update）
 3. 读前快检签名：stat 签名一致则继续，不一致自动重扫对账；未注册目录隐式注册
 4. `signature()` = sha256(排序后的 `rel_path|size|mtime_ns`)，相对表根
 
@@ -220,7 +219,7 @@ src/stkoe/
 
 ## 当前状态与下一步
 
-**当前**：V3.0 图重构完成——table/index/panel（原 dataset）/fieldset/sample/feature/factor/test
+**当前**：V3.0 图重构完成——table/index/panel/fieldset/sample/feature/factor/test
 全部基于 graph 实现（`graph/service.py` 的 GraphService），Execute 与 SubmitTask 三路径统一；
 旧 catalog.db 废弃（登记/依赖/版本进 graph 节点/边，物理指纹表迁入 catalog.db 普通表；
 tasks.db 独立保留）；`graph lineage/nodes/stats` 已接入 gRPC Execute 通道，
@@ -231,6 +230,28 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 refactor: 清理过时概念——dataset 旧别名 + scan 旧名别名彻底移除
+
+- **dataset 兼容层删除**：`src/stkoe/dataset/`（__init__ + handlers 别名注册层）整体删除；
+  dispatch 的 `@handler("dataset", ...)` 双注册（7 个动词）、`task/manager.py` 的
+  dataset 注册、CLI `stkoe dataset` 子命令全部移除——命令层只留 `panel`
+- **fieldset 参数/存储改名**：`fieldset add --dataset <panel>` → `--panel <panel>`；
+  fieldset 节点属性与定义键 `dataset` → `panel`（`DEFINITION_KEYS["fieldset"] =
+  {panel, fields}`，边 role=dataset → panel），FieldsetMeta 输出键同步
+- **stat 目标收敛**：stat 的 `dataset` 目标类型移除（`target_type == "panel"` 只留 panel；
+  api.md stat 目标 `<table|panel|test>`）；错误消息示例 dataset → panel
+- **scan 旧名别名删除**：service 层 `table_scan/index_scan/fieldset_scan/factor_scan/
+  test_scan` 5 个别名方法、dispatch 5 个 `@handler(..., "scan")` 双注册、任务版 5 个
+  `XScanHandler`（改 XUpdateHandler）全部删除——资产只保留 `update` 动词；
+  **stat scan 保留**（stat 自身动词，非别名）；`_scan_disk/_scan_materialized` 等
+  内部方法与 CalcEngine.scan 保留
+- 测试：test_dataset.py 删除（dataset 用例移除、panel 用例迁入新建 test_panel.py）；
+  scan→update 调用全面替换（test_grpc/table/fieldset/factor/factor_test/graph_service）；
+  全量 201 用例绿
+- 文档：api.md（source/action 列表、§3.1 各资产 update 行、stat 目标、FieldsetMeta、
+  §9/CLI/gclient 速查）、example.md、README（模块表/命令/目录结构/用例数）、
+  graph-design.md（节点表/路线图勾选）、AGENTS.md（目录结构/设计约束 #1/当前状态）
 
 ### 2026-08 feat(sample): 样本池改为 fieldset 视图 ∩ 指定 index 键集合（去除公式过滤）
 

@@ -37,7 +37,7 @@ DEFINITION_KEYS: dict[str, frozenset[str]] = {
     "table": frozenset({"type", "columns"}),
     "index": frozenset({"type", "columns", "symbol_col", "datetime_col", "materialize_partition"}),
     "panel": frozenset({"index", "tables", "keys"}),
-    "fieldset": frozenset({"dataset", "fields"}),
+    "fieldset": frozenset({"panel", "fields"}),
     "sample": frozenset({"fieldset", "index"}),
     "feature": frozenset({"engine", "formula"}),
     "factor": frozenset({"feature", "sample", "engine", "pipeline", "factor_col"}),

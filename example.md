@@ -7,7 +7,7 @@
 
 ## 本版语义速览（v0.7.1 物化分区）
 
-- **update 主推**：`update` 为 V3 语义名（`scan` 是旧名别名），源头 update=重扫对账，
+- **update 主推**：`update` 为 V3 语义名，源头 update=重扫对账，
   物化资产 update=校验+落盘；上游就绪检查（全链 valid）不通过会报错提示先 update 上游
 - **物化按 index 的 `materialize_partition` 时间桶分区**：panel/fieldset/factor/test 统一
   继承其 index 的物化粒度（`yearly` 默认 / `monthly` / `daily`），落盘
@@ -91,7 +91,7 @@ uv run -m stkoe stat meta panel ds1                         # 已扫描分区列
 ## 4. 衍生指标集（fieldset：公式引擎 + 校验 + 物化）
 
 ```bash
-uv run -m stkoe fieldset add fs1 --dataset ds1              # 指标集挂到 panel ds1
+uv run -m stkoe fieldset add fs1 --panel ds1              # 指标集挂到 panel ds1
 uv run -m stkoe fieldset add fs1 x2 --formula "x * 2.0"     # 加指标 x2 = 2*x（validated=False）
 uv run -m stkoe fieldset check fs1 x2                       # 校验（行数 == 源行数 → validated=True）
 uv run -m stkoe fieldset update fs1                         # 物化 → fieldset/fs1/part=2024/ + 2025/（keys + x2）
@@ -196,7 +196,7 @@ uv run python gclient.py
 stkoe> s:mock                        # 任务版示例：5 步进度 + 日志 + 落盘结果
 stkoe> s:mock demo                   # 任务版 mock 造数（写 index/index + table/m1）
 stkoe> s:mock gen mytable --kind klday --n-syms 20   # 任务版参数化生成
-stkoe> s:test update t1              # 后台物化测试数据集（订阅到终态；scan 为旧名别名）
+stkoe> s:test update t1              # 后台物化测试数据集（订阅到终态）
 stkoe> s:stat scan t1 --kind ic      # 后台跑 IC 测试器（单位置简写同样可用）
 stkoe> t:<task_id>                   # 回放订阅某任务事件流
 ```

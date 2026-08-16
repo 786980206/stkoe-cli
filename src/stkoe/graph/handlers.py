@@ -131,7 +131,7 @@ class IndexHandler:
 
 
 # =====================================================================
-# Panel（逻辑面板，≈ V2.0 dataset）
+# Panel（逻辑面板，index + 成员表 join）
 # =====================================================================
 
 class PanelHandler:
@@ -210,7 +210,7 @@ class FieldsetHandler:
     """基于 Panel 的衍生指标集：fields 为命名公式。"""
 
     @classmethod
-    def add(cls, ctrl: GraphController, name: str, dataset: str, *,
+    def add(cls, ctrl: GraphController, name: str, panel: str, *,
             engine: str = "polars", display_name: str | None = None,
             description: str = "", tags: list | tuple | None = None,
             source: str = "local", **kw: Any) -> dict:
@@ -218,8 +218,8 @@ class FieldsetHandler:
         return ctrl.add(
             "fieldset", name, display_name=display_name, description=description,
             tags=tags, source=source,
-            deps=[("panel", dataset, {"role": "dataset"})],
-            dataset=node_id("panel", dataset),
+            deps=[("panel", panel, {"role": "panel"})],
+            panel=node_id("panel", panel),
             engine=engine, fields={}, **kw,
         )
 

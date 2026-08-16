@@ -16,9 +16,9 @@ stkoe 数据服务（gRPC）：管理**表 / 数据集 / 衍生指标 / 样本�
 |---|---|
 | `table` | 注册/读取/删除本地 parquet 表、列元数据、`list --candidate`（登记/版本/依赖走 graph） |
 | `index` | 独立索引资产主体（symbol/datetime 列），table 恒 type="table" |
-| `panel` | 逻辑数据集（原 dataset，index 表 + 成员表 + keys），实时 join 视图；dataset 旧别名转发 |
+| `panel` | 逻辑数据集（index 表 + 成员表 + keys），实时 join 视图 + update 物化 |
 | `fieldset` | 衍生指标集（公式引擎 polars 插件制），check 校验写回 validated |
-| `sample` | 样本池（fieldset 视图过滤产物，无物化，实时构造） |
+| `sample` | 样本池（fieldset 视图 ∩ 指定 index 键集合，无物化，实时构造） |
 | `feature` | 因子定义库（命名公式，纯定义），`feature test` 在样本视图即时求值 |
 | `factor` | 最终因子（feature 公式 + sample 视图 + pipeline 算子链），可物化、幂等 |
 | `test` | 因子测试数据集（factor_test）+ 六类测试器（stat 集成） |
@@ -48,7 +48,7 @@ stkoe 数据服务（gRPC）：管理**表 / 数据集 / 衍生指标 / 样本�
 ## 接下来要做什么（路线图）
 
 已完成（见 AGENTS.md 变更记录）：
-- ✅ **panel 物化**（scan 落盘）+ index 唯一性校验等物理细节（P1/P2）
+- ✅ **panel 物化**（update 落盘，时间桶分区）+ index 唯一性校验等物理细节（P1/P2）
 - ✅ **V2.0 清理**：V2.0 controller 死代码删除（业务只剩 GraphService 一份）、
   任务版 handler 全面切 graph
 - ✅ **版本/事件沉淀**：version_list 过期裁剪（按 consumed 水位）、事件合并
@@ -93,13 +93,13 @@ uv run stkoe config show | set --<key> <value> ...
 ```bash
 uv run stkoe table list | meta demo | add demo | set demo --display_name 演示表 | col demo sym --unit 元
 uv run stkoe panel add ds1 index m1 | panel update ds1 | panel get ds1 | panel meta ds1
-uv run stkoe fieldset add fs1 --dataset ds1 | fieldset add fs1 ma5 --formula "price.rolling_mean(5)"
-uv run stkoe sample add sp1 --dataset ds1 --formula "(date>='2026-01-01')"
+uv run stkoe fieldset add fs1 --panel ds1 | fieldset add fs1 ma5 --formula "price.rolling_mean(5)"
+uv run stkoe sample add sp1 fs1 idx2
 uv run stkoe feature add ma5 --formula "price.rolling_mean(5)"
 uv run stkoe factor add fac1 --feature ma5 --sample sp1 --pipeline "nothing()"
 uv run stkoe test add t1 --factor fac1 --returns r --groupby ic --marketcap fv
-uv run stkoe stat scan table demo | stat scan dataset ds1 | stat scan t1 --kind ic
-uv run stkoe mock demo                          # 生成演示 parquet（需 table add 注册）
+uv run stkoe stat scan table demo | stat scan panel ds1 | stat scan t1 --kind ic
+uv run stkoe mock demo                          # 生成演示 parquet（需 index add/table add 注册）
 uv run stkoe task list                          # 后台任务列表
 
 # V3.0 血缘图（JSON 返回，供 portal 血缘模块 / 脚本使用）
@@ -125,7 +125,7 @@ SubmitTask / SubscribeTask / TaskControl / Health。`(source, action)` 全量命
 ## 测试
 
 ```bash
-uv run pytest -q        # 默认全量 173 用例（graph 模块 48 例 + gRPC/资产任务版链路），约 40s
+uv run pytest -q        # 默认全量 201 用例（graph 模块 + gRPC/资产任务版链路），约 40s
 ```
 
 - V2.0 死代码 controller 直测（113 例）已归档到 `V2.0/tests/`（默认不收集）；
@@ -138,7 +138,7 @@ uv run pytest -q        # 默认全量 173 用例（graph 模块 48 例 + gRPC/�
 src/stkoe/
 ├── cli.py / args.py / jsonutil.py / logutil.py / settings.py
 ├── grpc/               # stkoe.proto + 编译产物 + dispatch.py（Execute 分发）+ server.py
-├── table/ dataset/ fieldset/ sample/ feature/ factor/ factor_test/ stat/ mock/
+├── table/ index/ panel/ fieldset/ sample/ feature/ factor/ factor_test/ stat/ mock/
 ├── graph/              # V3.0 资产血缘图（graphqlite）
 │   ├── model.py        # DataChangeEvent / AssetMeta / DependencyEdge / 列元数据
 │   ├── store.py        # GraphStore：节点/边 CRUD + BFS 血缘遍历 + txn 事务

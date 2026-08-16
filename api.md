@@ -7,8 +7,8 @@
 
 所有业务命令统一为 `<source> <action> <args...>` 位置参数形态，等价于 `stkoe <source> <action> <args...>`。
 
-- **source**：`version` / `config` / `table` / `index` / `panel`（原 `dataset`，旧别名仍可用）/ `fieldset` / `sample` / `feature` / `factor` / `test` / `stat` / `task` / `mock` / `graph`
-- **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `scan` / `check` / `test` / `delete`（`del` 别名）/ `show`
+- **source**：`version` / `config` / `table` / `index` / `panel` / `fieldset` / `sample` / `feature` / `factor` / `test` / `stat` / `task` / `mock` / `graph`
+- **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `update` / `check` / `test` / `delete`（`del` 别名）/ `show`
 - **单侧动词例外**：`mock`（空 action）仅 SubmitTask 可用（示例任务，见 §4.6）；`mock demo`/`mock gen` 双路径可用（见 §3.1/§4.1）；`task` 仅 Execute 可用（任务元操作，见 §4.5）；`graph` 仅 Execute + CLI 可用（血缘图 JSON 查询，无任务版，见 §3.1/§3.13）
 - **args**：action 之后的位置参数 + `--key value` flag
 
@@ -84,7 +84,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | mock | `gen` | `<name>` | `--kind <kind>`（默认 index；`tdcal/common/index/feature/klday/m1`） `--n-syms N` `--n-days N` `--start S` `--end E` `--seed N` `--col C` | JsonData（单表写入清单） |
 | table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键（`--type` 为旧概念，进 extra；类型由 label 承载，table 恒 "table"） | JsonData（TableScanReport） |
 | table | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
-| table | `scan`/`update` | `<name>` | `--all` | JsonData（TableScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名） |
+| table | `update` | `<name>` | `--all` | JsonData（TableScanReport 或 []；显式重扫对账，幂等） |
 | table | `list` | — | `--candidate` | JsonData（TableMeta[] 或 候选名[]） |
 | table | `meta` | `<name>` | — | JsonData（TableMeta） |
 | table | `set` | `<name>` | `--display_name/--description/--source/--tags <v>` + 任意键（`--type` 进 extra） | JsonData（TableMeta） |
@@ -96,7 +96,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | index | `list` | — | `--candidate`（返回未登记 index 但含 parquet 的表目录候选） | JsonData（IndexMeta[] 或 候选名[]） |
 | index | `set` | `<name>` | `--display_name/--description/--source/--tags <v>` + 任意键 | JsonData（IndexMeta） |
 | index | `col` | `<name> <column>` | `--display_name/--description/--unit/--formula/--tags <v>` | JsonData（IndexMeta） |
-| index | `scan`/`update` | `<name>` | `--all` | JsonData（TableScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名） |
+| index | `update` | `<name>` | `--all` | JsonData（TableScanReport 或 []；显式重扫对账，幂等） |
 | index | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | panel | `add` | `<name> <index> [member[:join]...]` | + 元数据键（index 为已注册 index 资产；member 为已注册 table，可带 `:asof`/`:left` 指定 join 方式，**缺省 asof**；**keys 由 index 推断** = symbol_col + datetime_col，不再接受 `--keys`） | JsonData（PanelMeta） |
 | panel | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--limit N` `--offset N` | **ArrowTable**（无 JsonData；实时 join 视图） |
@@ -105,13 +105,12 @@ HealthRequest {}                                   HealthResponse { status, vers
 | panel | `set` | `<name>` | `--display_name/--description/--tags <v>` + 任意键 | JsonData（PanelMeta） |
 | panel | `update` | `<name>` | — | JsonData（PanelMeta；传导检查上游 index/成员表就绪后**物化 join 视图**——按 index 的 `materialize_partition` 时间桶分区落盘 `panel/<name>/part=<v>/`，见 §3.5；增量按积累区间只重算受影响时间桶） |
 | panel | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| dataset | `add` 等 | — | **旧别名**：转发到 panel 同一实现（返回 name 用 "panel"），保持兼容 | JsonData（PanelMeta） |
-| stat | `scan` | `<table\|dataset\|test> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic`）；`<name>` 单位置 + `--kind <测试器>` 简写 → test 目标 | JsonData（StatScanReport） |
-| stat | `get` | `<table\|dataset\|test> <name>` | `--partition_by <p>` `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData + ArrowTable（§3.6） |
-| stat | `meta` | `<table\|dataset\|test> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData（StatMeta） |
+| stat | `scan` | `<table\|panel\|test> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic`）；`<name>` 单位置 + `--kind <测试器>` 简写 → test 目标 | JsonData（StatScanReport） |
+| stat | `get` | `<table\|panel\|test> <name>` | `--partition_by <p>` `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData + ArrowTable（§3.6） |
+| stat | `meta` | `<table\|panel\|test> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData（StatMeta） |
 | stat | `list` | — | — | JsonData（StatMeta[]） |
-| stat | `delete`/`del` | `<table\|dataset\|test> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData `{"deleted"}` |
-| fieldset | `add` | `<name>` | `--dataset <panel 名>`（必选，已注册 panel） `--engine <e>`（默认 polars） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
+| stat | `delete`/`del` | `<table\|panel\|test> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData `{"deleted"}` |
+| fieldset | `add` | `<name>` | `--panel <panel 名>`（必选，已注册 panel） `--engine <e>`（默认 polars） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
 | fieldset | `add` | `<name> <field>` | `--formula <表达式>`（必选） `--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta，指标 validated=False） |
 | fieldset | `set` | `<name>` | `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
 | fieldset | `set` | `<name> <field>` | `--formula/--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta；改公式 → validated 复位 False） |
@@ -121,7 +120,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | fieldset | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | fieldset | `delete`/`del` | `<name> <field>` | — | JsonData（FieldsetMeta） |
 | fieldset | `list` | — | — | JsonData（FieldsetMeta[]） |
-| fieldset | `scan`/`update` | `<name>` | `--all` `--resync` | JsonData（FieldsetScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名；传导检查上游 panel 就绪） |
+| fieldset | `update` | `<name>` | `--all` `--resync` | JsonData（FieldsetScanReport 或 []；显式物化，幂等；传导检查上游 panel 就绪） |
 | fieldset | `check` | `<name> <field>` | `--all` | JsonData（FieldsetCheckResult[]） |
 | fieldset | `test` | `<name>` | `--formula <表达式>`（必选） | JsonData `{"ok",...}` + ArrowTable（成功时） |
 | sample | `add` | `<name> <fieldset> <index>` | `--display_name/--description/--tags/--source <v>` + 任意键（fieldset 为已注册 fieldset；index 为**样本筛选参照**——样本池 = fieldset 视图 ∩ 该 index 的 (symbol, datetime) 键集合，不再支持公式过滤） | JsonData（SampleMeta） |
@@ -145,7 +144,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | factor | `meta` | `<name>` | — | JsonData（FactorMeta） |
 | factor | `list` | — | — | JsonData（FactorMeta[]） |
 | factor | `check` | `<name>` | — | JsonData（FactorCheckResult） |
-| factor | `scan`/`update` | `<name>` | `--all` `--resync` | JsonData（FactorScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名；传导检查上游 sample/feature 全链就绪，未就绪拒绝更新） |
+| factor | `update` | `<name>` | `--all` `--resync` | JsonData（FactorScanReport 或 []；显式物化，幂等；传导检查上游 sample/feature 全链就绪，未就绪拒绝更新） |
 | factor | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | test | `add` | `<name>` | `--factor <f>`（必选，已注册因子） `--returns <col>`（默认 `r`） `--groupby <col>`（默认 `ic`） `--marketcap <col>`（默认 `fv`） `--factor_col <col>`（默认 = factor 的 factor_col） `--by_group` `--quantiles N`（默认 5） `--periods p1,p2,..`（默认 `1,5,10`） `--date_range start,end`（默认 `2023-01-01,2026-01-01`） `--rolling_window N`（默认 252） + 元数据键 | JsonData（FactorTestMeta）；sample 缺 date/sym/returns/groupby/marketcap 列 → 报错 |
 | test | `get` | `<name>` | `--where <谓词>` `--limit N` `--offset N` | **ArrowTable**（测试数据集：date/sym/sample/returns/group/marketcap/factor/d{no}/factor_quantile） |
@@ -153,24 +152,24 @@ HealthRequest {}                                   HealthResponse { status, vers
 | test | `meta` | `<name>` | — | JsonData（FactorTestMeta） |
 | test | `list` | — | — | JsonData（FactorTestMeta[]） |
 | test | `check` | `<name>` | — | JsonData（FactorTestCheckResult） |
-| test | `scan`/`update` | `<name>` | `--all` `--resync` | JsonData（FactorTestScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名；传导检查上游 factor 全链就绪） |
+| test | `update` | `<name>` | `--all` `--resync` | JsonData（FactorTestScanReport 或 []；显式物化，幂等；传导检查上游 factor 全链就绪） |
 | test | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | graph | `lineage` | — | `--node <type:name>` `--depth N` | JsonData（Cytoscape elements payload，见 §3.13；缺 `--node` 为全图） |
 | graph | `nodes` | — | `--type <t>` | JsonData（节点摘要列表：id/type/name/display_name/version/valid/materialized） |
 | graph | `stats` | — | — | JsonData `{"node_count","edge_count"}` |
 
-> `table scan` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
+> `table update` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
 > `table add` 单表可携带初始元数据（键语义与 `table set` 一致，仅首次注册生效；`--all` 时不适用）。
 > `index add` 同语义：`--all` 批量发现 `index/` 下未登记且含 parquet 的目录（已登记/空目录跳过），
 > 返回 `indexes` 数组；批量时 `--symbol-col/--datetime-col` 等参数对全部新发现统一生效。
 > V3.0 起类型由节点 label 承载：table 恒 "table"，index 是独立资产（`index add`）；
 > 旧 `--type` 参数仅作分类标识进 extra（如 `--type=index` 不再约束 panel 注册）。
-> `panel`（原 dataset）：`panel add <name> <index> [member[:join]...]` 实时 join 视图（index 左表），
+> `panel`：`panel add <name> <index> [member[:join]...]` 实时 join 视图（index 左表），
 > 每个 member 可带 `:asof`/`:left` 指定 join 方式（**缺省 asof**，asof 按 datetime 键就近匹配、
 > left 为精确等值 join）；边 `role=member` 带 `detail.join`（`asof_join`/`left_join`）。
 > 物化分区策略见 §3.5：panel/fieldset/factor/test 统一继承 index 的 `materialize_partition`
-> 按时间桶落盘（与 index 物理是否分区无关），对外读取剔除 part 列；`dataset` 为旧别名转发同一实现。
+> 按时间桶落盘（与 index 物理是否分区无关），对外读取剔除 part 列。
 
 ### 3.2 `table get` / `index get` / `panel get` 的 ArrowTable.meta
 
@@ -237,7 +236,7 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
 - **StatMeta**：`target_type, target_name, kind, partitions[], files[{partition, rel_path, rows, size}], created_at, updated_at`
 - **StatScanReport**：`target_type, target_name, kind, partitions[], files[{partition, rel_path, rows, size}]`
 - **ColumnMeta**：`name, display_name, description, data_type, unit, formula, tags[], as_index, is_tool, source_table, source_field`
-- **FieldsetMeta**：`name, version, dataset(基于的 panel 名), engine, keys[], fields[FieldMeta], materialized, materialized_at, curated, columns[ColumnMeta]（源 panel 列）, extra, display_name, description, tags[], source, created_at, updated_at`
+- **FieldsetMeta**：`name, version, panel(基于的 panel 名), engine, keys[], fields[FieldMeta], materialized, materialized_at, curated, columns[ColumnMeta]（源 panel 列）, extra, display_name, description, tags[], source, created_at, updated_at`
 - **FieldMeta**：`name, formula, display_name, description, unit, tags[], validated（是否已 check）`
 - **FieldsetScanReport**：`name, version, materialized, rows, fields_count`（graph 版当前校验并标记物化态，物理产物后续接入）
 - **FieldsetCheckResult**：`fieldset, field, ok, message`
@@ -256,7 +255,7 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
 
 ### 3.8 fieldset 衍生指标集（公式引擎）
 
-- **指标集** 基于一个已注册 **panel** 创建（`--dataset <panel 名>`），keys 继承 panel 主键；
+- **指标集** 基于一个已注册 **panel** 创建（`--panel <panel 名>`），keys 继承 panel 主键；
   指标（field）用公式表达式在 panel 视图列上逐行计算
 - **公式语言**：运行在列作用域里的 polars 表达式（如 `x*2`、`pl.col("x")*2`、`date.dt.year()`），
   用当前引擎 eval；引擎插件注册制（`register_engine`），当前仅 `polars`
@@ -273,7 +272,7 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
 
 - 样本池 = 在 **fieldset 视图**（panel 全列 + 已校验衍生指标）上按**指定 index 的
   (symbol, datetime) 键集合**做 semi join 的**动态产物**：只保留键存在于该 index 数据中
-  的行；**没有物化概念**，不落盘、不 scan，`get`/`check` 每次读取时实时构造
+  的行；**没有物化概念**，不落盘，`get`/`check` 每次读取时实时构造
 - **`sample add <name> <fieldset> <index>`**：fieldset 为已注册 fieldset（样本内容），
   index 为已注册 index 资产（样本筛选参照——通常是目标研究区间/标的范围的索引表）；
   index 键列名与视图 keys 不同名时按位置映射（symbol → keys[0]，datetime → keys[-1]）
@@ -305,11 +304,11 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
   输出结构恒为「样本索引列 + 一列因子列」（列名 = `--factor_col`，默认取 feature 名）
 - **pipeline 算子链**：`|` 分隔的算子调用（如 `nothing()|standardlize()`），每段为 `name()`；
   算子注册制（`register_operator`，当前仅 `nothing()`，原样返回），后续算子按注册即可扩展
-- **物化**：`factor scan` 落盘 `factor/<name>/part=<v>/`（时间桶，见 §3.5）；
+- **物化**：`factor update` 落盘 `factor/<name>/part=<v>/`（时间桶，见 §3.5）；
   **幂等**——依赖签名（上游 feature/sample 的 graph 版本 + engine/pipeline/factor_col hash）
   不变则跳过；`--resync` 强制重建
 - **读取**：物化完成且与源+feature+pipeline 一致（`curated`）读物化 parquet；否则实时基于
-  sample 视图计算，不隐式物化（显式 `scan` 触发）
+  sample 视图计算，不隐式物化（显式 `update` 触发）
 - **校验**：`factor check` 实时计算——成功、含全部索引列、因子列恰好 1 列、行数 > 0 才算
   `ok=True`；聚合公式（行数 != 样本行数）→ 校验失败
 - **依赖**：factor → feature、factor → sample（删除上游需 `--force`）；`set` 改定义键
@@ -327,7 +326,7 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
   时组内）`
 - **测试列命名**：`--returns/--groupby/--marketcap`（默认 `r/ic/fv`）指定 sample 视图中的
   收益/分组/市值列名；因子列名取 factor 的 `factor_col`
-- **物化**：`test scan` 落盘 `factor_test/<name>/data.parquet`（flat 单文件）；**幂等**——
+- **物化**：`test update` 落盘 `factor_test/<name>/part=<v>/`（时间桶，见 §3.5）；**幂等**——
   依赖签名（factor 依赖 hash + spec + 测试列名）不变则跳过；`--resync` 强制重建
 - **读取**：物化且 curated 读 parquet，否则实时构造（不隐式物化）；`set` 改配置
   （returns/groupby/marketcap/spec 键）后物化失效自动回退实时
@@ -390,12 +389,12 @@ header(code=0) → TaskEvent×N → EOF
 
 每个 `TaskEvent`：`seq`（单调递增）、`time`、`progress`（0~1）、`message`、`data`（终态事件携带结果 JSON）、`state`。
 
-生命周期事件序列（以 `s:panel scan ds1` 为例）：
+生命周期事件序列（以 `s:panel update ds1` 为例）：
 
 | state | message | 说明 |
 |---|---|---|
-| `pending` | 任务已创建: panel scan | submit 时 |
-| `running` | 任务开始: panel scan | 开始执行 |
+| `pending` | 任务已创建: panel update | submit 时 |
+| `running` | 任务开始: panel update | 开始执行 |
 | `running` | ds1: part=2024-01-01（1/2） | 逐分区物化进度（progress=0.5） |
 | `running` | ds1: part=2024-01-02（2/2） | progress=1.0 |
 | `succeeded` | 任务完成 | progress=1.0，`data`=结果 JSON |
@@ -442,14 +441,14 @@ pending → running → succeeded
 | `stkoe config show` | 查看生效配置（含 config_file） |
 | `stkoe config set --<key> <value> ...` | 设置任意配置项（写入 stkoe.json） |
 | `stkoe table <action> <args...>` | table 命令（走 Execute 同步分发，行为与 `e:table ...` 一致） |
-| `stkoe index <action> <args...>` | index 命令（add/get/meta/list/set/col/scan/delete；独立资产） |
-| `stkoe panel <action> <args...>` | panel 命令（add/get/meta/list/set/delete；原 dataset，dataset 为旧别名） |
+| `stkoe index <action> <args...>` | index 命令（add/get/meta/list/set/col/update/delete；独立资产） |
+| `stkoe panel <action> <args...>` | panel 命令（add/get/meta/list/set/update/delete） |
 | `stkoe stat <action> <args...>` | stat 命令 |
-| `stkoe fieldset <action> <args...>` | fieldset 命令（add/get/meta/list/set/scan/delete/check/test） |
+| `stkoe fieldset <action> <args...>` | fieldset 命令（add/get/meta/list/set/update/delete/check/test） |
 | `stkoe sample <action> <args...>` | sample 命令（add/get/meta/list/set/check/delete；无物化） |
 | `stkoe feature <action> <args...>` | feature 命令（add/set/meta/list/delete/test；纯定义，无物化） |
-| `stkoe factor <action> <args...>` | factor 命令（add/get/meta/list/set/check/scan/delete；可物化） |
-| `stkoe test <action> <args...>` | test 命令（add/get/meta/list/set/check/scan/delete；因子测试数据集） |
+| `stkoe factor <action> <args...>` | factor 命令（add/get/meta/list/set/check/update/delete；可物化） |
+| `stkoe test <action> <args...>` | test 命令（add/get/meta/list/set/check/update/delete；因子测试数据集） |
 | `stkoe mock demo` | 生成演示源表 index + m1（默认 300 只 × 500 日，写 `index/index` + `table/m1`，需 `index add`/`table add` 注册） |
 | `stkoe mock gen <name> --kind <kind>` | 参数化生成单张表（tdcal/common/index/feature/klday/m1） |
 | `stkoe task list [--state <state>]` | 任务列表 |
@@ -481,8 +480,8 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 ```
 e:table list
 e:table get demo --where "price >= 1.0" --limit 10
-s:panel scan ds1
-s:stat scan dataset ds1
+s:panel update ds1
+s:stat scan panel ds1
 t:<task_id>
 ```
 
@@ -562,7 +561,7 @@ stkoe table add m1
 stkoe panel add ds1 index m1
 stkoe panel update ds1                      # 物化 panel/ds1/part=<YYYY>[/<MM>[/<DD>]]/
 # 衍生指标集（check 通过 → validated；update 物化 keys + 已校验指标）
-stkoe fieldset add fs1 --dataset ds1
+stkoe fieldset add fs1 --panel ds1
 stkoe fieldset add fs1 x2 --formula "x * 2.0"
 stkoe fieldset check fs1 x2
 stkoe fieldset update fs1
@@ -589,7 +588,7 @@ gclient> e:sample get sp1 --limit 100
 gclient> e:factor get fac1 --limit 100
 gclient> e:test get t1 --limit 100
 gclient> e:stat get t1 --kind ic --partition_by ic_d1
-# 后台物化 + 订阅进度（任务版；scan 为旧名别名）
+# 后台物化 + 订阅进度（任务版）
 gclient> s:fieldset update fs1
 gclient> t:<task_id>
 ```
@@ -644,7 +643,7 @@ gclient> t:<task_id>
   `e:index add <name> --symbol-col sym --datetime-col date`；
 - 面板：`e:panel add <name> <index> [member[:join]...]`——member 可带
   `:asof`/`:left` 指定 join 方式（缺省 asof），keys 由 index 推断、不传 `--keys`；
-- 衍生：`e:fieldset add <name> --dataset <panel>` →
+- 衍生：`e:fieldset add <name> --panel <panel>` →
   `e:fieldset add <name> <field> --formula <expr>` → `e:fieldset check <name> <field>`
   （check 通过才参与物化）；
 - 样本：`e:sample add <name> <fieldset> <index>`（样本池 = fieldset 视图 ∩ index 键集合）；
@@ -653,7 +652,7 @@ gclient> t:<task_id>
 - 测试集：`e:test add <name> --factor <fac> [--returns/--groupby/--marketcap]`。
 
 #### F. 更新 / 就绪（数据变化后刷新）
-1. **源头变化**：`e:table update <name>`（或 `e:index update`；`scan` 为旧名别名）
+1. **源头变化**：`e:table update <name>`（或 `e:index update`）
    → 重扫对账；内部自动把变化写入版本事件并**置脏整条下游链**；
 2. **链路就绪**：按依赖顺序依次
    `e:panel update <name>` → `e:fieldset update <name>` → `e:sample update` /
@@ -679,7 +678,7 @@ gclient> t:<task_id>
 
 | 资产 | update 行为 | 物化产物 |
 |---|---|---|
-| **table / index**（源头） | 重扫对账（`update`/`scan`）：物理变化 → 铸版本 + 事件入 version_list + **全链下游置脏**；天然 valid，无物化 | 无（物理 parquet 即数据） |
+| **table / index**（源头） | 重扫对账（`update`）：物理变化 → 铸版本 + 事件入 version_list + **全链下游置脏**；天然 valid，无物化 | 无（物理 parquet 即数据） |
 | **panel** | join 视图**物化落盘**（增量：按积累区间重算受影响时间桶）+ 铸版本 + 水位对齐 | `panel/<name>/part=<v>/`（时间桶，见 §3.5） |
 | **fieldset** | 衍生字段（keys + 已校验字段）**物化落盘**（增量同上）+ 铸版本 | `fieldset/<name>/part=<v>/` |
 | **factor** | **增量物化**：按源头积累事件区间只重算该区间（受影响桶）并合并写回；`--resync` 全量 | `factor/<name>/part=<v>/` |
@@ -693,7 +692,7 @@ gclient> t:<task_id>
 ### 11.2 遇到新数据变更事件时，分别如何处理
 
 1. **源头物理变化**（`table/` 或 `index/` 目录新增/修改/删除 parquet 文件）
-   → `table update <name>`（或读取前的快检自动 scan）重扫对账，`diff_files` 得到文件级 diff：
+   → `table update <name>`（或读取前的快检自动重扫）对账，`diff_files` 得到文件级 diff：
    - added / changed 文件 → **upsert 事件**；removed 文件 → **delete 事件**
      （一次变更同时有增删时，两类事件各记一个版本）；
    - 事件带 **datetime 区间 `[min, max]`**：hive 分区键 = datetime_col 时用分区值，

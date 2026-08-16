@@ -100,17 +100,17 @@ class IndexDeleteHandler(TaskHandler):
         return TaskResult(data=dumps_str(out))
 
 
-class IndexScanHandler(TaskHandler):
+class IndexUpdateHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         flags = parse_flags(ctx.args)
         pos = _positional(ctx.args)
         svc = _service(ctx)
         if flags.get("all"):
-            reports = await asyncio.to_thread(svc.index_scan, "", all=True)
+            reports = await asyncio.to_thread(svc.index_update, "", all=True)
             return TaskResult(data=dumps_str(reports))
         if not pos:
-            raise ValueError("index scan 需要 index 名（或 --all）")
-        report = await asyncio.to_thread(svc.index_scan, pos[0])
+            raise ValueError("index update 需要 index 名（或 --all）")
+        report = await asyncio.to_thread(svc.index_update, pos[0])
         return TaskResult(data=dumps_str(report))
 
 
@@ -164,8 +164,7 @@ class IndexColHandler(TaskHandler):
 def register(registry) -> None:
     registry.register("index", "add", IndexAddHandler())
     registry.register("index", "get", IndexGetHandler())
-    registry.register("index", "scan", IndexScanHandler())
-    registry.register("index", "update", IndexScanHandler())
+    registry.register("index", "update", IndexUpdateHandler())
     registry.register("index", "delete", IndexDeleteHandler())
     registry.register("index", "del", IndexDeleteHandler())
     registry.register("index", "list", IndexListHandler())

@@ -171,20 +171,20 @@ def test_task_add(mgr, tmp_path):
     assert tm["factor"] == "fac1"
 
 
-def test_task_scan(mgr, tmp_path):
+def test_task_update(mgr, tmp_path):
     _gsetup(tmp_path)
     _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    t = _await(mgr, mgr.submit("test", "scan", ["t1"]))
+    t = _await(mgr, mgr.submit("test", "update", ["t1"]))
     rep = _task_result(mgr, t)
     assert rep["materialized"] is True
     assert rep["changed"] is True
 
 
-def test_task_scan_idempotent(mgr, tmp_path):
+def test_task_update_idempotent(mgr, tmp_path):
     _gsetup(tmp_path)
     _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    _await(mgr, mgr.submit("test", "scan", ["t1"]))
-    t = _await(mgr, mgr.submit("test", "scan", ["t1"]))
+    _await(mgr, mgr.submit("test", "update", ["t1"]))
+    t = _await(mgr, mgr.submit("test", "update", ["t1"]))
     rep = _task_result(mgr, t)
     assert rep["changed"] is False
 
@@ -236,7 +236,7 @@ def test_task_stat_single_positional_test(mgr, tmp_path):
     """任务版 stat 单位置参数简写 → test 目标（scan 需 --kind 测试器，get/meta/delete 无条件）"""
     _gsetup(tmp_path)
     _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    _await(mgr, mgr.submit("test", "scan", ["t1"]))
+    _await(mgr, mgr.submit("test", "update", ["t1"]))
 
     t = _await(mgr, mgr.submit("stat", "scan", ["t1", "--kind", "ic"]))
     rep = _task_result(mgr, t)

@@ -292,7 +292,7 @@ def test_execute_table_add_duplicate_error(client, srv, tmp_path):
 
 def test_execute_table_missing_args(client):
     """缺表名：错误 DataHeader"""
-    for action in ("add", "get", "meta", "delete", "set", "scan"):
+    for action in ("add", "get", "meta", "delete", "set", "update"):
         header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
             source="table", action=action)))
         assert header.code != 0
@@ -301,8 +301,8 @@ def test_execute_table_missing_args(client):
                 or "--key" in header.message)
 
 
-def test_execute_table_scan(client, srv, tmp_path):
-    """e:table scan：显式重扫对账（无差异 changed=False；追加文件后 changed=True + 版本递增）"""
+def test_execute_table_update(client, srv, tmp_path):
+    """e:table update：显式重扫对账（无差异 changed=False；追加文件后 changed=True + 版本递增）"""
     import polars as pl
 
     root = Path(srv.data_dir) / "table" / "demo"
@@ -313,7 +313,7 @@ def test_execute_table_scan(client, srv, tmp_path):
     assert header.code == 0
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="table", action="scan", args=["demo"])))
+        source="table", action="update", args=["demo"])))
     assert header.code == 0
     report = _json(datas, "table")
     assert report["name"] == "demo"
@@ -323,7 +323,7 @@ def test_execute_table_scan(client, srv, tmp_path):
 
     pl.DataFrame({"sym": ["c"], "price": [3.0]}).write_parquet(root / "more.parquet")
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="table", action="scan", args=["demo"])))
+        source="table", action="update", args=["demo"])))
     assert header.code == 0
     report = _json(datas, "table")
     assert report["changed"] is True
@@ -438,7 +438,7 @@ def _seed_panel_chain(client, srv, x2_formula="x*2"):
         ("table", "add", ["mem"]),
         ("index", "add", ["idx"]),
         ("panel", "add", ["ds", "idx", "mem"]),  # keys 由 index 推断 [sym, date]
-        ("fieldset", "add", ["fs1", "--dataset", "ds"]),
+        ("fieldset", "add", ["fs1", "--panel", "ds"]),
         ("fieldset", "add", ["fs1", "x2", "--formula", x2_formula]),
     ]:
         header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -594,7 +594,7 @@ def _seed_factor_chain(client, srv, ready=True):
         ("table", "add", ["mem"]),
         ("index", "add", ["idx"]),
         ("panel", "add", ["ds", "idx", "mem"]),  # keys 由 index 推断 [sym, date]
-        ("fieldset", "add", ["fs1", "--dataset", "ds"]),
+        ("fieldset", "add", ["fs1", "--panel", "ds"]),
         ("fieldset", "add", ["fs1", "x2", "--formula", "x*2"]),
     ]:
         header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -640,7 +640,7 @@ def test_execute_factor_add_get_check_scan_delete(client, srv):
     assert _json(datas, "factor")["keys"] == ["sym", "date"]
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="factor", action="scan", args=["fac1"])))  # get 三态：先物化
+        source="factor", action="update", args=["fac1"])))  # get 三态：先物化
     assert header.code == 0
     assert _json(datas, "factor")["changed"] is True
 
@@ -689,7 +689,7 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
     assert _json(datas, "test")["keys"] == ["sym", "date"]
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="test", action="scan", args=["t1"])))  # get 三态：先物化
+        source="test", action="update", args=["t1"])))  # get 三态：先物化
     assert header.code == 0
     assert _json(datas, "test")["changed"] is True
     assert (root / "factor_test" / "t1" / "part=2024").exists()

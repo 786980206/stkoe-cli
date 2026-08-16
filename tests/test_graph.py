@@ -465,7 +465,7 @@ class TestHandlers:
         assert p["tables"] == {"m1": "left_join"}
         assert p["keys"] == ["sym", "date"]
         f = FieldsetHandler.meta(lineage, "fs1")
-        assert f["dataset"] == "panel:ds1"
+        assert f["panel"] == "panel:ds1"  # fieldset 基于 panel 衍生
         assert f["fields"]["ma5"]["formula"] == "price.rolling_mean(5)"
         assert f["fields"]["ma5"]["validated"] is False
         s = SampleHandler.meta(lineage, "sp1")

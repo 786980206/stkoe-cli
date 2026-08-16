@@ -137,19 +137,19 @@ class TestCheckHandler(TaskHandler):
         return TaskResult(data=dumps_str(res))
 
 
-class TestScanHandler(TaskHandler):
+class TestUpdateHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         flags = parse_flags(ctx.args)
         svc = _service(ctx)
         if flags.get("all"):
             reports = await asyncio.to_thread(
-                svc.test_scan, all=True, resync=bool(flags.get("resync")))
+                svc.test_update, all=True, resync=bool(flags.get("resync")))
             return TaskResult(data=dumps_str(reports))
         if not pos:
-            raise ValueError("test scan 需要测试集名（或 --all）")
+            raise ValueError("test update 需要测试集名（或 --all）")
         report = await asyncio.to_thread(
-            svc.test_scan, pos[0], resync=bool(flags.get("resync")))
+            svc.test_update, pos[0], resync=bool(flags.get("resync")))
         return TaskResult(data=dumps_str(report))
 
 
@@ -173,7 +173,6 @@ def register(registry) -> None:
     registry.register("test", "", TestListHandler())
     registry.register("test", "set", TestSetHandler())
     registry.register("test", "check", TestCheckHandler())
-    registry.register("test", "scan", TestScanHandler())
-    registry.register("test", "update", TestScanHandler())
+    registry.register("test", "update", TestUpdateHandler())
     registry.register("test", "delete", TestDeleteHandler())
     registry.register("test", "del", TestDeleteHandler())

@@ -4,7 +4,7 @@
 - table add 建 graph 节点 + 物理指纹（graph.db 普通表），meta/list/get/scan 走 graph；
 - 表数据变化（scan）→ 版本时间戳递增 + 下游（panel）置脏（notify_change）；
 - index 独立主体（Index 节点 + symbol/datetime 列）；
-- panel（原 dataset）：建节点 + DEPENDS 边，get 实时 join；
+- panel：建节点 + DEPENDS 边，get 实时 join；
 - 旧 catalog.db 不再产生（登记全部进 graph.db）。
 """
 from __future__ import annotations
@@ -151,7 +151,7 @@ class TestTableGraph:
         v0 = svc.table_meta("m1")["version"]
 
         # 无变化：不 bump
-        r = svc.table_scan("m1")
+        r = svc.table_update("m1")
         assert r["changed"] is False
         assert r["version_after"] == r["version_before"]
 
@@ -159,7 +159,7 @@ class TestTableGraph:
         pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"],
                       "price": [3.5]}).write_parquet(
             os.path.join(svc.data_dir, "table", "m1", "more.parquet"))
-        r2 = svc.table_scan("m1")
+        r2 = svc.table_update("m1")
         assert r2["changed"] is True
         assert r2["version_after"] > v0
         pnode = svc.store.get_node("panel:ds1")
@@ -649,7 +649,7 @@ class TestFactorGraph:
                          ("sample", "sp1"), ("feature", "f1")]:
                 getattr(svc, f"{t}_update")(n)
 
-    def test_factor_add_meta_check_get_scan(self, svc):
+    def test_factor_add_meta_check_get_update(self, svc):
         self._chain(svc, with_ready=False)  # 只建链，上游不 update（未就绪）
         fm = svc.factor_add("fac1", "f1", "sp1")
         assert fm["name"] == "fac1"
@@ -681,15 +681,15 @@ class TestFactorGraph:
         with pytest.raises(ValueError, match="未物化"):
             svc.factor_get("fac1")
 
-        # 依次传导 update：panel → fieldset → sample → feature → factor(scan 别名)
+        # 依次传导 update：panel → fieldset → sample → feature → factor
         svc.panel_update("ds1")
         svc.fieldset_update("fs1")
         svc.sample_update("sp1")
         svc.feature_update("f1")
-        s1 = svc.factor_scan("fac1")
+        s1 = svc.factor_update("fac1")
         assert s1["changed"] is True
         assert s1["version_after"] >= s1["version_before"]  # 无事件首物化不空 bump
-        s2 = svc.factor_scan("fac1")  # 幂等
+        s2 = svc.factor_update("fac1")  # 幂等
         assert s2["changed"] is False
         assert svc.factor_meta("fac1")["curated"] is True
         assert (svc.data_dir / "factor" / "fac1" / "part=2024").exists()
@@ -812,10 +812,10 @@ class TestTesterGraph:
         with pytest.raises(ValueError, match="未物化"):
             svc.test_get("t1")
 
-        s1 = svc.test_scan("t1")
+        s1 = svc.test_update("t1")
         assert s1["changed"] is True
         assert s1["rows"] == 2
-        s2 = svc.test_scan("t1")  # 幂等
+        s2 = svc.test_update("t1")  # 幂等
         assert s2["changed"] is False
         assert svc.test_meta("t1")["curated"] is True
         assert (svc.data_dir / "factor_test" / "t1" / "part=2024").exists()

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""dataset（panel）任务版链路测试（graph 语义）：add→meta→list→get→delete 全链路。
+"""panel 任务版链路测试（graph 语义）：add→update→get→delete 全链路。
 
-V2.0 死代码 DatasetController 直测已移入 V2.0/tests/test_dataset.py（默认全量不收集）。
+V2.0 死代码 DatasetController 直测已移入 V2.0/tests/test_dataset.py（默认全量不收集）；
+dataset 旧别名兼容层已随清理删除，任务版统一 s:panel。
 """
 import polars as pl
 import pytest
@@ -30,51 +31,8 @@ def _write_idx(root, name, rows):
     rows.write_parquet(d / "data.parquet")
 
 
-def test_task_framework_dataset_handlers(mgr):
-    """dataset handlers 注册进任务框架：add→meta→get 全链路（转发 panel，graph 语义）"""
-    from stkoe.graph.service import GraphService
-
-    root = mgr.data_dir
-    _write_idx(root, "index", pl.DataFrame({
-        "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
-        "price": [1.0, 2.0], "optime": ["2024-01-01 08:00:00"] * 2}))
-    _write(root, "m1", pl.DataFrame({
-        "sym": ["a", "b"], "date": ["2024-01-01", "2024-01-02"],
-        "name": ["AA", "BB"], "industry": ["金融", "科技"]}))
-    gsvc = GraphService(data_dir=root)
-    gsvc.table_add("m1")
-    gsvc.index_add("index")
-    gsvc.close()
-
-    t_add = mgr.submit("dataset", "add", ["ds1", "index", "m1"])  # keys 由 index 推断
-    _await(mgr, t_add)
-    add_res = _mgr_result(mgr, t_add)
-    assert add_res["name"] == "ds1"
-    assert add_res["keys"] == ["sym", "date"]  # panel 实时 join，无物化概念
-
-    t_meta = mgr.submit("dataset", "meta", ["ds1"])
-    _await(mgr, t_meta)
-    assert _mgr_result(mgr, t_meta)["index"] == "index:index"
-
-    t_list = mgr.submit("dataset", "list", [])
-    _await(mgr, t_list)
-    assert [d["name"] for d in _mgr_result(mgr, t_list)] == ["ds1"]
-
-    t_upd = mgr.submit("dataset", "update", ["ds1"])  # get 三态：先物化
-    _await(mgr, t_upd)
-    assert _mgr_result(mgr, t_upd)["materialized"] is True
-
-    t_get = mgr.submit("dataset", "get", ["ds1"])
-    _await(mgr, t_get)
-    assert _mgr_result(mgr, t_get)["rows"] == 2
-
-    t_del = mgr.submit("dataset", "delete", ["ds1"])
-    _await(mgr, t_del)
-    assert _mgr_result(mgr, t_del) == {"deleted": "ds1"}
-
-
 def test_task_framework_panel_handlers(mgr):
-    """panel handlers 注册进任务框架：s:panel add→meta→get 全链路（与 dataset 同实现）"""
+    """panel handlers 注册进任务框架：s:panel add→update→get→delete 全链路"""
     from stkoe.graph.service import GraphService
 
     root = mgr.data_dir

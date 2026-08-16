@@ -9,7 +9,7 @@ class StatFile:
     """一个统计分组产物文件"""
 
     partition: str        # "all" 或分组列名
-    rel_path: str         # 相对 stats 根（如 dataset/ds1/coverage/all.parquet）
+    rel_path: str         # 相对 stats 根（如 panel/ds1/coverage/all.parquet）
     rows: int
     size: int
 

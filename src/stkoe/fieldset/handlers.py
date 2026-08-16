@@ -39,13 +39,13 @@ class FieldsetAddHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         svc = _service(ctx)
         if len(pos) == 1:
-            if not flags.get("dataset"):
-                raise ValueError("fieldset add 需要 --dataset <panel 名>")
+            if not flags.get("panel"):
+                raise ValueError("fieldset add 需要 --panel <panel 名>")
             fm = await asyncio.to_thread(
-                svc.fieldset_add, pos[0], flags["dataset"],
+                svc.fieldset_add, pos[0], flags["panel"],
                 engine=flags.get("engine") or "polars", **{
                     k: v for k, v in flags.items()
-                    if k not in ("dataset", "engine")})
+                    if k not in ("panel", "engine")})
             return TaskResult(data=dumps_str(fm))
         fm = await asyncio.to_thread(
             svc.fieldset_add_field, pos[0], pos[1],
@@ -136,7 +136,7 @@ class FieldsetCheckHandler(TaskHandler):
         return TaskResult(data=dumps_str([r]))
 
 
-class FieldsetScanHandler(TaskHandler):
+class FieldsetUpdateHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         flags = parse_flags(ctx.args)
@@ -145,12 +145,12 @@ class FieldsetScanHandler(TaskHandler):
             metas = await asyncio.to_thread(svc.fieldset_list)
             reports = []
             for m in metas:
-                r = await asyncio.to_thread(svc.fieldset_scan, m["name"])
+                r = await asyncio.to_thread(svc.fieldset_update, m["name"])
                 reports.append(r)
             return TaskResult(data=dumps_str(reports))
         if not pos:
-            raise ValueError("fieldset scan 需要指标集名（或 --all）")
-        report = await asyncio.to_thread(svc.fieldset_scan, pos[0])
+            raise ValueError("fieldset update 需要指标集名（或 --all）")
+        report = await asyncio.to_thread(svc.fieldset_update, pos[0])
         return TaskResult(data=dumps_str(report))
 
 
@@ -194,8 +194,7 @@ def register(registry) -> None:
     registry.register("fieldset", "list", FieldsetListHandler())
     registry.register("fieldset", "", FieldsetListHandler())
     registry.register("fieldset", "set", FieldsetSetHandler())
-    registry.register("fieldset", "scan", FieldsetScanHandler())
-    registry.register("fieldset", "update", FieldsetScanHandler())
+    registry.register("fieldset", "update", FieldsetUpdateHandler())
     registry.register("fieldset", "check", FieldsetCheckHandler())
     registry.register("fieldset", "test", FieldsetTestHandler())
     registry.register("fieldset", "delete", FieldsetDeleteHandler())

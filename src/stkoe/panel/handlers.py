@@ -1,7 +1,6 @@
 """panel TaskHandler：把 GraphService 的 panel 资产接进任务框架（source="panel"）
 
-行为与 Execute 的 ``e:panel ...`` 一致；dataset 旧别名经 dataset/handlers.py
-转发到本模块实现（注册到 "dataset" source）。
+行为与 Execute 的 ``e:panel ...`` 一致。
 """
 from __future__ import annotations
 

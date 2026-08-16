@@ -87,17 +87,17 @@ class TableDeleteHandler(TaskHandler):
         return TaskResult(data=dumps_str(out))
 
 
-class TableScanHandler(TaskHandler):
+class TableUpdateHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         flags = parse_flags(ctx.args)
         pos = _positional(ctx.args)
         svc = _service(ctx)
         if flags.get("all"):
-            reports = await asyncio.to_thread(svc.table_scan, "", all=True)
+            reports = await asyncio.to_thread(svc.table_update, "", all=True)
             return TaskResult(data=dumps_str(reports))
         if not pos:
-            raise ValueError("table scan 需要表名（或 --all）")
-        report = await asyncio.to_thread(svc.table_scan, pos[0])
+            raise ValueError("table update 需要表名（或 --all）")
+        report = await asyncio.to_thread(svc.table_update, pos[0])
         return TaskResult(data=dumps_str(report))
 
 
@@ -151,8 +151,7 @@ class TableColHandler(TaskHandler):
 def register(registry) -> None:
     registry.register("table", "add", TableAddHandler())
     registry.register("table", "get", TableGetHandler())
-    registry.register("table", "scan", TableScanHandler())
-    registry.register("table", "update", TableScanHandler())
+    registry.register("table", "update", TableUpdateHandler())
     registry.register("table", "delete", TableDeleteHandler())
     registry.register("table", "del", TableDeleteHandler())
     registry.register("table", "list", TableListHandler())

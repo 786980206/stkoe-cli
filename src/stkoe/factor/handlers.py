@@ -116,19 +116,19 @@ class FactorCheckHandler(TaskHandler):
         return TaskResult(data=dumps_str(res))
 
 
-class FactorScanHandler(TaskHandler):
+class FactorUpdateHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         flags = parse_flags(ctx.args)
         svc = _service(ctx)
         if flags.get("all"):
             reports = await asyncio.to_thread(
-                svc.factor_scan, all=True, resync=bool(flags.get("resync")))
+                svc.factor_update, all=True, resync=bool(flags.get("resync")))
             return TaskResult(data=dumps_str(reports))
         if not pos:
-            raise ValueError("factor scan 需要因子名（或 --all）")
+            raise ValueError("factor update 需要因子名（或 --all）")
         report = await asyncio.to_thread(
-            svc.factor_scan, pos[0], resync=bool(flags.get("resync")))
+            svc.factor_update, pos[0], resync=bool(flags.get("resync")))
         return TaskResult(data=dumps_str(report))
 
 
@@ -152,7 +152,6 @@ def register(registry) -> None:
     registry.register("factor", "", FactorListHandler())
     registry.register("factor", "set", FactorSetHandler())
     registry.register("factor", "check", FactorCheckHandler())
-    registry.register("factor", "scan", FactorScanHandler())
-    registry.register("factor", "update", FactorScanHandler())
+    registry.register("factor", "update", FactorUpdateHandler())
     registry.register("factor", "delete", FactorDeleteHandler())
     registry.register("factor", "del", FactorDeleteHandler())

@@ -51,10 +51,10 @@ def _gsetup(root, index_rows=None):
 
 
 def test_task_framework_fieldset_handlers(mgr):
-    """任务版：fieldset add→add_field→check→scan 全链路 + 结果落盘（graph 语义）"""
+    """任务版：fieldset add→add_field→check→update 全链路 + 结果落盘（graph 语义）"""
     _gsetup(mgr.data_dir)
 
-    t_add = mgr.submit("fieldset", "add", ["fs1", "--dataset", "ds"])
+    t_add = mgr.submit("fieldset", "add", ["fs1", "--panel", "ds"])
     _await(mgr, t_add)
     assert _mgr_result(mgr, t_add)["name"] == "fs1"
 
@@ -64,9 +64,9 @@ def test_task_framework_fieldset_handlers(mgr):
     _await(mgr, t_check)
     assert _mgr_result(mgr, t_check)[0]["ok"] is True
 
-    t_scan = mgr.submit("fieldset", "scan", ["fs1"])
-    _await(mgr, t_scan)
-    assert _mgr_result(mgr, t_scan)["materialized"] is True
+    t_update = mgr.submit("fieldset", "update", ["fs1"])
+    _await(mgr, t_update)
+    assert _mgr_result(mgr, t_update)["materialized"] is True
 
     t_get = mgr.submit("fieldset", "get", ["fs1"])
     _await(mgr, t_get)

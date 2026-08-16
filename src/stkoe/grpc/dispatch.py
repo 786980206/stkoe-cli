@@ -1,9 +1,9 @@
 """命令分发：把 Execute / SubmitTask 的 ``(source, action, args)`` 路由到对应处理器
 
 协议约定请求为 ``stkoe <source> <action> <args...>`` 位置参数形态：
-- source：table / index / panel（原 dataset 别名转发）/ fieldset / sample / feature /
+- source：table / index / panel / fieldset / sample / feature /
   factor / test / stat / config / task / mock / graph / version
-- action：add / get / del / set / list / meta / check / test / scan / ... 等子命令动词
+- action：add / get / del / set / list / meta / check / test / update / ... 等子命令动词
 - args：action 之后的位置参数
 
 处理器通过 ``@handler(source, action)`` 装饰器注册，签名 ``fn(args, data_dir=None) -> list[Result]``；
@@ -11,9 +11,8 @@
 ``JsonData`` / ``ArrowTable``。
 
 V3.0：table/index/panel/fieldset/sample/feature/factor/test 全部走 ``GraphService``
-（登记/依赖/版本进 graph，物理数据走 graph.db 指纹 + polars），dataset 为 panel 的
-旧别名（转发同一 handler）；SubmitTask 任务版（task/handlers.py 的 TaskHandler）
-行为对齐（同走 GraphService）。
+（登记/依赖/版本进 graph，物理数据走 graph.db 指纹 + polars）；SubmitTask 任务版
+（task/handlers.py 的 TaskHandler）行为对齐（同走 GraphService）。
 """
 from __future__ import annotations
 
@@ -250,17 +249,16 @@ def _table_delete(args: list[str], data_dir=None) -> list[Result]:
     return [Result.json("table", svc.table_delete(pos[0], force=bool(flags.get("force"))))]
 
 
-@handler("table", "scan")
 @handler("table", "update")
-def _table_scan(args: list[str], data_dir=None) -> list[Result]:
+def _table_update(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
     if flags.get("all"):
-        return [Result.json("tables", svc.table_scan("", all=True))]
+        return [Result.json("tables", svc.table_update("", all=True))]
     if not pos:
-        raise CommandError("table scan 需要表名（或 --all）")
-    return [Result.json("table", svc.table_scan(pos[0]))]
+        raise CommandError("table update 需要表名（或 --all）")
+    return [Result.json("table", svc.table_update(pos[0]))]
 
 
 @handler("table", "list")
@@ -321,7 +319,7 @@ def _stat_scan(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
     if not pos:
-        raise CommandError("stat scan 需要 target 类型和名字（如 dataset <name>）")
+        raise CommandError("stat scan 需要 target 类型和名字（如 panel <name>）")
     from ..factor_test.tester import TESTER_KINDS
 
     kind = flags.get("kind") or "coverage"
@@ -330,7 +328,7 @@ def _stat_scan(args: list[str], data_dir=None) -> list[Result]:
     elif len(pos) >= 2:
         target_type, target_name = pos[0], pos[1]
     else:
-        raise CommandError("stat scan 需要 target 类型和名字（如 dataset <name>，"
+        raise CommandError("stat scan 需要 target 类型和名字（如 panel <name>，"
                            "或 test <name> --kind <tester>）")
     ctl = _stat_controller(data_dir)
     report = asyncio.run(ctl.scan(target_type, target_name, kind=kind))
@@ -341,7 +339,7 @@ def _stat_scan(args: list[str], data_dir=None) -> list[Result]:
 def _stat_get(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("stat get 需要 target 类型和名字（如 dataset <name>）")
+        raise CommandError("stat get 需要 target 类型和名字（如 panel <name>）")
     flags = parse_flags(args)
     ctl = _stat_controller(data_dir)
     kind = flags.get("kind") or "coverage"
@@ -351,7 +349,7 @@ def _stat_get(args: list[str], data_dir=None) -> list[Result]:
     elif len(pos) >= 2:
         target_type, target_name = pos[0], pos[1]
     else:
-        raise CommandError("stat get 需要 target 类型和名字（如 dataset <name>）")
+        raise CommandError("stat get 需要 target 类型和名字（如 panel <name>）")
     out = asyncio.run(ctl.get(target_type, target_name,
                               kind=kind, partition_by=partition_by))
     if isinstance(out, dict):
@@ -377,7 +375,7 @@ def _stat_get(args: list[str], data_dir=None) -> list[Result]:
 def _stat_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("stat meta 需要 target 类型和名字（如 dataset <name>）")
+        raise CommandError("stat meta 需要 target 类型和名字（如 panel <name>）")
     flags = parse_flags(args)
     ctl = _stat_controller(data_dir)
     kind = flags.get("kind") or "coverage"
@@ -386,7 +384,7 @@ def _stat_meta(args: list[str], data_dir=None) -> list[Result]:
     elif len(pos) >= 2:
         target_type, target_name = pos[0], pos[1]
     else:
-        raise CommandError("stat meta 需要 target 类型和名字（如 dataset <name>）")
+        raise CommandError("stat meta 需要 target 类型和名字（如 panel <name>）")
     meta = asyncio.run(ctl.meta(target_type, target_name, kind=kind))
     return [Result.json("stat", meta.to_dict())]
 
@@ -403,7 +401,7 @@ def _stat_list(args: list[str], data_dir=None) -> list[Result]:
 def _stat_delete(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("stat delete 需要 target 类型和名字（如 dataset <name>）")
+        raise CommandError("stat delete 需要 target 类型和名字（如 panel <name>）")
     flags = parse_flags(args)
     ctl = _stat_controller(data_dir)
     if len(pos) == 1:
@@ -411,18 +409,16 @@ def _stat_delete(args: list[str], data_dir=None) -> list[Result]:
     elif len(pos) >= 2:
         target_type, target_name = pos[0], pos[1]
     else:
-        raise CommandError("stat delete 需要 target 类型和名字（如 dataset <name>）")
+        raise CommandError("stat delete 需要 target 类型和名字（如 panel <name>）")
     out = asyncio.run(ctl.delete(target_type, target_name, kind=flags.get("kind")))
     return [Result.json("stat", out)]
 
 
 # ---------------------------------------------------------------------------
-# panel 同步处理器（V3.0：原 dataset 改名；登记/依赖走 graph，get 实时 join）
-# dataset 为旧别名（转发到同一实现）
+# panel 同步处理器（登记/依赖走 graph，get 实时 join）
 # ---------------------------------------------------------------------------
 
 @handler("panel", "add")
-@handler("dataset", "add")
 def _panel_add(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if len(pos) < 3:
@@ -435,7 +431,6 @@ def _panel_add(args: list[str], data_dir=None) -> list[Result]:
 
 
 @handler("panel", "get")
-@handler("dataset", "get")
 def _panel_get(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
@@ -462,8 +457,6 @@ def _panel_get(args: list[str], data_dir=None) -> list[Result]:
 
 @handler("panel", "delete")
 @handler("panel", "del")
-@handler("dataset", "delete")
-@handler("dataset", "del")
 def _panel_delete(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
@@ -475,15 +468,12 @@ def _panel_delete(args: list[str], data_dir=None) -> list[Result]:
 
 @handler("panel", "list")
 @handler("panel", "")
-@handler("dataset", "list")
-@handler("dataset", "")
 def _panel_list(args: list[str], data_dir=None) -> list[Result]:
     svc = _graph_service(data_dir)
     return [Result.json("panels", svc.panel_list())]
 
 
 @handler("panel", "meta")
-@handler("dataset", "meta")
 def _panel_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
@@ -493,7 +483,6 @@ def _panel_meta(args: list[str], data_dir=None) -> list[Result]:
 
 
 @handler("panel", "set")
-@handler("dataset", "set")
 def _panel_set(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
@@ -506,7 +495,6 @@ def _panel_set(args: list[str], data_dir=None) -> list[Result]:
 
 
 @handler("panel", "update")
-@handler("dataset", "update")
 def _panel_update(args: list[str], data_dir=None) -> list[Result]:
     """panel 更新：上游（index/成员表）就绪后标记有效（无物化）。"""
     pos = _positional(args)
@@ -579,17 +567,16 @@ def _index_delete(args: list[str], data_dir=None) -> list[Result]:
     return [Result.json("index", svc.index_delete(pos[0], force=bool(flags.get("force"))))]
 
 
-@handler("index", "scan")
 @handler("index", "update")
-def _index_scan(args: list[str], data_dir=None) -> list[Result]:
+def _index_update(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
     if flags.get("all"):
-        return [Result.json("indexes", svc.index_scan("", all=True))]
+        return [Result.json("indexes", svc.index_update("", all=True))]
     if not pos:
-        raise CommandError("index scan 需要 index 名（或 --all）")
-    return [Result.json("index", svc.index_scan(pos[0]))]
+        raise CommandError("index update 需要 index 名（或 --all）")
+    return [Result.json("index", svc.index_update(pos[0]))]
 
 
 @handler("index", "list")
@@ -636,7 +623,7 @@ def _index_set(args: list[str], data_dir=None) -> list[Result]:
 
 
 # ---------------------------------------------------------------------------
-# fieldset 同步处理器（graph 登记；check/scan 用 panel 视图 + 公式引擎）
+# fieldset 同步处理器（graph 登记；check/update 用 panel 视图 + 公式引擎）
 # ---------------------------------------------------------------------------
 
 @handler("fieldset", "add")
@@ -647,12 +634,12 @@ def _fieldset_add(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
     if len(pos) == 1:
-        if not flags.get("dataset"):
-            raise CommandError("fieldset add 需要 --dataset <panel 名>")
-        fm = svc.fieldset_add(pos[0], flags["dataset"],
+        if not flags.get("panel"):
+            raise CommandError("fieldset add 需要 --panel <panel 名>")
+        fm = svc.fieldset_add(pos[0], flags["panel"],
                               engine=flags.get("engine") or "polars", **{
                                   k: v for k, v in flags.items()
-                                  if k not in ("dataset", "engine")})
+                                  if k not in ("panel", "engine")})
         return [Result.json("fieldset", fm)]
     fm = svc.fieldset_add_field(pos[0], pos[1], flags.get("formula") or "", **{
         k: v for k, v in flags.items() if k != "formula"})
@@ -762,18 +749,17 @@ def _fieldset_test(args: list[str], data_dir=None) -> list[Result]:
     return [Result.json("fieldset", res)]
 
 
-@handler("fieldset", "scan")
 @handler("fieldset", "update")
-def _fieldset_scan(args: list[str], data_dir=None) -> list[Result]:
+def _fieldset_update(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
     if flags.get("all"):
         return [Result.json("fieldsets",
-                            [svc.fieldset_scan(n["name"]) for n in svc.graph.list("fieldset")])]
+                            [svc.fieldset_update(n["name"]) for n in svc.graph.list("fieldset")])]
     if not pos:
-        raise CommandError("fieldset scan 需要指标集名（或 --all）")
-    return [Result.json("fieldset", svc.fieldset_scan(pos[0]))]
+        raise CommandError("fieldset update 需要指标集名（或 --all）")
+    return [Result.json("fieldset", svc.fieldset_update(pos[0]))]
 
 
 # ---------------------------------------------------------------------------
@@ -1051,18 +1037,17 @@ def _factor_check(args: list[str], data_dir=None) -> list[Result]:
     return [Result.json("factor", svc.factor_check(pos[0]))]
 
 
-@handler("factor", "scan")
 @handler("factor", "update")
-def _factor_scan(args: list[str], data_dir=None) -> list[Result]:
+def _factor_update(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
     if flags.get("all"):
-        reports = svc.factor_scan(all=True, resync=bool(flags.get("resync")))
+        reports = svc.factor_update(all=True, resync=bool(flags.get("resync")))
         return [Result.json("factors", reports)]
     if not pos:
-        raise CommandError("factor scan 需要因子名（或 --all）")
-    report = svc.factor_scan(pos[0], resync=bool(flags.get("resync")))
+        raise CommandError("factor update 需要因子名（或 --all）")
+    report = svc.factor_update(pos[0], resync=bool(flags.get("resync")))
     return [Result.json("factor", report)]
 
 
@@ -1177,18 +1162,17 @@ def _test_check(args: list[str], data_dir=None) -> list[Result]:
     return [Result.json("test", svc.test_check(pos[0]))]
 
 
-@handler("test", "scan")
 @handler("test", "update")
-def _test_scan(args: list[str], data_dir=None) -> list[Result]:
+def _test_update(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
     if flags.get("all"):
-        reports = svc.test_scan(all=True, resync=bool(flags.get("resync")))
+        reports = svc.test_update(all=True, resync=bool(flags.get("resync")))
         return [Result.json("tests", reports)]
     if not pos:
-        raise CommandError("test scan 需要测试集名（或 --all）")
-    report = svc.test_scan(pos[0], resync=bool(flags.get("resync")))
+        raise CommandError("test update 需要测试集名（或 --all）")
+    report = svc.test_update(pos[0], resync=bool(flags.get("resync")))
     return [Result.json("test", report)]
 
 

@@ -45,7 +45,7 @@ def _target(ctx, *, tester_only: bool = False) -> tuple[str, str]:
 
         if not tester_only or kind in TESTER_KINDS:
             return "test", pos[0]
-    raise ValueError("stat 命令需要 target 类型和名字（如 dataset <name>，"
+    raise ValueError("stat 命令需要 target 类型和名字（如 panel <name>，"
                      "或 test <name> --kind <tester>）")
 
 

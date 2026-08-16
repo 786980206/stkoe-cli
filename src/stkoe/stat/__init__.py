@@ -1,4 +1,4 @@
-"""stat 模块：dataset / table 目标的统计资产（scan/get/meta/list/delete）"""
+"""stat 模块：panel / table 目标的统计资产（scan/get/meta/list/delete）"""
 from .controller import (
     StatController,
     StatNotFoundError,

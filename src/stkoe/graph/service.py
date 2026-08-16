@@ -5,7 +5,7 @@
 - **物理指纹**（stkoe_data_files / stkoe_file_stats）→ graph.db 普通表（同文件同事务）
 - **物理数据**（parquet 扫描/读取/prune）→ 复用 table/util.py / table/query.py 纯函数
 
-assets：``table`` / ``index``（独立主体）／``panel``（原 dataset）。
+assets：``table`` / ``index``（独立主体）／``panel``。
 """
 from __future__ import annotations
 
@@ -477,10 +477,6 @@ class GraphService:
             return [self._scan_disk("table", n["name"]) for n in self.graph.list("table")]
         return self._scan_disk("table", name)
 
-    def table_scan(self, name: str, *, all: bool = False) -> dict | list:
-        """旧名别名（V3 语义改称 update）。"""
-        return self.table_update(name, all=all)
-
     def table_data_key(self, name: str) -> str:
         """当前数据标识：快检后返回签名（未登记则 ''）。"""
         root = self._root(name)
@@ -590,10 +586,6 @@ class GraphService:
         self._check_index_unique(name)
         return r
 
-    def index_scan(self, name: str, *, all: bool = False) -> dict | list:
-        """旧名别名（V3 语义改称 update）。"""
-        return self.index_update(name, all=all)
-
     def index_data_key(self, name: str) -> str:
         root = self._index_root(name)
         if not root.exists():
@@ -603,7 +595,7 @@ class GraphService:
         return node.get("signature", "") if node else T.signature(T.disk_files(root))
 
     # =====================================================================
-    # panel（原 dataset：graph 节点 + DEPENDS 边；get 实时 join）
+    # panel（graph 节点 + DEPENDS 边；get 实时 join）
     # =====================================================================
 
     def panel_add(self, name: str, index: str,
@@ -824,12 +816,12 @@ class GraphService:
         return self._panel_lazy(name, where)[0]
 
     # =====================================================================
-    # fieldset（衍生指标集：graph 登记；check/scan 用 panel 视图 + 公式引擎）
+    # fieldset（衍生指标集：graph 登记；check/update 用 panel 视图 + 公式引擎）
     # =====================================================================
 
     def _fieldset_hash(self, node: dict) -> str:
         """fieldset 物化签名 = panel 版本 + 已校验字段公式 + engine。"""
-        panel = node.get("dataset", "").split(":", 1)[1]
+        panel = node.get("panel", "").split(":", 1)[1]
         parts = [f"panel:{panel}:{self._require_node('panel', panel).get('version', 0)}"]
         for fname, f in (node.get("fields") or {}).items():
             if f.get("validated"):
@@ -841,7 +833,7 @@ class GraphService:
         node = self._require_node("fieldset", name)
         meta = self.graph._meta(node)
         extra = dict(meta.get("extra") or {})
-        keys = self._panel_keys(node.get("dataset", "").split(":", 1)[1])
+        keys = self._panel_keys(node.get("panel", "").split(":", 1)[1])
         materialized = bool(node.get("materialized") or extra.get("materialized"))
         dep_hash = extra.get("dependency_hash") or ""
         meta["keys"] = keys
@@ -863,7 +855,7 @@ class GraphService:
         否则与 panel 视图 join）。
         """
         node = self._require_node("fieldset", name)
-        panel = node.get("dataset", "").split(":", 1)[1]
+        panel = node.get("panel", "").split(":", 1)[1]
         keys = self._panel_keys(panel)
         fm = self._fieldset_meta_node(name)
         root = self.data_dir / "fieldset" / name
@@ -925,7 +917,7 @@ class GraphService:
         fields = node.get("fields") or {}
         if field not in fields:
             raise AssetNotFoundError(f"field not found: {field}")
-        base, keys = self._panel_lazy(node.get("dataset", "").split(":", 1)[1])
+        base, keys = self._panel_lazy(node.get("panel", "").split(":", 1)[1])
         engine = get_fieldset_engine(node.get("engine") or "polars")
         ok, message = engine.check(base, FieldMeta.from_dict(fields[field]))
         if ok and not fields[field].get("validated"):
@@ -947,7 +939,7 @@ class GraphService:
         if where is not None:
             lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
         if not fields_only:
-            panel = node.get("dataset", "").split(":", 1)[1]
+            panel = node.get("panel", "").split(":", 1)[1]
             keys = self._panel_keys(panel)
             base, _ = self._panel_lazy(panel)  # 上游 panel 物化或实时（内部视图）
             lf = base.join(lf, on=keys, how="left")
@@ -959,11 +951,11 @@ class GraphService:
         ``fieldset/<name>/data.parquet``（keys + 已校验字段）+ 铸版本 + 水位对齐。
 
         增量：源头积累事件有明确 datetime 区间且已有物化 → 只重算该区间字段并合并写回；
-        首次 / 无区间 / ``--resync`` → 全量。scan 为旧名别名。
+        首次 / 无区间 / ``--resync`` → 全量。
         """
         self.graph.assert_ready("fieldset", name)
         node = self._require_node("fieldset", name)
-        panel = node.get("dataset", "").split(":", 1)[1]
+        panel = node.get("panel", "").split(":", 1)[1]
         keys = self._panel_keys(panel)
         fields = [FieldMeta.from_dict(f) for f in (node.get("fields") or {}).values()
                   if f.get("validated")]
@@ -1003,13 +995,9 @@ class GraphService:
         return {"name": name, "materialized": True, "valid": True, "rows": rows,
                 "fields_count": len(fields), "version": m["version"]}
 
-    def fieldset_scan(self, name: str, *, resync: bool = False) -> dict:
-        """旧名别名（V3 语义改称 update）。"""
-        return self.fieldset_update(name, resync=resync)
-
     def fieldset_test(self, name: str, formula: str):
         node = self._require_node("fieldset", name)
-        base, _ = self._panel_lazy(node.get("dataset", "").split(":", 1)[1])
+        base, _ = self._panel_lazy(node.get("panel", "").split(":", 1)[1])
         engine = get_fieldset_engine(node.get("engine") or "polars")
         df = engine.test(base, formula)
         return {"ok": True, "rows": df.height, "columns": list(df.columns)}, df
@@ -1057,7 +1045,7 @@ class GraphService:
         """sample 的索引列 = 其 fieldset 底层 panel 的 keys。"""
         fset = node.get("fieldset", "").split(":", 1)[-1]
         fnode = self._require_node("fieldset", fset)
-        return self._panel_keys(fnode.get("dataset", "").split(":", 1)[-1])
+        return self._panel_keys(fnode.get("panel", "").split(":", 1)[-1])
 
     def sample_check(self, name: str) -> dict:
         node = self._require_node("sample", name)
@@ -1183,7 +1171,7 @@ class GraphService:
         schema = lf.collect_schema()
         fset = node.get("fieldset", "").split(":", 1)[-1]
         fnode = self._require_node("fieldset", fset)
-        panel = fnode.get("dataset", "").split(":", 1)[-1]
+        panel = fnode.get("panel", "").split(":", 1)[-1]
         panel_cols = {c["name"]: c for c in
                       self._panel_columns(self._require_node("panel", panel))}
         fs_fields = {f: FieldMeta.from_dict(fd)
@@ -1481,11 +1469,6 @@ class GraphService:
         self.graph.assert_ready("factor", name)
         return self._factor_scan_one(name, resync=resync)
 
-    def factor_scan(self, name: str | None = None, *, all: bool = False,
-                    resync: bool = False) -> dict | list[dict]:
-        """旧名别名（V3 语义改称 update）。"""
-        return self.factor_update(name, all=all, resync=resync)
-
     def _factor_scan_one(self, name: str, *, resync: bool = False) -> dict:
         node = self._require_node("factor", name)
         extra = dict(node.get("extra") or {})
@@ -1717,7 +1700,7 @@ class GraphService:
                     resync: bool = False) -> dict | list[dict]:
         """test 更新：传导检查上游（factor 全链）就绪 → 物化 factor_tests/<name>/。
 
-        幂等；update 成功后节点置 valid=True。scan 为旧名别名。
+        幂等；update 成功后节点置 valid=True。
         """
         if all:
             return [self._test_scan_one(n["name"], resync=resync)
@@ -1726,11 +1709,6 @@ class GraphService:
             raise ValueError("test update 需要测试集名（或 --all）")
         self.graph.assert_ready("tester", name)
         return self._test_scan_one(name, resync=resync)
-
-    def test_scan(self, name: str | None = None, *, all: bool = False,
-                  resync: bool = False) -> dict | list[dict]:
-        """旧名别名（V3 语义改称 update）。"""
-        return self.test_update(name, all=all, resync=resync)
 
     def _test_scan_one(self, name: str, *, resync: bool = False) -> dict:
         node = self._require_node("tester", name)

@@ -51,8 +51,8 @@ graphqlite 节点：**label = 资产类型**；**`id` 属性 = `"<type>:<name>"`
 |---|---|---|
 | `Table` | TableNode | `columns`（ColumnMeta[]） |
 | `Index` | IndexNode | `columns`、`symbol_col`、`datetime_col`、`materialize_partition` |
-| `Panel` | PanelNode（≈ V2.0 dataset） | `index`（Index 节点 id）、`tables`（{name: join 类型}）、`keys` |
-| `Fieldset` | FieldsetNode | `dataset`（Panel 节点 id）、`fields`（{field: FieldMeta}） |
+| `Panel` | PanelNode | `index`（Index 节点 id）、`tables`（{name: join 类型}）、`keys` |
+| `Fieldset` | FieldsetNode | `panel`（Panel 节点 id）、`fields`（{field: FieldMeta}） |
 | `Sample` | SampleNode | `fieldset`（Fieldset 节点 id）、`engine`、`formula` |
 | `Feature` | FeatureNode | `engine`、`formula`、`unit` |
 | `Factor` | FactorNode | `feature`（节点 id）、`sample`（节点 id）、`engine`、`pipeline`、`factor_col` |
@@ -247,10 +247,10 @@ GraphStore(db_path)
 
 ## 7. 下一步（路线图）
 
-- [ ] **panel 物化**：panel scan 落盘 + index 唯一性校验等物理细节
-- [ ] **V2.0 清理**：任务版 table/dataset handler 切 graph、V2.0 controller 死代码评估
+- [x] **panel 物化**：panel update 落盘（按 index.materialize_partition 时间桶分区）+ index 唯一性校验
+- [x] **V2.0 清理**：任务版全部切 graph、V2.0 controller 死代码删除、dataset 旧别名/scan 旧名清理
 - [ ] **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
       （`(column) -[:DERIVES]-> (column)`）
-- [ ] **版本/事件沉淀**：version_list 过期裁剪、跨依赖事件精确并集
+- [x] **版本/事件沉淀**：version_list 过期裁剪（按 consumed 水位）、事件合并（upsert/delete 各记一条）
 - [ ] **图算法**：graphqlite 内置算法（PageRank/中心性/连通分量）做资产重要性分析
 - [ ] **图模块边界测试 + gRPC 全链路回归**

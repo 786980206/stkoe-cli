@@ -82,12 +82,12 @@ def test_task_framework_table_handlers(mgr):
     gsvc.close()
     assert meta_check["display_name"] == "D表"
 
-    # 追加数据 → s:table scan 显式重扫：changed=True，版本递增
+    # 追加数据 → s:table update 显式重扫：changed=True，版本递增
     pl.DataFrame({"sym": ["c"], "price": [3.0]}).write_parquet(
         mgr.data_dir / "table" / "demo" / "more.parquet")
-    t_scan = mgr.submit("table", "scan", ["demo"])
-    _await(mgr, t_scan)
-    scan_res = _mgr_result(mgr, t_scan)
+    t_update = mgr.submit("table", "update", ["demo"])
+    _await(mgr, t_update)
+    scan_res = _mgr_result(mgr, t_update)
     assert scan_res["changed"] is True
     assert scan_res["version_after"] > 1  # 经 set/col 已递增，追加数据后再 +1
     gsvc = GraphService(data_dir=mgr.data_dir)

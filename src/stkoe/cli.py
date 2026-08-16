@@ -159,7 +159,10 @@ def _help() -> str:
         "  graph nodes [--type <t>]             节点摘要列表（--type column 列列节点）\n"
         "  graph stats                          图统计（资产/DEPENDS + 列/DERIVES）\n"
         "  graph update [--node <type:name>] [--all]  沿链级联 update（目标 + 下游链拓扑序；\n"
-        "                                         或 --all 全图资产节点）"
+        "                                         或 --all 全图资产节点）\n"
+        "  graph analyze [--node <type:name>]         图算法（PageRank/度中心性/弱连通分量，纯 Python）\n"
+        "  graph impact --node <type:name> | --column <type:name.col> [--depth N]\n"
+        "                                         下游影响分析（资产 DEPENDS 闭包 / 列 DERIVES 闭包）"
     )
 
 

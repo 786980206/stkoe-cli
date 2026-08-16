@@ -213,12 +213,13 @@ DataChangeEvent {
   （`(column) -[:DERIVES]-> (column)`，`graph lineage --columns/--column` + `graph columns`）
 - ✅ **沿链级联 update**：`graph update`（`--node` 目标 + 下游闭包 / `--all` 全图），
   按拓扑序一次更新整条依赖链（上游传导就绪检查的收口，见 §6.13）
+- ✅ **图算法 + 影响分析**：`graph analyze`（PageRank / 度中心性 / 弱连通分量，
+  纯 Python）+ `graph impact`（资产 DEPENDS / 列 DERIVES 下游闭包，见 §6.13）
 
 剩余规划：
-1. **图算法能力**：graphqlite 内置算法（PageRank/中心性/连通分量）用于资产重要性分析
-2. **可选 P2**：`symbol_scope` 提取（读数据页，datetime 区间已够用）；
+1. **可选 P2**：`symbol_scope` 提取（读数据页，datetime 区间已够用）；
    stat 是否纳入图资产（G9 设计决策，当前保持不进图）；ModelNode 资产（G10 后续规划）
-3. **测试**：图模块更多边界用例 + gRPC 全链路回归（持续）
+2. **测试**：图模块更多边界用例 + gRPC 全链路回归（持续）
 
 ## 4. 环境要求与安装
 
@@ -560,6 +561,16 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
   `{"node", "scope": "downstream"|"all", "updated": [{"node", "version_before",
   "version_after", "result"}...]}`（`result` 为各 `*_update` 返回值，`version_*` 为统一
   可比口径：未推进 = 该节点本次无真实变更）
+- **`graph analyze [--node <type:name>]`**：图算法（**纯 Python 实现**，不依赖
+  graphqlite 内置算法）——`page_rank`（有向，DEPENDS 方向：rank 沿边流向被依赖方，
+  被更多下游依赖的资产得分更高）/ `degree`（`in_degree`=被依赖的下游数、
+  `out_degree`=上游依赖数、`degree` 合计，降序）/ `components`（弱连通分量，
+  按 size 降序）；默认全图资产节点（列节点不参与），`--node` 限定该资产
+  上下游子图（含自身）
+- **`graph impact --node <type:name> | --column <type:name.col> [--depth N]`**：
+  下游影响分析——`--node` 返回该资产 DEPENDS 下游闭包（`assets`，带 depth）+
+  其全部列的 DERIVES 下游列闭包（`columns`）；`--column` 返回以该列为中心的
+  DERIVES 下游列闭包（`columns`）+ 受影响列所属资产（`assets`，去重按最小 depth）
 - **可视化**：**portal 前端右上角"血缘关系"抽屉**（Tauri 经 gRPC 拉取渲染）
 
 ## 7. 后台任务（`s:...`）

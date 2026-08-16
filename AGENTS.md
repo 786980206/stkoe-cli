@@ -234,6 +234,32 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 feat(graph): 图算法 + 影响分析——graph analyze / graph impact
+
+- **新模块 `src/stkoe/graph/analyze.py`**（纯 Python，不依赖 graphqlite 内置
+  算法）：
+  - `page_rank`（标准有向迭代实现；边方向与 DEPENDS 一致——rank 沿边流向被
+    依赖方，被更多下游依赖的资产得分更高）、`degree_centrality`（in=被依赖的
+    下游数 / out=上游依赖数 / degree，降序）、`weak_components`（弱连通分量，
+    并查集，按 size 降序）；`analyze` 一次算全
+  - `asset_graph(store, center)`：资产子图提取（列节点不参与；center 时取
+    上下游闭包含自身）
+  - `asset_impact` / `column_impact`：下游影响分析——资产级 DEPENDS 闭包
+    （带 depth）/ 列级 DERIVES 闭包（`column:<资产 id>.<列名>` 拆回所属资产，
+    去重按最小 depth），复用 store._walk 逐层批量遍历
+- **命令**（Execute + CLI，无任务版）：`graph analyze [--node <type:name>]`
+  返回 `{page_rank: [{node, score}]（降序）, degree: [...], components: [...]}`；
+  `graph impact --node <type:name> | --column <type:name.col> [--depth N]`
+  返回 `{assets: [{id, type, name, depth}...], columns: [{id, depth}...]}`；
+  空库返回空结构
+- 测试：test_graph.py TestGraphAnalyze 4 例（标准链算法结构/中心子图/dispatch
+  analyze+impact/空库）+ test_graph_service.py TestGraphAnalyzeImpact 3 例
+  （资产级下游+列闭包/列级闭包与所属资产/dispatch --column）；
+  测试基建抽 `_cleanup_dispatch_cache`（统一清线程本地 GraphService 缓存并
+  显式 close——dispatch 业务 handler 直测后连接延迟释放会让 svc fixture 的
+  rmtree 静默失败、旧库残留到下一用例）
+- 文档：README §6.13（analyze/impact 行）+ §3 路线图勾选（图算法 ✅）、AGENTS.md
+
 ### 2026-08 feat: required_fields 回归——fieldset 字段公式引用列自动登记
 
 - **背景**：v3.0-def.py 的 FieldMeta 本有 ``required_fields``（公式所需上游字段），

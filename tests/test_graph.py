@@ -688,7 +688,80 @@ class TestGraphDispatch:
             shutil.rmtree(base, ignore_errors=True)
 
 
-class TestGraphGrpcExecute:
+class TestGraphAnalyze:
+    """图算法（analyze.py 纯函数）+ graph analyze/impact 命令。"""
+
+    def test_algorithms_on_lineage_chain(self, lineage):
+        """lineage 标准链：PageRank/度中心性/弱连通分量结构正确。"""
+        from stkoe.graph.analyze import analyze, asset_graph
+
+        nodes, edges = asset_graph(lineage.store)
+        assert set(nodes) == {"index:index", "table:m1", "panel:ds1",
+                              "fieldset:fs1", "sample:sp1", "feature:ma5f",
+                              "factor:fac1"}
+        assert len(edges) == 7
+        data = analyze(nodes, edges)
+        ranks = {r["node"]: r["score"] for r in data["page_rank"]}
+        assert set(ranks) == set(nodes)
+        scores = [r["score"] for r in data["page_rank"]]
+        assert scores == sorted(scores, reverse=True)  # 降序输出
+        by_node = {r["node"]: r for r in data["degree"]}
+        assert by_node["index:index"]["in_degree"] == 2  # panel + sample 依赖
+        assert by_node["index:index"]["out_degree"] == 0
+        assert by_node["factor:fac1"]["out_degree"] == 2  # 依赖 sample + feature
+        assert len(data["components"]) == 1
+        assert data["components"][0]["size"] == 7
+
+    def test_asset_graph_center_subgraph(self, lineage):
+        """--node 子图：中心 + 上下游闭包（无血缘路径的 feature 不参与）。"""
+        from stkoe.graph.analyze import asset_graph
+
+        nodes, edges = asset_graph(lineage.store, "panel:ds1")
+        assert set(nodes) == {"panel:ds1", "index:index", "table:m1",
+                              "fieldset:fs1", "sample:sp1", "factor:fac1"}
+        assert len(edges) == 6  # panel→index/m1、fieldset→panel、sample→fieldset/index、
+        # factor→sample
+
+    def test_dispatch_analyze_and_impact(self):
+        from stkoe.grpc.dispatch import dispatch
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_dispatch")
+        _make_graph_db(base)
+        try:
+            data = json.loads(dispatch("graph", "analyze", [],
+                                       data_dir=base)[0].data)
+            assert set(data) == {"page_rank", "degree", "components"}
+            assert len(data["page_rank"]) == 7
+            sub = json.loads(dispatch("graph", "analyze",
+                                      ["--node", "panel:ds1"],
+                                      data_dir=base)[0].data)
+            assert len(sub["page_rank"]) == 6
+            imp = json.loads(dispatch("graph", "impact",
+                                      ["--node", "fieldset:fs1"],
+                                      data_dir=base)[0].data)
+            assert imp["node"] == "fieldset:fs1"
+            assert [a["id"] for a in imp["assets"]] == ["sample:sp1", "factor:fac1"]
+            assert [a["depth"] for a in imp["assets"]] == [1, 2]
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_dispatch_analyze_empty_db(self):
+        from stkoe.grpc.dispatch import dispatch
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_empty")
+        os.makedirs(base, exist_ok=True)
+        try:
+            data = json.loads(dispatch("graph", "analyze", [],
+                                       data_dir=base)[0].data)
+            assert data == {"page_rank": [], "degree": [], "components": []}
+            imp = json.loads(dispatch("graph", "impact",
+                                      ["--node", "fieldset:fs1"],
+                                      data_dir=base)[0].data)
+            assert imp == {"assets": [], "columns": []}
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
     """gRPC Execute 端到端：e:graph ... → DataHeader(0) + JsonData。"""
 
     @pytest.fixture()

@@ -1326,3 +1326,60 @@ def _graph_update(args: list[str], data_dir=None) -> list[Result]:
             raise CommandError("--node 格式应为 <type:name>")
         data = svc.update_cascade(t, n)
     return [Result.json("graph", data)]
+
+
+@handler("graph", "analyze")
+def _graph_analyze(args: list[str], data_dir=None) -> list[Result]:
+    """graph analyze [--node <type:name>]：图算法（纯 Python）。
+
+    PageRank / 度中心性 / 弱连通分量；默认全图资产节点（列节点不参与），
+    --node 限定该资产上下游子图（含自身）。
+    """
+    from ..graph.analyze import analyze, asset_graph
+
+    flags = parse_flags(args)
+    store = _graph_store(data_dir)
+    if store is None:
+        return [Result.json("graph", {"page_rank": [], "degree": [],
+                                      "components": []})]
+    try:
+        node_ids, edges = asset_graph(store, flags.get("node"))
+        data = analyze(node_ids, edges)
+    finally:
+        store.close()
+    return [Result.json("graph", data)]
+
+
+@handler("graph", "impact")
+def _graph_impact(args: list[str], data_dir=None) -> list[Result]:
+    """graph impact --node <type:name> | --column <type:name.col> [--depth N]：
+    下游影响分析。
+
+    --node：该资产 DEPENDS 下游闭包（assets）+ 其全部列的 DERIVES 下游列闭包
+    （columns）；--column：以该列为中心的 DERIVES 下游闭包（columns）+ 受影响
+    列所属资产（assets）。--depth 限制深度（须为正整数）。
+    """
+    from ..graph.analyze import asset_impact, column_impact
+
+    flags = parse_flags(args)
+    node = flags.get("node")
+    column = flags.get("column")
+    if not node and not column:
+        raise CommandError("graph impact 需要 --node <type:name> 或 --column <type:name.col>")
+    depth = int(flags["depth"]) if flags.get("depth") else None
+    if depth is not None and depth < 1:
+        raise CommandError("--depth 需为正整数")
+    store = _graph_store(data_dir)
+    if store is None:
+        empty = {"assets": [], "columns": []}
+        return [Result.json("graph", empty)]
+    try:
+        if column:
+            data = column_impact(store, column, depth=depth)
+            data["column"] = column
+        else:
+            data = asset_impact(store, node, depth=depth)
+            data["node"] = node
+    finally:
+        store.close()
+    return [Result.json("graph", data)]

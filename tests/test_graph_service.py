@@ -102,6 +102,22 @@ def _mgr_task_result(mgr, task):
     return json.loads(evs[-1].data) if evs and evs[-1].data else None
 
 
+def _cleanup_dispatch_cache(base):
+    """清 dispatch 线程本地 GraphService 缓存并显式关闭。
+
+    dispatch 业务 handler（走 ``_graph_service``）会在线程本地缓存一个 GraphService
+    实例；不清理的话连接可能延迟释放，导致 svc fixture 的 rmtree(ignore_errors=True)
+    静默失败、旧库残留到下一个用例（table already registered 假象）。
+    """
+    import os as _os
+
+    from stkoe.grpc import dispatch as _d
+
+    inst = _d._thread_local.services.pop(_os.path.realpath(base), None)
+    if inst is not None:
+        inst.close()
+
+
 class TestTableGraph:
     def test_unregistered_raises_asset_not_found(self, svc):
         """§8 错误体系统一：未注册资产抛 AssetNotFoundError（不再抛 TableNotFoundError）"""
@@ -1252,7 +1268,6 @@ class TestUpdateCascade:
     def test_dispatch_update_cascade(self, svc):
         """Execute 通道：graph update --node / --all。"""
         import json
-        import os as _os
 
         from stkoe.grpc import dispatch as _d
 
@@ -1274,10 +1289,7 @@ class TestUpdateCascade:
             assert all(u["version_after"] == u["version_before"]
                        for u in data2["updated"] if u["node"] != "panel:ds1")
         finally:
-            # 清线程本地缓存并显式关闭，避免缓存连接阻碍 fixture 清理（rmtree）
-            inst = _d._thread_local.services.pop(_os.path.realpath(base), None)
-            if inst is not None:
-                inst.close()
+            _cleanup_dispatch_cache(base)
 
 
 class TestRequiredFields:
@@ -1328,6 +1340,74 @@ class TestRequiredFields:
         m = svc.fieldset_meta("fs1")
         assert m["fields"]["x2"]["required_fields"] == ["code"]
         base = str(svc.data_dir)
-        data = json.loads(dispatch("fieldset", "meta", ["fs1"],
-                                   data_dir=base)[0].data)
-        assert data["fields"]["x2"]["required_fields"] == ["code"]
+        try:
+            data = json.loads(dispatch("fieldset", "meta", ["fs1"],
+                                       data_dir=base)[0].data)
+            assert data["fields"]["x2"]["required_fields"] == ["code"]
+        finally:
+            _cleanup_dispatch_cache(base)
+
+
+class TestGraphAnalyzeImpact:
+    """graph impact 列级：DERIVES 下游闭包（含列节点的全资产链）。"""
+
+    def _chain(self, svc):
+        # 覆盖 index/data.parquet 加入测试必需列（tester 需要 r/ic/fv）
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
+                      "code": [1, 2]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "data.parquet"))
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_check("fs1", "x2")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.feature_add("f1", "code * 2")
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.tester_add("t1", "fac1")
+
+    def test_asset_impact_downstream_assets_and_columns(self, svc):
+        """资产级影响：DEPENDS 下游（带 depth）+ 该资产列的 DERIVES 下游列。"""
+        from stkoe.graph.analyze import asset_impact
+
+        self._chain(svc)
+        r = asset_impact(svc.store, "fieldset:fs1")
+        assert [a["id"] for a in r["assets"]] == \
+            ["sample:sp1", "factor:fac1", "tester:t1"]
+        assert [a["depth"] for a in r["assets"]] == [1, 2, 3]
+        assert r["columns"], "fieldset 列的 DERIVES 下游列不应为空"
+        col_ids = [c["id"] for c in r["columns"]]
+        assert all(cid.startswith("column:") for cid in col_ids)
+        assert all(not cid.startswith("column:fieldset:fs1") for cid in col_ids)
+        # 全部落在下游资产上（sample/factor/tester）
+        owners = {cid[len("column:"):].rpartition(".")[0] for cid in col_ids}
+        assert owners <= {"sample:sp1", "factor:fac1", "tester:t1"}
+
+    def test_column_impact_derives_closure(self, svc):
+        """列级影响：x2 列的 DERIVES 下游闭包 + 所属资产（不含自身资产）。"""
+        from stkoe.graph.analyze import column_impact
+
+        self._chain(svc)
+        r = column_impact(svc.store, "column:fieldset:fs1.x2")
+        assert r["columns"]
+        assert all(c["depth"] >= 1 for c in r["columns"])
+        assets = [a["id"] for a in r["assets"]]
+        assert assets
+        assert "fieldset:fs1" not in assets
+        assert assets[0] == "sample:sp1"  # 最近的下游资产排最前（最小 depth）
+
+    def test_dispatch_impact_column(self, svc):
+        """Execute 通道：graph impact --column。"""
+        import json
+
+        from stkoe.grpc.dispatch import dispatch
+
+        self._chain(svc)
+        data = json.loads(dispatch("graph", "impact",
+                                   ["--column", "column:fieldset:fs1.x2"],
+                                   data_dir=str(svc.data_dir))[0].data)
+        assert data["column"] == "column:fieldset:fs1.x2"
+        assert data["columns"]
+        assert data["assets"]

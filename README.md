@@ -82,17 +82,32 @@ create_time / update_time / extra`。
 | `Tester` | TesterNode | `factor`（节点 id）、`returns/groupby/marketcap`、`spec`（quantiles/periods/…） |
 | `Model` | ModelNode | （预留） |
 | `Stat` | StatNode | （预留，stat 当前不进图） |
+| `Column` | 列节点（列级血缘） | `name`（列名）、`asset`（所属资产节点 id）、`asset_type`、`data_type/unit/formula/display_name/description/tags/as_index/source_table/source_field` |
 
 ColumnMeta / FieldMeta：`name, display_name, description, data_type, unit, formula, tags,
-as_index, is_tool, source_table, source_field`。**列级血缘**：本阶段在 DEPENDS 边 `detail`
-中记录，不建独立列节点；后续可升级为 `(column) -[:DERIVES]-> (column)` 列节点图。
+as_index, is_tool, source_table, source_field`。**列级血缘**：DEPENDS 边 `detail.columns`
+的字段映射（`{派生列: 源列 | [源列...]}`）物化为**独立列节点图**——每列一个 `Column`
+节点（id = `column:<资产 id>.<列名>`），派生列与源列之间建 `(column) -[:DERIVES]-> (column)`
+边（方向与 DEPENDS 一致：派生列 → 源列）；源头列（table/index）随登记/重扫对账，
+字段/公式变更（fieldset `add_field/set_field`）自动重派发。
 
-### 2.3 边模型（DEPENDS）
+### 2.3 边模型（DEPENDS + DERIVES）
 
-- **方向**：`(依赖方) -[:DEPENDS]-> (被依赖方)` —— 出边 = 我依赖谁（上游），入边 = 谁依赖我（下游）
-- **边属性**：`required_version`（依赖方已消费的被依赖方版本，物化时对齐）、
+- **DEPENDS 方向**：`(依赖方) -[:DEPENDS]-> (被依赖方)` —— 出边 = 我依赖谁（上游），入边 = 谁依赖我（下游）
+- **DEPENDS 边属性**：`required_version`（依赖方已消费的被依赖方版本，物化时对齐）、
   `detail`（`{"role": "index"/"member"/"panel"/"fieldset"/"feature"/"sample"/"factor",
-  "join": ..., "fields": [...]}`；`join` 仅 table → panel 边带）、`create_time`
+  "join": ..., "columns": {派生列: 源列 | [源列...]}}`；`join` 仅 table → panel 边带；
+  `columns` 为**字段映射**，由 controller 物化为列节点图，见 §2.2）、`create_time`
+- **DERIVES 方向**：`(column:派生列) -[:DERIVES]-> (column:源列)`（与 DEPENDS 同向：
+  派生列 → 其来源列）；列节点 label = `Column`，id = `column:<资产 id>.<列名>`
+  （如 `column:fieldset:fs1.ma5`）；资产删除时其列节点级联删除（DETACH 连带 DERIVES 边）
+- **列级血缘映射来源**：
+  - panel 列 → index/成员表列（同名透传；与 index 同名的成员列不重复映射）
+  - fieldset keys → panel keys；字段列 → 公式引用的 panel 列（标识符 ∩ panel 视图列）
+  - sample 视图列 → fieldset 列（透传）；sample keys → 筛选 index 的 symbol/datetime 列
+  - factor keys → sample keys；`factor_col` → feature 公式引用的 sample 视图列
+  - tester：keys/factor/factor_quantile → factor 列；returns/group/marketcap/d{no} →
+    sample 视图列（跨依赖引用，同步建 DERIVES 边）
 
 典型血缘子图：
 
@@ -194,14 +209,14 @@ DataChangeEvent {
 - ✅ **增量物化闭环**：范围化事件（datetime 区间 + delete）+ 沿链增量重算 + get 三态
 - ✅ **gRPC Execute 通道输出**：`graph lineage/nodes/stats` + portal 血缘模块（Cytoscape.js）
 - ✅ **dbt 集成**：`dbt-manifest-file` 配置 + table/index add 自动应用模型元数据
+- ✅ **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
+  （`(column) -[:DERIVES]-> (column)`，`graph lineage --columns/--column` + `graph columns`）
 
 剩余规划：
-1. **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
-   （`(column) -[:DERIVES]-> (column)`）
-2. **图算法能力**：graphqlite 内置算法（PageRank/中心性/连通分量）用于资产重要性分析
-3. **可选 P2**：`symbol_scope` 提取（读数据页，datetime 区间已够用）；
+1. **图算法能力**：graphqlite 内置算法（PageRank/中心性/连通分量）用于资产重要性分析
+2. **可选 P2**：`symbol_scope` 提取（读数据页，datetime 区间已够用）；
    stat 是否纳入图资产（G9 设计决策，当前保持不进图）；ModelNode 资产（G10 后续规划）
-4. **测试**：图模块更多边界用例 + gRPC 全链路回归（持续）
+3. **测试**：图模块更多边界用例 + gRPC 全链路回归（持续）
 
 ## 4. 环境要求与安装
 
@@ -506,9 +521,12 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
 
 ### 6.13 `graph` 血缘图（graphqlite 图数据，Execute + CLI；无任务版）
 
-- **数据来源**：`<data-dir>/catalog.db`（graphqlite 嵌入式图库，资产血缘 DEPENDS 边，
-  见 §2 图设计）；库不存在时返回空图（`node_count=0`）
-- **`graph lineage`** 返回 Cytoscape.js elements payload（前端可直接渲染）：
+- **数据来源**：`<data-dir>/catalog.db`（graphqlite 嵌入式图库，资产血缘 DEPENDS 边 +
+  列级血缘 Column 节点/DERIVES 边，见 §2 图设计）；库不存在时返回空图（`node_count=0`）
+- **`graph lineage`** 返回 Cytoscape.js elements payload（前端可直接渲染）；
+  **`--columns`** 叠加列级血缘（涉及资产的 Column 节点 + DERIVES 边）；
+  **`--column <type:name.col>`**（如 `fieldset:fs1.ma5`）以某列为中心返回列级血缘子图
+  （上游来源列 + 下游派生列 + 所属资产上下文）：
 
 ```json
 {
@@ -525,10 +543,14 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
 }
 ```
 
-- 节点 `id` = `"<type>:<name>"`，`type` 决定前端着色；边方向 = 依赖方向
-  （依赖方 → 被依赖方），`join` 仅 table → panel 边带
+- 节点 `id` = `"<type>:<name>"`（列节点 `"column:<资产 id>.<列名>"`），`type` 决定前端着色；
+  边方向 = 依赖方向（依赖方 → 被依赖方 / 派生列 → 源列），`join` 仅 table → panel 边带
 - `--node <type:name>` 只导出该节点上下游子图（`--depth N` 限制深度，须为正整数）；
-  `graph nodes --type <t>` 供前端中心节点选择器使用
+  `graph nodes --type <t>` 供前端中心节点选择器使用（`--type column` 列列节点）
+- **`graph columns [--node <type:name>]`**：列节点清单（全部，或指定资产的列，
+  含 data_type/formula/as_index 等属性）
+- **`graph stats`**：`node_count/edge_count`（资产/DEPENDS 口径）+ `column_count/derives_count`
+  （列级血缘口径）
 - **可视化**：**portal 前端右上角"血缘关系"抽屉**（Tauri 经 gRPC 拉取渲染）
 
 ## 7. 后台任务（`s:...`）
@@ -921,7 +943,7 @@ src/stkoe/
 ├── graph/              # V3.0 资产血缘图（graphqlite）+ GraphService
 │   ├── model.py        # DataChangeEvent / AssetMeta / DependencyEdge / 列元数据
 │   ├── store.py        # GraphStore：节点/边 CRUD + BFS 血缘遍历 + txn 事务
-│   ├── export.py       # build_payload / node_summaries（→ Cytoscape elements JSON）
+│   ├── export.py       # build_payload / column_payload / node_summaries（→ Cytoscape elements JSON）
 │   ├── events.py       # 事件合并（并集/交集）与积累（required_version 水位线）
 │   ├── controller.py   # GraphController：CRUD + 依赖约束 + notify_change/resolve(_all)
 │   ├── service.py      # GraphService：table/index/panel/fieldset/sample/feature/factor/test

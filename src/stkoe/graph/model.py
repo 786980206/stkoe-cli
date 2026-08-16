@@ -30,6 +30,21 @@ def split_node_id(nid: str) -> tuple[str, str]:
     return t, n
 
 
+def column_node_id(asset_id: str, column: str) -> str:
+    """列节点唯一 id：``column:<资产 id>.<列名>``（如 ``column:table:m1.price``）。
+
+    ``column:`` 前缀保证与资产节点 id（``<type>:<name>``）永不冲突。
+    """
+    return f"column:{asset_id}.{column}"
+
+
+def split_column_node_id(cid: str) -> tuple[str, str]:
+    """把列节点 id 拆回 (资产 id, 列名)。"""
+    rest = cid[len("column:"):]
+    asset, _, col = rest.rpartition(".")
+    return asset, col
+
+
 @dataclass(frozen=True)
 class DataChangeEvent:
     """一次物理数据变化：对「时间范围 × 标的 × 字段」的一批 upsert / delete。
@@ -250,6 +265,7 @@ AssetNode = AssetMeta
 __all__ = [
     "ASSET_TYPES", "LABEL_TO_TYPE", "TYPE_TO_LABEL",
     "node_id", "split_node_id",
+    "column_node_id", "split_column_node_id",
     "DataChangeEvent", "ColumnMeta", "FieldMeta",
     "AssetMeta", "AssetNode", "DependencyEdge",
 ]

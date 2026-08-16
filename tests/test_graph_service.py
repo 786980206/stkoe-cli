@@ -264,9 +264,9 @@ class TestIndexGraph:
         assert node["type"] == "index"
         assert node["symbol_col"] == "sym"
         assert node["datetime_col"] == "date"
-        # index 与 table 是不同 label
+        # index 与 table 是不同 label；两者列登记为 Column 节点（列级血缘）
         svc.table_add("m1")
-        assert {n["type"] for n in svc.store.list_nodes()} == {"index", "table"}
+        assert {n["type"] for n in svc.store.list_nodes()} == {"index", "table", "column"}
 
     def test_index_add_requires_unique_keys(self, tmp_path):
         """V3.0 设计：index 的 (symbol, datetime) 组合必须唯一，重复拒绝登记"""
@@ -862,3 +862,171 @@ class TestTesterGraph:
         d = svc.test_data("t1")
         assert d.height == 3
         assert sorted(d["date"].to_list()) == ["2024-01-01", "2024-01-01", "2024-01-02"]
+
+
+class TestColumnLineage:
+    """列级血缘：DEPENDS 边 detail 的字段映射 → Column 节点 + DERIVES 边。
+
+    链：index/m1 → panel:ds1 → fieldset:fs1(x2) → sample:sp1 → factor:fac1 → tester:tt1
+    （index 含测试必需列 r/ic/fv；fieldset 字段 x2 = code * 2；feature f1 = code * 2）
+    """
+
+    def _chain(self, svc, with_test=True):
+        # 覆盖 index/data.parquet 加入测试必需列（多文件 scan 不 union schema）
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
+                      "code": [1, 2]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "data.parquet"))
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_check("fs1", "x2")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.feature_add("f1", "code * 2")
+        svc.factor_add("fac1", "f1", "sp1")
+        if with_test:
+            svc.test_add("tt1", "fac1")
+
+    def test_source_columns_registered(self, svc):
+        """源头（table/index）登记即建列节点（带元数据）。"""
+        svc.table_add("m1")
+        svc.index_add("index")
+        st = svc.store
+        idx = {c["name"]: c for c in st.columns_of("index:index")}
+        assert set(idx) == {"sym", "date", "code"}
+        assert idx["sym"]["data_type"]  # 源头列带类型
+        assert idx["sym"]["asset_type"] == "index"
+        assert {c["name"] for c in st.columns_of("table:m1")} == {"sym", "date", "price"}
+
+    def test_panel_derives_from_index_and_members(self, svc):
+        """panel 列 DERIVES → index 列 / 成员表列；DEPENDS 边 detail 携带映射。"""
+        self._chain(svc, with_test=False)
+        st = svc.store
+        assert {c["name"] for c in st.columns_of("panel:ds1")} == \
+            {"sym", "date", "code", "price", "r", "ic", "fv"}
+        assert st.deps_of("column:panel:ds1.sym", rel_type="DERIVES")[0]["target"] \
+            == "column:index:index.sym"
+        assert st.deps_of("column:panel:ds1.price", rel_type="DERIVES")[0]["target"] \
+            == "column:table:m1.price"
+        # 同名去重：member 与 index 同名列不重复建映射
+        e = st.get_edge("panel:ds1", "table:m1")
+        assert e["detail"]["columns"] == {"price": "price"}
+        assert "sym" not in e["detail"]["columns"]
+
+    def test_fieldset_field_derives_to_panel_cols(self, svc):
+        """字段列 DERIVES → 公式引用的 panel 列；set_field 改公式后重派发。"""
+        self._chain(svc, with_test=False)
+        st = svc.store
+        cols = {c["name"]: c for c in st.columns_of("fieldset:fs1")}
+        assert {"sym", "date", "x2"} <= set(cols)
+        assert cols["sym"]["as_index"] is True
+        assert cols["x2"]["formula"] == "code * 2"
+        assert st.deps_of("column:fieldset:fs1.x2", rel_type="DERIVES")[0]["target"] \
+            == "column:panel:ds1.code"
+        assert st.deps_of("column:fieldset:fs1.sym", rel_type="DERIVES")[0]["target"] \
+            == "column:panel:ds1.sym"
+        # 改公式 → 清旧映射 + 按新公式重派发
+        svc.fieldset_set_field("fs1", "x2", formula="price * 2")
+        targets = {e["target"] for e in
+                   st.deps_of("column:fieldset:fs1.x2", rel_type="DERIVES")}
+        assert targets == {"column:panel:ds1.price"}
+
+    def test_sample_factor_test_chain_derives(self, svc):
+        """sample 视图透传 + index 键映射；factor_col → 公式引用列；test 跨依赖引用。"""
+        self._chain(svc)
+        st = svc.store
+        # sample：视图列透传 fieldset（含已校验字段 x2）+ 键映射 index
+        assert {c["name"] for c in st.columns_of("sample:sp1")} == \
+            {"sym", "date", "code", "price", "r", "ic", "fv", "x2"}
+        assert st.deps_of("column:sample:sp1.x2", rel_type="DERIVES")[0]["target"] \
+            == "column:fieldset:fs1.x2"
+        sym_srcs = {e["target"] for e in
+                    st.deps_of("column:sample:sp1.sym", rel_type="DERIVES")}
+        assert sym_srcs == {"column:fieldset:fs1.sym", "column:index:index.sym"}
+        date_srcs = {e["target"] for e in
+                     st.deps_of("column:sample:sp1.date", rel_type="DERIVES")}
+        assert date_srcs == {"column:fieldset:fs1.date", "column:index:index.date"}
+        # factor：keys 透传 sample + factor_col → feature 公式引用列
+        assert {c["name"] for c in st.columns_of("factor:fac1")} == {"sym", "date", "f1"}
+        assert st.deps_of("column:factor:fac1.f1", rel_type="DERIVES")[0]["target"] \
+            == "column:sample:sp1.code"
+        assert st.deps_of("column:factor:fac1.sym", rel_type="DERIVES")[0]["target"] \
+            == "column:sample:sp1.sym"
+        # test：factor 列（factor/factor_quantile/keys）+ 跨依赖 sample 列（returns/group/...）
+        assert st.deps_of("column:tester:tt1.factor", rel_type="DERIVES")[0]["target"] \
+            == "column:factor:fac1.f1"
+        assert st.deps_of("column:tester:tt1.factor_quantile",
+                          rel_type="DERIVES")[0]["target"] == "column:factor:fac1.f1"
+        assert {e["target"] for e in
+                st.deps_of("column:tester:tt1.returns", rel_type="DERIVES")} \
+            == {"column:sample:sp1.r"}
+        assert st.deps_of("column:tester:tt1.group", rel_type="DERIVES")[0]["target"] \
+            == "column:sample:sp1.ic"
+        assert st.deps_of("column:tester:tt1.marketcap",
+                          rel_type="DERIVES")[0]["target"] == "column:sample:sp1.fv"
+        assert st.deps_of("column:tester:tt1.d1", rel_type="DERIVES")[0]["target"] \
+            == "column:sample:sp1.r"
+
+    def test_delete_cascades_column_nodes(self, svc):
+        """资产删除 → 其列节点级联删除（DERIVES 边随之清除）。"""
+        self._chain(svc)
+        st = svc.store
+        svc.test_delete("tt1")
+        assert st.columns_of("tester:tt1") == []
+        svc.factor_delete("fac1")
+        assert st.columns_of("factor:fac1") == []
+        svc.sample_delete("sp1")
+        assert st.columns_of("sample:sp1") == []
+        svc.fieldset_delete("fs1")
+        assert st.columns_of("fieldset:fs1") == []
+        # 列删除后没有悬空 DERIVES 边（DETACH DELETE）
+        assert st.deps_of("column:panel:ds1.price", rel_type="DERIVES")[0]["target"] \
+            == "column:table:m1.price"
+
+    def test_payload_with_columns_and_column_center(self, svc):
+        """export：--columns 叠加列层；column_payload 以列为中心查上游来源/下游派生。"""
+        from stkoe.graph.export import build_payload, column_payload
+
+        self._chain(svc)
+        store = svc.store
+        p = build_payload(store, with_columns=True)
+        ids = {n["data"]["id"] for n in p["elements"]["nodes"]}
+        assert "column:fieldset:fs1.x2" in ids
+        assert "column:table:m1.price" in ids
+        assert "column" in p["graph"]["types"]
+        assert any(e["data"]["id"].startswith("column:")
+                   for e in p["elements"]["edges"])  # DERIVES 边
+        # 不带 --columns：资产图口径不变
+        p2 = build_payload(store)
+        assert all(n["data"]["type"] != "column" for n in p2["elements"]["nodes"])
+
+        cp = column_payload(store, "column:fieldset:fs1.x2")
+        cids = {n["data"]["id"] for n in cp["elements"]["nodes"]}
+        assert "column:panel:ds1.code" in cids   # 上游来源
+        assert "column:sample:sp1.x2" in cids    # 下游派生
+        assert "fieldset:fs1" in cids            # 所属资产上下文
+
+    def test_dispatch_columns_and_column_lineage(self, svc):
+        """Execute 通道：graph columns / lineage --columns / --column。"""
+        import json
+
+        from stkoe.grpc.dispatch import dispatch
+
+        self._chain(svc)
+        base = str(svc.data_dir)
+        cols = json.loads(dispatch("graph", "columns",
+                                   ["--node", "index:index"], data_dir=base)[0].data)
+        assert {c["name"] for c in cols} == {"sym", "date", "r", "ic", "fv", "code"}
+        stats = json.loads(dispatch("graph", "stats", [], data_dir=base)[0].data)
+        assert stats["node_count"] == 8  # index/m1/panel/fieldset/sample/feature/factor/tester
+        assert stats["column_count"] > 0 and stats["derives_count"] > 0
+        p = json.loads(dispatch("graph", "lineage", ["--columns"],
+                                data_dir=base)[0].data)
+        assert "column" in p["graph"]["types"]
+        cp = json.loads(dispatch("graph", "lineage",
+                                 ["--column", "column:fieldset:fs1.x2"],
+                                 data_dir=base)[0].data)
+        assert cp["graph"]["center"] == "column:fieldset:fs1.x2"
+        assert cp["elements"]["nodes"]

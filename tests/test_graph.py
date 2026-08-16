@@ -153,7 +153,8 @@ class TestStore:
         assert [n["id"] for n in st.downstream("table:a", depth=1)] == ["panel:b"]
         assert [n["id"] for n in st.upstream("factor:d")] == \
             ["fieldset:c", "panel:b", "table:a"]
-        assert st.stats() == {"node_count": 4, "edge_count": 3}
+        assert st.stats() == {"node_count": 4, "edge_count": 3,
+                              "column_count": 0, "derives_count": 0}
 
     def test_txn_rollback(self):
         st = GraphStore(":memory:")
@@ -449,7 +450,9 @@ class TestEventFlow:
             ctrl.resolve_all()
 
     def test_stale_and_stats(self, lineage):
-        assert lineage.stats() == {"node_count": 7, "edge_count": 7}
+        # fieldset 有 keys(sym/date) + 字段(ma5) 三个列节点（无 DERIVES 边，controller 层）
+        assert lineage.stats() == {"node_count": 7, "edge_count": 7,
+                                   "column_count": 3, "derives_count": 0}
         IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(action="upsert"))
         assert len(lineage.stale()) == 4
 
@@ -532,7 +535,8 @@ class TestHandlers:
         IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
             action="upsert", symbol_scope=["a"]))
         assert len(GraphHandler.stale(lineage)) == 4
-        assert GraphHandler.scan(lineage) == {"node_count": 7, "edge_count": 7}
+        assert GraphHandler.scan(lineage) == {"node_count": 7, "edge_count": 7,
+                                              "column_count": 3, "derives_count": 0}
 
     def test_delete_leaf_then_parent(self, lineage):
         # 逐层删叶子（新链顺序：fac1 → sp1 → fs1 → ma5f → ds1 → m1 → index）
@@ -543,7 +547,8 @@ class TestHandlers:
         PanelHandler.delete(lineage, "ds1")
         TableHandler.delete(lineage, "m1")
         IndexHandler.delete(lineage, "index")
-        assert lineage.stats() == {"node_count": 0, "edge_count": 0}
+        assert lineage.stats() == {"node_count": 0, "edge_count": 0,
+                                   "column_count": 0, "derives_count": 0}
 
 
 class TestStorageHook:
@@ -636,7 +641,8 @@ class TestGraphDispatch:
             by_type = [n for n in nodes if n["type"] == "panel"]
             assert by_type[0]["name"] == "ds1"
             stats = json.loads(dispatch("graph", "stats", [], data_dir=base)[0].data)
-            assert stats == {"node_count": 7, "edge_count": 7}
+            assert stats == {"node_count": 7, "edge_count": 7,
+                             "column_count": 0, "derives_count": 0}
         finally:
             import shutil
             shutil.rmtree(base, ignore_errors=True)
@@ -675,7 +681,8 @@ class TestGraphDispatch:
             assert payload["graph"]["node_count"] == 7
             assert dispatch("graph", "nodes", [], data_dir="~")[0].data != "[]"
             stats = json.loads(dispatch("graph", "stats", [], data_dir="~")[0].data)
-            assert stats == {"node_count": 7, "edge_count": 7}
+            assert stats == {"node_count": 7, "edge_count": 7,
+                             "column_count": 0, "derives_count": 0}
         finally:
             import shutil
             shutil.rmtree(base, ignore_errors=True)
@@ -756,7 +763,9 @@ class TestGraphGrpcExecute:
         assert [n["name"] for n in nodes] == ["ds1"]
         header, datas = self._collect(client.Execute(
             stkoe_pb2.ExecuteRequest(source="graph", action="stats")))
-        assert json.loads(datas[0].json.data) == {"node_count": 7, "edge_count": 7}
+        assert json.loads(datas[0].json.data) == {"node_count": 7, "edge_count": 7,
+                                                  "column_count": 0,
+                                                  "derives_count": 0}
 
     def test_execute_graph_bad_depth(self, client):
         from stkoe.grpc import stkoe_pb2

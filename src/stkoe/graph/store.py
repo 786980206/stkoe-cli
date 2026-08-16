@@ -272,8 +272,28 @@ class GraphStore:
         return out
 
     def stale_nodes(self) -> list[dict]:
-        """全部 ``valid=false`` 的节点（待重算清单）。"""
+        """全部 ``valid=false`` 的节点（待重算清单；列节点恒有效不参与）。"""
         return [n for n in self.list_nodes() if not n.get("valid", True)]
+
+    # ---------- 列节点（列级血缘：Column 节点 + DERIVES 边） ----------
+
+    def columns_of(self, asset_id: str) -> list[dict]:
+        """某资产的列节点清单（属性 dict，含归一 ``type``）。"""
+        r = self._cypher("MATCH (c:Column {asset: $id}) RETURN c", {"id": asset_id})
+        out = []
+        for row in r:
+            node = self._normalize(row.get("c"))
+            if node is not None:
+                out.append(node)
+        return out
+
+    def delete_columns_of(self, asset_id: str) -> None:
+        """删除某资产的全部列节点（连带 DERIVES 边）——资产删除时级联。"""
+        self._cypher("MATCH (c:Column {asset: $id}) DETACH DELETE c", {"id": asset_id})
+
+    def delete_derives_from(self, column_id: str) -> None:
+        """删除某列节点的全部 DERIVES 出边（重派生前清旧映射）。"""
+        self._cypher("MATCH (c {id: $id})-[r:DERIVES]->() DELETE r", {"id": column_id})
 
     # ---------- 边 CRUD ----------
 
@@ -355,12 +375,14 @@ class GraphStore:
 
     # ---------- 血缘遍历 ----------
 
-    def _walk(self, start: str, outgoing: bool, depth: int | None) -> list[dict]:
+    def _walk(self, start: str, outgoing: bool, depth: int | None,
+              rel: str = "DEPENDS") -> list[dict]:
         """血缘遍历：**逐层批量 Cypher**（每层一次 ``MATCH ... WHERE a.id IN $ids``）。
 
         - 比变长路径 ``length(p)`` 可靠（graphqlite 对多跳路径的 length 返回 1）；
         - 比逐节点查询高效（一次查询一层，批量 IN 拿下一层 + 边属性）；
-        - 返回 [{id, type, name, depth, required_version}]，按深度升序（BFS 序）。
+        - 返回 [{id, type, name, depth, required_version}]，按深度升序（BFS 序）；
+        - ``rel`` 可指定 ``DERIVES``（列级血缘：列 → 其来源列）。
         """
         seen: set[str] = set()
         out: list[dict] = []
@@ -369,8 +391,8 @@ class GraphStore:
         max_depth = depth if depth is not None else 1 << 30
         while level and d < max_depth:
             d += 1
-            rel = "-[r:DEPENDS]->" if outgoing else "<-[r:DEPENDS]-"
-            q = (f"MATCH (a){rel}(n) WHERE a.id IN $ids "
+            rel_pat = f"-[r:{rel}]->" if outgoing else f"<-[r:{rel}]-"
+            q = (f"MATCH (a){rel_pat}(n) WHERE a.id IN $ids "
                  f"RETURN DISTINCT n.id AS id, r.required_version AS rv")
             rows = self._cypher(q, {"ids": level})
             nxt: list[str] = []
@@ -394,14 +416,29 @@ class GraphStore:
         """下游血缘：传递影响（入边方向）。"""
         return self._walk(node_id, outgoing=False, depth=depth)
 
+    def column_upstream(self, column_id: str, depth: int | None = None) -> list[dict]:
+        """列的上游来源：``(列) -[:DERIVES]-> (来源列)`` 传递闭包。"""
+        return self._walk(column_id, outgoing=True, depth=depth, rel="DERIVES")
+
+    def column_downstream(self, column_id: str, depth: int | None = None) -> list[dict]:
+        """列的下游派生：``(派生列) -[:DERIVES]-> (列)`` 传递闭包。"""
+        return self._walk(column_id, outgoing=False, depth=depth, rel="DERIVES")
+
     # ---------- 统计 ----------
 
     def stats(self) -> dict:
-        nodes = self._cypher("MATCH (n) RETURN count(n) AS c")
+        """图统计：资产节点/DEPENDS 边（血缘图口径）+ 列节点/DERIVES 边。"""
+        total = self._cypher("MATCH (n) RETURN count(n) AS c")
+        cols = self._cypher("MATCH (n:Column) RETURN count(n) AS c")
         edges = self._cypher("MATCH ()-[r]->() RETURN count(r) AS c")
+        derives = self._cypher("MATCH ()-[r:DERIVES]->() RETURN count(r) AS c")
         return {
-            "node_count": int(nodes[0]["c"] or 0) if nodes else 0,
-            "edge_count": int(edges[0]["c"] or 0) if edges else 0,
+            "node_count": int(total[0]["c"] or 0) - int(cols[0]["c"] or 0)
+            if total and cols else 0,
+            "edge_count": int(edges[0]["c"] or 0) - int(derives[0]["c"] or 0)
+            if edges and derives else 0,
+            "column_count": int(cols[0]["c"] or 0) if cols else 0,
+            "derives_count": int(derives[0]["c"] or 0) if derives else 0,
         }
 
 

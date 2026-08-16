@@ -234,6 +234,31 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 feat: 列级血缘——DEPENDS 边 detail 字段映射升级为独立列节点图
+
+- **列节点图**：每列一个 `Column` 节点（label=Column，id=`column:<资产 id>.<列名>`，
+  属性含 asset/asset_type/data_type/formula/as_index 等），派生列 → 源列建
+  `(column) -[:DERIVES]-> (column)` 边（方向与 DEPENDS 一致）；资产删除级联删列节点
+  （DETACH 连带 DERIVES）；无 DERIVES 引用的孤立列节点在对账时清理
+- **映射来源**（DEPENDS 边 `detail.columns` = `{派生列: 源列|[源列...]}`，controller.add
+  同事务物化 DERIVES；跨依赖引用用 `sync_derives` 直建）：
+  - panel 列 → index/成员表列（同名透传，与 index 同名成员列去重）
+  - fieldset keys → panel keys；字段列 → 公式引用列（标识符 ∩ panel 视图列，
+    `_formula_refs`；set_field 改公式清旧映射重派发）
+  - sample 视图列 → fieldset 列（透传）；sample keys → 筛选 index 键列（按位置）
+  - factor keys → sample keys；factor_col → feature 公式引用的 sample 视图列
+  - tester keys/factor/factor_quantile → factor 列；returns/group/marketcap/d{no} →
+    sample 视图列（跨依赖）
+- **查询/导出**：`e:graph columns [--node <type:name>]` 列节点清单；`lineage --columns`
+  叠加列层；`lineage --column <type:name.col>` 以列为中心查来源/派生；`graph stats`
+  新增 `column_count/derives_count`（node/edge 保持资产口径）；`node_summaries`
+  默认排除列节点（`--type column` 显式列出）
+- 测试：test_graph_service.py 新增 TestColumnLineage 7 例（源头列登记/panel/fieldset
+  公式重派发/sample-factor-test 全链/删除级联/export payload/dispatch 通道）+ stats
+  断言适配；全量 218 用例绿
+- 文档：README §2.2 节点模型（Column 行 + 列级血缘说明）/§2.3 边模型（DERIVES）/
+  §3 路线图勾选/§6.13（columns/--columns/--column/stats 新键）、example.md 血缘可视化
+
 ### 2026-08 refactor(settings): config set 写入位置与读取统一（写入生效配置所在文件）
 
 - **问题**：读取有三级回退（`STKOE_CONFIG` > `./stkoe.json` > `~/.stkoe/stkoe.json`），

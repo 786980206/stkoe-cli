@@ -1226,29 +1226,54 @@ def _graph_store(data_dir):
 
 @handler("graph", "lineage")
 def _graph_lineage(args: list[str], data_dir=None) -> list[Result]:
-    """graph lineage [--node <type:name>] [--depth N]：血缘图 Cytoscape elements payload。
+    """graph lineage [--node <type:name>] [--depth N] [--columns] [--column <t:n.col>]
 
-    缺 --node 返回全图；带 --node 返回该节点上下游子图（--depth 限制深度）。
+    血缘图 Cytoscape elements payload：缺 --node 返回全图；带 --node 返回该节点
+    上下游子图（--depth 限制深度）；--columns 叠加列级血缘（Column 节点 +
+    DERIVES 边）；--column <type:name.col> 以某列为中心返回列级血缘子图。
     """
-    from ..graph.export import build_payload
+    from ..graph.export import build_payload, column_payload
 
     flags = parse_flags(args)
     node = flags.get("node")
+    column = flags.get("column")
     depth = int(flags["depth"]) if flags.get("depth") else None
     if depth is not None and depth < 1:
         raise CommandError("--depth 需为正整数")
     store = _graph_store(data_dir)
     if store is None:
         return [Result.json("graph", {
-            "graph": {"exported_at": "", "center": node, "node_count": 0,
-                      "edge_count": 0, "types": []},
+            "graph": {"exported_at": "", "center": column or node,
+                      "node_count": 0, "edge_count": 0, "types": []},
             "elements": {"nodes": [], "edges": []},
         })]
     try:
-        payload = build_payload(store, center=node, depth=depth, with_meta=True)
+        if column:
+            payload = column_payload(store, column, depth=depth)
+        else:
+            payload = build_payload(store, center=node, depth=depth,
+                                    with_meta=True,
+                                    with_columns=bool(flags.get("columns")))
     finally:
         store.close()
     return [Result.json("graph", payload)]
+
+
+@handler("graph", "columns")
+def _graph_columns(args: list[str], data_dir=None) -> list[Result]:
+    """graph columns [--node <type:name>]：列节点清单（全部，或指定资产的列）。"""
+    store = _graph_store(data_dir)
+    if store is None:
+        return [Result.json("graph", [])]
+    flags = parse_flags(args)
+    try:
+        if flags.get("node"):
+            data = store.columns_of(flags["node"])
+        else:
+            data = store.list_nodes("Column")
+    finally:
+        store.close()
+    return [Result.json("graph", data)]
 
 
 @handler("graph", "nodes")
@@ -1269,10 +1294,11 @@ def _graph_nodes(args: list[str], data_dir=None) -> list[Result]:
 
 @handler("graph", "stats")
 def _graph_stats(args: list[str], data_dir=None) -> list[Result]:
-    """graph stats：图节点/边统计。"""
+    """graph stats：图统计（资产节点/DEPENDS 边 + 列节点/DERIVES 边）。"""
     store = _graph_store(data_dir)
     if store is None:
-        return [Result.json("graph", {"node_count": 0, "edge_count": 0})]
+        return [Result.json("graph", {"node_count": 0, "edge_count": 0,
+                                      "column_count": 0, "derives_count": 0})]
     try:
         data = store.stats()
     finally:

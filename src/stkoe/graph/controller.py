@@ -26,6 +26,7 @@ from .model import (
     TYPE_TO_LABEL,
     AssetMeta,
     DataChangeEvent,
+    column_node_id,
     node_id,
     split_node_id,
 )
@@ -183,6 +184,11 @@ class GraphController:
                     {"required_version": int(dep.get("version", 1)),
                      "detail": detail, "create_time": now},
                 )
+                # DEPENDS 边 detail 的字段映射 → 列节点图（列级血缘，见 sync_derives）
+                cmap = detail.get("columns")
+                if cmap:
+                    dep_type, dep_name = split_node_id(dep_id)
+                    self.sync_derives(asset_type, name, dep_type, dep_name, cmap)
         return self._meta(self._store.get_node(nid))
 
     def get(self, asset_type: str, name: str) -> dict:
@@ -237,12 +243,37 @@ class GraphController:
 
         with self._store.txn():
             self._store.patch_node(nid, **patch)
+            # 列节点图对账：columns（table/index 等）或 fields（fieldset）变更同步
+            if "columns" in kwargs:
+                self.sync_columns(asset_type, name, kwargs["columns"])
+            if "fields" in kwargs and asset_type == "fieldset":
+                self.sync_columns(asset_type, name,
+                                  self._fieldset_columns(props, kwargs["fields"]))
             # 定义键变更或显式 definition=True → 自身失效 + 下游失效
             if definition or (data_keys & def_keys):
                 if self_invalidate:
                     self._mark_stale(nid)
                 self._propagate_stale(nid)
         return self._meta(self._store.get_node(nid))
+
+    def _fieldset_columns(self, props: dict, fields: dict) -> list[dict]:
+        """fieldset 列节点集合 = 其 panel 的 keys（as_index）+ fields（FieldMeta 形态）。"""
+        cols: list[dict] = []
+        panel_id = props.get("panel")
+        if panel_id:
+            pnode = self._store.get_node(panel_id)
+            for k in (pnode or {}).get("keys") or []:
+                cols.append({"name": k, "as_index": True})
+        for f, fd in (fields or {}).items():
+            cols.append({
+                "name": f,
+                "display_name": fd.get("display_name", ""),
+                "description": fd.get("description", ""),
+                "unit": fd.get("unit"),
+                "formula": fd.get("formula"),
+                "tags": fd.get("tags"),
+            })
+        return cols
 
     def col(
         self,
@@ -277,12 +308,20 @@ class GraphController:
         patch.update(bumps)
         with self._store.txn():
             self._store.patch_node(nid, **patch)
+            # 列节点元数据同步（列节点存在时）
+            cid = column_node_id(nid, column)
+            if self._store.has_node(cid):
+                self._store.patch_node(cid, **{
+                    k: v for k, v in kwargs.items() if k in self._COL_PROPS})
             if asset_type in ("table", "index"):
                 self._propagate_stale(nid)
         return self._meta(self._store.get_node(nid))
 
     def delete(self, asset_type: str, name: str, *, force: bool = False) -> dict:
-        """删除节点：无下游依赖才可删（force 绕过并连带清除其所有边）。"""
+        """删除节点：无下游依赖才可删（force 绕过并连带清除其所有边）。
+
+        级联删除该资产的**全部列节点**（连带 DERIVES 边）。
+        """
         props = self._require(asset_type, name)
         nid = node_id(asset_type, name)
         downstream = self._store.dependents(nid)
@@ -293,6 +332,7 @@ class GraphController:
             ])
         with self._store.txn():
             self._store.delete_node(nid, detach=True)
+            self._store.delete_columns_of(nid)
         return {"deleted": name}
 
     # ---------- 边管理 ----------
@@ -328,6 +368,91 @@ class GraphController:
     def _edge(self, src_id: str, tgt_id: str) -> dict:
         e = self._store.get_edge(src_id, tgt_id)
         return {"source": src_id, "target": tgt_id, **e} if e else {}
+
+    # ---------- 列节点图（列级血缘：Column 节点 + DERIVES 边） ----------
+
+    _COL_PROPS = ("name", "display_name", "description", "data_type", "unit",
+                  "formula", "tags", "as_index", "source_table", "source_field")
+
+    def _column_props(self, asset_id: str, asset_type: str, c: dict) -> dict:
+        """列元数据 dict → 列节点属性（asset/asset_type 恒由所属资产推导）。"""
+        return {
+            "name": c.get("name", ""),
+            "asset": asset_id,
+            "asset_type": asset_type,
+            "display_name": c.get("display_name", ""),
+            "description": c.get("description", ""),
+            "data_type": c.get("data_type"),
+            "unit": c.get("unit"),
+            "formula": c.get("formula"),
+            "tags": list(c.get("tags") or ()),
+            "as_index": bool(c.get("as_index", False)),
+            "source_table": c.get("source_table"),
+            "source_field": c.get("source_field"),
+        }
+
+    def _ensure_column(self, asset_id: str, asset_type: str, col: str) -> str:
+        """确保列节点存在（缺失时以最小属性创建），返回列节点 id。"""
+        cid = column_node_id(asset_id, col)
+        if not self._store.has_node(cid):
+            self._store.create_node(cid, "Column", {
+                "name": col, "asset": asset_id, "asset_type": asset_type,
+            })
+        return cid
+
+    def sync_columns(self, asset_type: str, name: str,
+                     columns: list[dict] | None = None) -> int:
+        """对账资产的列节点：按 ``columns``（ColumnMeta 形态 dict 列表）建/改/删。
+
+        删除只清**无 DERIVES 边**的孤立列节点（被下游/上游引用的列节点保留，
+        避免删掉仍被引用的映射目标）；返回当前列节点数。
+        """
+        nid = node_id(asset_type, name)
+        want = {c.get("name"): c for c in (columns or [])}
+        for col, c in want.items():
+            cid = column_node_id(nid, col)
+            props = self._column_props(nid, asset_type, c)
+            if self._store.has_node(cid):
+                self._store.patch_node(cid, **props)
+            else:
+                self._store.create_node(cid, "Column", props)
+        for old in self._store.columns_of(nid):
+            col = old.get("name", "")
+            if col not in want:
+                cid = old.get("id") or column_node_id(nid, col)
+                if not self._store.deps_of(cid, rel_type="DERIVES") \
+                        and not self._store.dependents(cid, rel_type="DERIVES"):
+                    self._store.delete_node(cid, detach=True)
+        return len(self._store.columns_of(nid))
+
+    def sync_derives(self, src_type: str, src_name: str, tgt_type: str, tgt_name: str,
+                     mapping: dict) -> dict:
+        """列级血缘：``column(依赖方, 派生列) -[:DERIVES]-> column(被依赖方, 源列)``。
+
+        ``mapping = {派生列: 源列 | [源列...]}``（DEPENDS 边 detail 的字段映射形态，
+        见 ``add``/``link`` 的 detail["columns"]）；两侧列节点缺失时自动创建；
+        边幂等（MERGE）。返回 {"source", "target", "derives"}。
+        """
+        src_id = node_id(src_type, src_name)
+        tgt_id = node_id(tgt_type, tgt_name)
+        self._require(src_type, src_name)
+        self._require(tgt_type, tgt_name)
+        n = 0
+        for down, ups in mapping.items():
+            ups = [ups] if isinstance(ups, str) else list(ups or ())
+            if not ups:
+                continue
+            down_cid = self._ensure_column(src_id, src_type, down)
+            for up in ups:
+                up_cid = self._ensure_column(tgt_id, tgt_type, up)
+                self._store.create_edge(
+                    down_cid, up_cid, "DERIVES", {"create_time": _now_iso()})
+                n += 1
+        return {"source": src_id, "target": tgt_id, "derives": n}
+
+    def clear_derives(self, asset_type: str, name: str, column: str) -> None:
+        """清空某列的全部 DERIVES 出边（字段公式变更后重派生前调用）。"""
+        self._store.delete_derives_from(column_node_id(node_id(asset_type, name), column))
 
     def deps_of(self, asset_type: str, name: str) -> list[dict]:
         """出边：该资产的直接上游依赖。"""

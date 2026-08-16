@@ -152,9 +152,12 @@ def _help() -> str:
         "  mock demo [--n-syms N] [--n-days N] 生成演示源表 index + m1（默认 300×500，写 index/ + table/，需 index add/table add 注册）\n"
         "  mock gen <name> --kind <kind>  参数化生成单张表（tdcal/common/index/feature/klday/m1）\n"
         "  task list [--state <state>]     任务列表（按创建时间倒序）\n"
-        "  graph lineage [--node <type:name>] [--depth N]  血缘图（Cytoscape elements JSON）\n"
-        "  graph nodes [--type <t>]        节点摘要列表\n"
-        "  graph stats                     节点/边统计"
+        "  graph lineage [--node <type:name>] [--depth N] [--columns] [--column <type:name.col>]\n"
+        "                                         血缘图（Cytoscape elements JSON；--columns 叠加列级血缘，\n"
+        "                                         --column 以某列为中心查列级血缘）\n"
+        "  graph columns [--node <type:name>]   列节点清单（全部，或指定资产的列）\n"
+        "  graph nodes [--type <t>]             节点摘要列表（--type column 列列节点）\n"
+        "  graph stats                          图统计（资产/DEPENDS + 列/DERIVES）"
     )
 
 

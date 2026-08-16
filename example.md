@@ -207,11 +207,15 @@ stkoe> t:<task_id>                   # 回放订阅某任务事件流
 uv run -m stkoe graph lineage                      # Cytoscape elements JSON（全图）
 uv run -m stkoe graph nodes                        # 节点摘要（中心节点选择器用）
 uv run -m stkoe graph stats                        # 节点/边统计
+uv run -m stkoe graph columns --node fieldset:fs1  # 列节点清单（字段/键，含 formula/as_index）
+uv run -m stkoe graph lineage --columns            # 叠加列级血缘（Column 节点 + DERIVES 边）
+uv run -m stkoe graph lineage --column fieldset:fs1.x2   # 某列的上游来源/下游派生
 # portal 前端右上角"血缘关系"抽屉可交互查看（Tauri 经 gRPC 拉取同一 payload）
 ```
 
 本案例血缘链：`index/index + table/m1 → panel:ds1 → fieldset:fs1 → sample:sp1（+ index:idx2
-筛选参照）→ factor:fac1 → tester:t1`。
+筛选参照）→ factor:fac1 → tester:t1`；列级链：`fieldset:fs1.x2 ← panel:ds1.x ←
+index:index.x`（字段 x2 的公式引用 panel 的 x 列）。
 
 ## 清理
 

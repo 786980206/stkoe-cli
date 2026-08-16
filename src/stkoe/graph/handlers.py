@@ -141,6 +141,7 @@ class PanelHandler:
     def add(cls, ctrl: GraphController, name: str, index: str, *,
             tables: dict[str, str] | list | tuple | None = None,
             keys: list | tuple | None = None,
+            column_maps: dict[str, dict] | None = None,
             display_name: str | None = None, description: str = "",
             tags: list | tuple | None = None, source: str = "local",
             **kw: Any) -> dict:
@@ -148,6 +149,8 @@ class PanelHandler:
 
         tables：{表名: join 类型}、[(表名, join 类型), ...] 或 ["表名:join", ...]；
         join 类型归一化为 ``asof_join``/``left_join``，缺省 ``asof_join``。
+        ``column_maps``：{依赖名: {panel 列: 上游列 | [列...]}}，写入 DEPENDS 边
+        detail 的 ``columns``（列级血缘 DERIVES 边由 controller.add 物化）。
         """
         table_map: dict[str, str] = {}
         if isinstance(tables, dict):
@@ -159,8 +162,13 @@ class PanelHandler:
                 elif isinstance(item, str):
                     tname, _, j = item.partition(":")
                     table_map[tname] = _norm_join(j) if j else "asof_join"
-        deps = [("index", index, {"role": "index"})]
-        deps += [("table", t, {"role": "member", "join": j}) for t, j in table_map.items()]
+        deps = [("index", index, {"role": "index",
+                                  **({"columns": column_maps["index"]}
+                                     if column_maps and column_maps.get("index") else {})})]
+        deps += [("table", t, {"role": "member", "join": j,
+                               **({"columns": column_maps[t]}
+                                  if column_maps and column_maps.get(t) else {})})
+                 for t, j in table_map.items()]
         return ctrl.add(
             "panel", name, display_name=display_name, description=description,
             tags=tags, source=source, deps=deps,
@@ -211,14 +219,20 @@ class FieldsetHandler:
 
     @classmethod
     def add(cls, ctrl: GraphController, name: str, panel: str, *,
-            engine: str = "polars", display_name: str | None = None,
-            description: str = "", tags: list | tuple | None = None,
+            engine: str = "polars", column_maps: dict[str, dict] | None = None,
+            display_name: str | None = None, description: str = "",
+            tags: list | tuple | None = None,
             source: str = "local", **kw: Any) -> dict:
-        """创建一个 Fieldset 节点和一条边（→ Panel）。"""
+        """创建一个 Fieldset 节点和一条边（→ Panel）。
+
+        ``column_maps``：{依赖名: {fieldset 列: 上游列}}，写入 DEPENDS 边 detail。
+        """
         return ctrl.add(
             "fieldset", name, display_name=display_name, description=description,
             tags=tags, source=source,
-            deps=[("panel", panel, {"role": "panel"})],
+            deps=[("panel", panel, {"role": "panel",
+                                    **({"columns": column_maps["panel"]}
+                                       if column_maps and column_maps.get("panel") else {})})],
             panel=node_id("panel", panel),
             engine=engine, fields={}, **kw,
         )
@@ -315,15 +329,23 @@ class SampleHandler:
 
     @classmethod
     def add(cls, ctrl: GraphController, name: str, fieldset: str, index: str, *,
+            column_maps: dict[str, dict] | None = None,
             display_name: str | None = None, description: str = "",
             tags: list | tuple | None = None, source: str = "local",
             **kw: Any) -> dict:
-        """创建一个 Sample 节点和两条边（→ Fieldset、→ Index）。"""
+        """创建一个 Sample 节点和两条边（→ Fieldset、→ Index）。
+
+        ``column_maps``：{依赖名: {sample 列: 上游列}}，写入 DEPENDS 边 detail。
+        """
         return ctrl.add(
             "sample", name, display_name=display_name, description=description,
             tags=tags, source=source,
-            deps=[("fieldset", fieldset, {"role": "fieldset"}),
-                  ("index", index, {"role": "index"})],
+            deps=[("fieldset", fieldset, {"role": "fieldset",
+                                          **({"columns": column_maps["fieldset"]}
+                                             if column_maps and column_maps.get("fieldset") else {})}),
+                  ("index", index, {"role": "index",
+                                    **({"columns": column_maps["index"]}
+                                       if column_maps and column_maps.get("index") else {})})],
             fieldset=node_id("fieldset", fieldset),
             index=node_id("index", index),
             **kw,
@@ -399,17 +421,22 @@ class FactorHandler:
     @classmethod
     def add(cls, ctrl: GraphController, name: str, feature: str, sample: str, *,
             engine: str = "polars", pipeline: str = "nothing()",
-            factor_col: str | None = None,
+            factor_col: str | None = None, column_maps: dict[str, dict] | None = None,
             display_name: str | None = None, description: str = "",
             tags: list | tuple | None = None, source: str = "local",
             **kw: Any) -> dict:
-        """创建一个 Factor 节点和两条边（→ Feature、→ Sample）。"""
+        """创建一个 Factor 节点和两条边（→ Feature、→ Sample）。
+
+        ``column_maps``：{依赖名: {factor 列: 上游列}}，写入 DEPENDS 边 detail。
+        """
         return ctrl.add(
             "factor", name, display_name=display_name, description=description,
             tags=tags, source=source,
             deps=[
                 ("feature", feature, {"role": "feature"}),
-                ("sample", sample, {"role": "sample"}),
+                ("sample", sample, {"role": "sample",
+                                    **({"columns": column_maps["sample"]}
+                                       if column_maps and column_maps.get("sample") else {})}),
             ],
             feature=node_id("feature", feature),
             sample=node_id("sample", sample),
@@ -446,14 +473,20 @@ class TesterHandler:
     def add(cls, ctrl: GraphController, name: str, factor: str, *,
             returns: str = "r", groupby: str = "ic", marketcap: str = "fv",
             factor_col: str | None = None, spec: dict | None = None,
+            column_maps: dict[str, dict] | None = None,
             display_name: str | None = None, description: str = "",
             tags: list | tuple | None = None, source: str = "local",
             **kw: Any) -> dict:
-        """创建一个 Tester 节点和一条边（→ Factor）。"""
+        """创建一个 Tester 节点和一条边（→ Factor）。
+
+        ``column_maps``：{依赖名: {test 列: 上游列}}，写入 DEPENDS 边 detail。
+        """
         return ctrl.add(
             "tester", name, display_name=display_name, description=description,
             tags=tags, source=source,
-            deps=[("factor", factor, {"role": "factor"})],
+            deps=[("factor", factor, {"role": "factor",
+                                      **({"columns": column_maps["factor"]}
+                                         if column_maps and column_maps.get("factor") else {})})],
             factor=node_id("factor", factor),
             returns=returns, groupby=groupby, marketcap=marketcap,
             factor_col=factor_col or factor,

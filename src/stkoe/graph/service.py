@@ -10,6 +10,7 @@ assets：``table`` / ``index``（独立主体）／``panel``。
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import time
 from pathlib import Path
@@ -45,6 +46,18 @@ from .store import GraphStore
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _formula_refs(formula: str, candidates: set[str]) -> list[str]:
+    """公式引用列：提取公式中的标识符，与候选列名（panel/sample 视图列）求交。
+
+    只保留候选集合内的名字，避免把函数名/字面量误当列引用；保序去重。
+    """
+    return list(dict.fromkeys(m for m in _IDENT_RE.findall(formula or "")
+                              if m in candidates))
 
 
 def _asof_join(left: pl.LazyFrame, right: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
@@ -275,6 +288,8 @@ class GraphService:
                          "signature": T.signature(disk),
                          "update_time": _now_iso()}
                 self.store.patch_node(nid, **patch)
+                # 列节点图对账：源头列（table/index）随登记/重扫同步
+                self.graph.sync_columns(asset_type, name, new_cols)
                 if not implicit:
                     # 物理数据变化 → 范围化事件入日志（upsert/delete）+ 下游置脏
                     for ev in self._change_events(asset_type, name, diffs, cat):
@@ -641,14 +656,34 @@ class GraphService:
         不再接受显式 ``--keys``（旧参数被忽略）。
         tables 支持 {表名: join}、[(表名, join)]、["表名:join" | "表名"] 混合；
         join 缺省 asof（可选 left），见 PanelHandler.add。
+        列级血缘：panel 列 DERIVES → index/成员表列（DEPENDS 边 detail.columns）。
         """
         idx_node = self._require_node("index", index)
         keys = [c for c in (idx_node.get("symbol_col"), idx_node.get("datetime_col"))
                 if c]
         keys = list(dict.fromkeys(keys)) or ["sym", "date"]
         kw.pop("keys", None)  # 忽略旧 --keys 参数，以 index 推断为准
+        col_maps = {"index": {c["name"]: c["name"]
+                              for c in (idx_node.get("columns") or [])}}
+        for t in self._table_names(tables):
+            tnode = self._require_node("table", t)
+            col_maps[t] = {c["name"]: c["name"] for c in (tnode.get("columns") or [])
+                           if c["name"] not in col_maps["index"]}
         return PanelHandler.add(self.graph, name, index,
-                                tables=tables, keys=keys, **kw)
+                                tables=tables, keys=keys, column_maps=col_maps, **kw)
+
+    @staticmethod
+    def _table_names(tables) -> list[str]:
+        """归一化 panel add 的成员表名清单（与 PanelHandler.add 的解析一致）。"""
+        if isinstance(tables, dict):
+            return list(tables)
+        out = []
+        for item in tables or ():
+            if isinstance(item, (list, tuple)) and len(item) >= 1:
+                out.append(item[0])
+            elif isinstance(item, str):
+                out.append(item.partition(":")[0])
+        return out
 
     def _panel_columns(self, node: dict) -> list[dict]:
         """派生列：index 列优先（keys 标 as_index），member 表列同名跳过。"""
@@ -915,18 +950,59 @@ class GraphService:
         return base, keys
 
     def fieldset_add(self, name: str, panel: str, *, engine: str = "polars", **kw) -> dict:
-        return FieldsetHandler.add(self.graph, name, panel, engine=engine, **kw)
+        """fieldset add：面板 keys 透传列级血缘（fieldset keys DERIVES → panel keys）。"""
+        pnode = self._require_node("panel", panel)
+        keys = list(pnode.get("keys") or ())
+        col_maps = {"panel": {k: k for k in keys}}
+        return FieldsetHandler.add(self.graph, name, panel, engine=engine,
+                                   column_maps=col_maps, **kw)
 
     def fieldset_add_field(self, name: str, field: str, formula: str, **kw) -> dict:
         if not formula:
             raise ValueError("fieldset add_field 需要 formula")
-        return FieldsetHandler.add_field(self.graph, name, field, formula, **kw)
+        r = FieldsetHandler.add_field(self.graph, name, field, formula, **kw)
+        # 列级血缘：字段列 DERIVES → 公式引用的 panel 列（或同集字段）
+        self._sync_fieldset_field_derives(name, field, formula)
+        return r
 
     def fieldset_set_field(self, name: str, field: str, **kw) -> dict:
-        return FieldsetHandler.set_field(self.graph, name, field, **kw)
+        node = self._require_node("fieldset", name)
+        old_formula = ((node.get("fields") or {}).get(field) or {}).get("formula")
+        r = FieldsetHandler.set_field(self.graph, name, field, **kw)
+        if "formula" in kw and kw["formula"] != old_formula:
+            self.graph.clear_derives("fieldset", name, field)
+            self._sync_fieldset_field_derives(name, field, kw["formula"])
+        return r
 
     def fieldset_delete_field(self, name: str, field: str) -> dict:
+        # 字段列节点由 set(fields=...) 对账清理（无 DERIVES 引用的孤立节点删除）
         return FieldsetHandler.delete_field(self.graph, name, field)
+
+    def _fieldset_ref_cols(self, name: str) -> tuple[set[str], set[str]]:
+        """fieldset 公式可引用列：panel 视图列 ∪ 本 fieldset 已定义字段名。"""
+        node = self._require_node("fieldset", name)
+        panel = node.get("panel", "").split(":", 1)[-1]
+        pnode = self._require_node("panel", panel)
+        pcols = {c["name"] for c in self._panel_columns(pnode)}
+        ffields = set((node.get("fields") or {}).keys())
+        return pcols, ffields
+
+    def _sync_fieldset_field_derives(self, name: str, field: str,
+                                     formula: str) -> list[str]:
+        """字段列级血缘：字段列 DERIVES → 公式引用的 panel 列 / 同集字段列。"""
+        node = self._require_node("fieldset", name)
+        panel = node.get("panel", "").split(":", 1)[-1]
+        pcols, ffields = self._fieldset_ref_cols(name)
+        refs = _formula_refs(formula, pcols | ffields)
+        to_panel = [r for r in refs if r in pcols]
+        if to_panel:
+            self.graph.sync_derives("fieldset", name, "panel", panel,
+                                    {field: to_panel})
+        to_fields = [r for r in refs if r in ffields]
+        if to_fields:
+            self.graph.sync_derives("fieldset", name, "fieldset", name,
+                                    {field: to_fields})
+        return refs
 
     def fieldset_meta_field(self, name: str, field: str) -> dict:
         return FieldsetHandler.meta_field(self.graph, name, field)
@@ -1068,7 +1144,33 @@ class GraphService:
         return lf.join(idx_lf, on=[key_sym, key_dt], how="semi")
 
     def sample_add(self, name: str, fieldset: str, index: str, **kw) -> dict:
-        return SampleHandler.add(self.graph, name, fieldset, index, **kw)
+        """sample add：列级血缘——视图列透传（sample 列 DERIVES → fieldset 列）
+        + 筛选 index 键映射（sample keys DERIVES → index symbol/datetime 列）。"""
+        col_maps = {"fieldset": {c: c for c in self._fieldset_view_col_names(fieldset)}}
+        idx_node = self._require_node("index", index)
+        sym = idx_node.get("symbol_col") or "sym"
+        dt = idx_node.get("datetime_col") or "date"
+        # 视图 keys（panel keys）与 index 键列按位置映射（symbol → keys[0]、datetime → keys[-1]）
+        fnode = self._require_node("fieldset", fieldset)
+        keys = self._panel_keys(fnode.get("panel", "").split(":", 1)[-1])
+        key_map: dict[str, str] = {}
+        if keys:
+            key_map[keys[0]] = sym
+        if len(keys) > 1:
+            key_map[keys[-1]] = dt
+        if key_map:
+            col_maps["index"] = key_map
+        return SampleHandler.add(self.graph, name, fieldset, index,
+                                 column_maps=col_maps, **kw)
+
+    def _fieldset_view_col_names(self, fieldset: str) -> list[str]:
+        """fieldset 视图列名：其 panel 全列 + 已校验字段（仅元数据，不读数据）。"""
+        fnode = self._require_node("fieldset", fieldset)
+        pnode = self._require_node("panel", fnode.get("panel", "").split(":", 1)[-1])
+        names = [c["name"] for c in self._panel_columns(pnode)]
+        names += [f for f, fd in (fnode.get("fields") or {}).items()
+                  if fd.get("validated")]
+        return names
 
     def sample_get(self, name: str, *, columns=None, where=None, limit=None,
                    offset=None, count_total: bool = False):
@@ -1432,17 +1534,30 @@ class GraphService:
     def factor_add(self, name: str, feature: str, sample: str, *,
                    engine: str = "polars", pipeline: str = "nothing()",
                    factor_col: str | None = None, **kw) -> dict:
-        """创建最终因子：校验 feature/sample 已注册 + pipeline/engine 合法。"""
+        """创建最终因子：校验 feature/sample 已注册 + pipeline/engine 合法。
+
+        列级血缘：factor keys 透传 sample keys；factor_col DERIVES → feature
+        公式引用的 sample 视图列（DEPENDS 边 detail.columns）。
+        """
         if not feature:
             raise ValueError("factor add 需要 --feature <feature 名>")
         if not sample:
             raise ValueError("factor add 需要 --sample <sample 名>")
-        self._require_node("feature", feature)
-        self._require_node("sample", sample)
+        fnode = self._require_node("feature", feature)
+        snode = self._require_node("sample", sample)
         parse_pipeline(pipeline)
         get_factor_engine(engine)
+        keys = self._sample_keys(snode)
+        fcol = factor_col or feature
+        col_maps = {"sample": {k: k for k in keys}}
+        view = set(self._fieldset_view_col_names(
+            snode.get("fieldset", "").split(":", 1)[-1]))
+        refs = _formula_refs(fnode.get("formula") or "", view)
+        if refs:
+            col_maps["sample"][fcol] = refs
         FactorHandler.add(self.graph, name, feature, sample, engine=engine,
-                          pipeline=pipeline, factor_col=factor_col, **kw)
+                          pipeline=pipeline, factor_col=factor_col,
+                          column_maps=col_maps, **kw)
         return self._factor_meta_dict(name)
 
     def factor_get(self, name: str, *, where=None, partition: str | None = None,
@@ -1681,12 +1796,21 @@ class GraphService:
         spec_d = FactorTesterSpec.from_dict(spec or {}).to_dict() if spec else \
             {"quantiles": 5, "periods": [1, 5, 10],
              "date_range": ["2023-01-01", "2026-01-01"], "rolling_window": 252}
+        keys = list(fm["keys"])
+        fcol = factor_col or fm["factor_col"] or factor
+        # 列级血缘（factor 依赖）：keys 透传 + factor/factor_quantile → factor.factor_col
+        factor_map = {k: k for k in keys}
+        factor_map.update({"factor": fcol, "factor_quantile": fcol})
         TesterHandler.add(
             self.graph, name, factor,
             returns=returns, groupby=groupby, marketcap=marketcap,
             factor_col=factor_col or fm["factor_col"] or factor,
             spec=spec_d, sample=node_id("sample", sample),
-            keys=list(fm["keys"]), **kw)
+            keys=keys, column_maps={"factor": factor_map}, **kw)
+        # 列级血缘（跨依赖引用）：returns/group/marketcap/d{no} ← sample 视图列
+        sample_map = {"returns": returns, "group": groupby, "marketcap": marketcap}
+        sample_map.update({f"d{no}": returns for no in spec_d.get("periods", [])})
+        self.graph.sync_derives("tester", name, "sample", sample, sample_map)
         return self._test_meta_dict(name)
 
     def test_get(self, name: str, *, where=None, limit=None, offset=None,

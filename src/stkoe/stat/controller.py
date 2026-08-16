@@ -15,7 +15,7 @@ from pathlib import Path
 
 import polars as pl
 
-from ..table.controller import DEFAULT_IGNORE_COLS
+from ..table.errors import DEFAULT_IGNORE_COLS, TableNotFoundError
 from ..table.util import now
 from .calc import calc_stats, calc_storage
 from .spec import StatFile, StatMeta, StatScanReport
@@ -101,7 +101,7 @@ class StatController:
         ``stats/test/<name>/<kind>/<output>.parquet``（数据源走 GraphService）。"""
         from ..factor_test.spec import FactorTesterSpec
         from ..factor_test.tester import run_tester
-        from ..table.controller import TableNotFoundError
+        from ..table.errors import TableNotFoundError
 
         svc = self._graph_service()
         try:

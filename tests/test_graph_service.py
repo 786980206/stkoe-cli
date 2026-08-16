@@ -52,7 +52,7 @@ class TestTableGraph:
 
     def test_duplicate_add_raises(self, svc):
         svc.table_add("m1")
-        from stkoe.table.controller import TableExistsError
+        from stkoe.table.errors import TableExistsError
 
         with pytest.raises(TableExistsError):
             svc.table_add("m1")

@@ -22,14 +22,6 @@ def ctl(tmp_path):
     return StatController(data_dir=tmp_path / "data")
 
 
-@pytest.fixture()
-def tctl(tmp_path):
-    """源表控制器：先建 index/member 表再测 stat 目标"""
-    from stkoe.table import TableController
-
-    return TableController(data_dir=tmp_path / "data")
-
-
 def _write(root, name, rows):
     d = root / "table" / name
     d.mkdir(parents=True, exist_ok=True)
@@ -77,13 +69,13 @@ def _graph_add(root, name):
         svc.close()
 
 
-def _setup_sources(tmp_path, tctl=None):
+def _setup_sources(tmp_path):
     return _gsetup(tmp_path / "data")
 
 
-def test_scan_generates_partition_files(ctl, tmp_path, tctl):
+def test_scan_generates_partition_files(ctl, tmp_path):
     """scan：生成 all.parquet + 按索引（keys）分组的 sym/date parquet"""
-    root = _setup_sources(tmp_path, tctl)
+    root = _setup_sources(tmp_path)
     report = _scan(ctl, "panel", "ds1")
     assert report.target_type == "panel"
     assert report.partitions == ("all", "date", "sym")
@@ -98,9 +90,9 @@ def test_scan_generates_partition_files(ctl, tmp_path, tctl):
     assert (out_dir / "date.parquet").exists()
 
 
-def test_scan_all_stats_element(ctl, tmp_path, tctl):
+def test_scan_all_stats_element(ctl, tmp_path):
     """all 分组：每字段一行，含 v1.0 统计要素列"""
-    _setup_sources(tmp_path, tctl)
+    _setup_sources(tmp_path)
     _scan(ctl, "panel", "ds1")
     df = _get(ctl, "panel", "ds1", partition_by="all")
     assert df.columns == ALL_COLS
@@ -109,18 +101,18 @@ def test_scan_all_stats_element(ctl, tmp_path, tctl):
     assert "name" in df["field"].to_list()
 
 
-def test_scan_sym_group_stats(ctl, tmp_path, tctl):
+def test_scan_sym_group_stats(ctl, tmp_path):
     """sym 分组：按 sym 取值各一组，首列列名为 sym"""
-    _setup_sources(tmp_path, tctl)
+    _setup_sources(tmp_path)
     _scan(ctl, "panel", "ds1")
     df = _get(ctl, "panel", "ds1", partition_by="sym")
     assert df.columns[0] == "sym"
     assert set(df["sym"].to_list()) == {"a", "b", "c"}
 
 
-def test_get_all_partitions(ctl, tmp_path, tctl):
+def test_get_all_partitions(ctl, tmp_path):
     """get 不带 partition_by：返回全部 ``{分区: DataFrame}``"""
-    _setup_sources(tmp_path, tctl)
+    _setup_sources(tmp_path)
     _scan(ctl, "panel", "ds1")
     out = _get(ctl, "panel", "ds1")
     assert isinstance(out, dict)
@@ -128,14 +120,14 @@ def test_get_all_partitions(ctl, tmp_path, tctl):
     assert out["all"].columns == ALL_COLS
 
 
-def test_get_missing_partition_errors(ctl, tmp_path, tctl):
-    _setup_sources(tmp_path, tctl)
+def test_get_missing_partition_errors(ctl, tmp_path):
+    _setup_sources(tmp_path)
     with pytest.raises(StatNotFoundError):
         _get(ctl, "panel", "ds1", partition_by="all")
 
 
-def test_meta_lists_files(ctl, tmp_path, tctl):
-    _setup_sources(tmp_path, tctl)
+def test_meta_lists_files(ctl, tmp_path):
+    _setup_sources(tmp_path)
     _scan(ctl, "panel", "ds1")
     m = _meta(ctl, "panel", "ds1")
     assert m.target_type == "panel"
@@ -143,8 +135,8 @@ def test_meta_lists_files(ctl, tmp_path, tctl):
     assert len(m.files) == 3
 
 
-def test_list_and_delete(ctl, tmp_path, tctl):
-    _setup_sources(tmp_path, tctl)
+def test_list_and_delete(ctl, tmp_path):
+    _setup_sources(tmp_path)
     _scan(ctl, "panel", "ds1")
     assert [m.target_name for m in _list(ctl)] == ["ds1"]
 
@@ -154,9 +146,9 @@ def test_list_and_delete(ctl, tmp_path, tctl):
         _meta(ctl, "panel", "ds1")
 
 
-def test_table_target_scan(ctl, tmp_path, tctl):
+def test_table_target_scan(ctl, tmp_path):
     """table 目标：索引 = 非工具列（index 为独立资产，扫成员表 m1）"""
-    _setup_sources(tmp_path, tctl)
+    _setup_sources(tmp_path)
     report = _scan(ctl, "table", "m1")
     parts = set(report.partitions)
     assert "all" in parts
@@ -176,9 +168,9 @@ def _write_hive(root, name, parts, row_cnt=1):
     return sizes
 
 
-def test_storage_scan_hive_table(ctl, tmp_path, tctl):
+def test_storage_scan_hive_table(ctl, tmp_path):
     """storage（table）：按 hive 分区键/值聚合存储占用与文件数"""
-    root = _setup_sources(tmp_path, tctl)
+    root = _setup_sources(tmp_path)
     parts = [("year", "2024"), ("year", "2024"), ("year", "2025")]
     sizes = _write_hive(root, "sales", parts)
     _graph_add(root, "sales")
@@ -201,9 +193,9 @@ def test_storage_scan_hive_table(ctl, tmp_path, tctl):
     assert yrows["2025"] == (sizes[("year", "2025")], 1)
 
 
-def test_storage_scan_flat_table(ctl, tmp_path, tctl):
+def test_storage_scan_flat_table(ctl, tmp_path):
     """storage（table 无分区）：只有 all 行，partition_by/partition_value=__all__"""
-    _setup_sources(tmp_path, tctl)
+    _setup_sources(tmp_path)
     report = _scan(ctl, "table", "m1", kind="storage")
     assert report.partitions == ("all",)
     df = _get(ctl, "table", "m1", kind="storage", partition_by="all")
@@ -213,9 +205,9 @@ def test_storage_scan_flat_table(ctl, tmp_path, tctl):
     assert row[3] == 1  # m1 表单个 data.parquet
 
 
-def test_storage_scan_get_all(ctl, tmp_path, tctl):
+def test_storage_scan_get_all(ctl, tmp_path):
     """storage get 不带 partition_by：返回全部分区文件"""
-    root = _setup_sources(tmp_path, tctl)
+    root = _setup_sources(tmp_path)
     _write_hive(root, "sales", [("year", "2024")])
     _graph_add(root, "sales")
     _scan(ctl, "table", "sales", kind="storage")

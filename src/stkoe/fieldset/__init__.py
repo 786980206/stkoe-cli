@@ -1,8 +1,4 @@
-"""fieldset 模块：基于 dataset 的衍生指标集（add/get/meta/list/set/scan/delete/check/test）"""
-from .controller import FieldsetController, FieldsetExistsError, FieldsetNotFoundError
+"""fieldset 模块：衍生指标集（add/get/meta/list/set/check/scan/delete 走 GraphService）。
 
-__all__ = [
-    "FieldsetController",
-    "FieldsetNotFoundError",
-    "FieldsetExistsError",
-]
+任务版入口见 fieldset/handlers.py（TaskHandler）；公式引擎见 fieldset/engine.py。
+"""

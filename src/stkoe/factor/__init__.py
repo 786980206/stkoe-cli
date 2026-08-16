@@ -1,12 +1,4 @@
-"""factor 模块：最终因子（feature 公式 + sample 视图 + pipeline 算子链 + 物化）"""
-from .controller import FactorController, FactorExistsError, FactorNotFoundError
-from .spec import FactorCheckResult, FactorMeta, FactorScanReport
+"""factor 模块：最终因子（feature 公式 + sample 视图 + pipeline 算子链 + 物化，走 GraphService）。
 
-__all__ = [
-    "FactorController",
-    "FactorNotFoundError",
-    "FactorExistsError",
-    "FactorMeta",
-    "FactorScanReport",
-    "FactorCheckResult",
-]
+任务版入口见 factor/handlers.py（TaskHandler）；算子注册表见 factor/engine.py。
+"""

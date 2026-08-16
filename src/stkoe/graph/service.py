@@ -25,7 +25,7 @@ from ..jsonutil import dumps_str, loads
 from ..settings import load_config
 from ..table import util as T
 from ..table.query import prune_files, to_expr
-from ..table.controller import (
+from ..table.errors import (
     DEFAULT_IGNORE_COLS,
     DependencyError,
     TableExistsError,

@@ -42,42 +42,31 @@ src/stkoe/
 │   ├── stkoe.proto + stkoe_pb2*.py     # 协议 + protoc 生成
 │   ├── dispatch.py    # Execute 同步命令分发（@handler 注册；version/config/table）
 │   └── server.py      # StkoeService 实现 + StkoeServer + 请求 INFO 日志
-├── table/             # 表数据资产（TableController，async 接口）
-│   ├── spec.py        # TableLayout/ColumnMeta/TableMeta/TableScanReport dataclass
+├── table/             # 表数据资产（登记/版本/元数据走 graph，见 graph/service.py）
+│   ├── errors.py      # 共享错误与常量（DependencyError/TableNotFoundError/Exists/DEFAULT_IGNORE_COLS）
+│   ├── spec.py        # TableLayout/ColumnMeta/FileDiff dataclass
 │   ├── util.py        # parquet 指纹/布局识别/footer/差异/signature
-│   ├── catalog.py     # SQLite catalog（stkoe_objects/stkoe_data_files/stkoe_file_stats）
 │   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
-│   ├── controller.py  # async add/get/delete/list/meta/set/col/scan/data_key（阻塞 IO 走 asyncio.to_thread）
 │   └── handlers.py    # 任务版 Handler（source="table"，注册进 TaskRegistry）
-├── dataset/           # 逻辑数据集（DatasetController，async 接口）
-│   ├── spec.py        # DatasetMeta/DatasetScanReport dataclass
-│   ├── controller.py  # async add/get/meta/list/set/scan/delete（add 只注册，物化走 scan）
+├── dataset/           # 逻辑数据集（旧别名 → panel，走 GraphService）
 │   └── handlers.py    # 任务版 Handler（source="dataset"，注册进 TaskRegistry）
-├── fieldset/          # 衍生指标集（FieldsetController，async 接口）
-│   ├── spec.py        # FieldMeta/FieldsetMeta/FieldsetScanReport/FieldsetCheckResult dataclass
+├── fieldset/          # 衍生指标集（走 GraphService）
+│   ├── spec.py        # FieldMeta dataclass
 │   ├── engine.py      # 公式引擎插件（CalcEngine + register/get；仅 polars）
-│   ├── controller.py  # async add/get/meta/list/set/scan/delete/check/test + 指标级操作
 │   └── handlers.py    # 任务版 Handler（source="fieldset"，注册进 TaskRegistry）
-├── sample/            # 样本池（SampleController，async 接口；无物化）
-│   ├── spec.py        # SampleMeta/SampleCheckResult dataclass
+├── sample/            # 样本池（走 GraphService；无物化）
 │   ├── engine.py      # 过滤引擎插件（SampleEngine + register/get；仅 polars）
-│   ├── controller.py  # async add/get/meta/list/set/check/delete（读时动态构造 dataset_with_fieldset）
 │   └── handlers.py    # 任务版 Handler（source="sample"，注册进 TaskRegistry）
-├── feature/           # 因子定义库（FeatureController，async 接口；纯定义，无物化）
-│   ├── spec.py        # FeatureMeta/FeatureTestResult dataclass
+├── feature/           # 因子定义库（走 GraphService；纯定义，无物化）
 │   ├── engine.py      # 公式引擎插件（复用 CalcEngine 注册表；仅 polars）
-│   ├── controller.py  # async add/set/meta/list/test/delete（test 在 sample 视图上求值）
 │   └── handlers.py    # 任务版 Handler（source="feature"，注册进 TaskRegistry）
-├── factor/            # 最终因子（FactorController，async 接口）
-│   ├── spec.py        # FactorMeta/FactorScanReport/FactorCheckResult/FieldMeta dataclass
+├── factor/            # 最终因子（走 GraphService）
 │   ├── engine.py      # 算子注册表（FactorOperator/NothingOperator）+ pipeline 解析 + 公式引擎
-│   ├── controller.py  # async add/get/meta/list/set/check/scan/delete（sample 视图算因子列→算子链→物化）
 │   └── handlers.py    # 任务版 Handler（source="factor"，注册进 TaskRegistry）
-├── factor_test/       # 因子测试数据集（FactorTestController，async 接口）
-│   ├── spec.py        # FactorTesterSpec/FactorTestMeta/FactorTestScanReport/FactorTestCheckResult
+├── factor_test/       # 因子测试数据集（走 GraphService）
+│   ├── spec.py        # FactorTesterSpec dataclass
 │   ├── tester.py      # 测试数据集准备 + 六类测试器（bucket_returns/factor_returns/
 │   │                  #   bucket_turnover/autocorrelation/ic/coverage，纯 polars）
-│   ├── controller.py  # async add/get/meta/list/set/check/scan/delete + tester 产物写入
 │   └── handlers.py    # 任务版 Handler（source="test"，注册进 TaskRegistry）
 ├── stat/              # 数据统计资产（StatController，async 接口）
 │   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
@@ -126,7 +115,6 @@ src/stkoe/
 | `e:<source> <action>`（Execute，同步流式返回） | `grpc/dispatch.py` | `fn(args, data_dir=None) -> list[Result]`，`@handler(source, action)` | dispatch.py 内 |
 | `s:<source> <action>`（SubmitTask，后台任务） | `TaskManager.registry` | `async run(ctx) -> TaskResult`，`TaskHandler` 子类 | 模块 `register(registry)` |
 
-- `dispatch` 的 table 处理器直接调 `TableController`（内部 `asyncio.run` 收敛，gRPC 线程无事件循环）
 - Execute 的 `e:table get` 返回单条 `ArrowTable(IPC)`，元数据（rows/total/columns 列说明）并入 `ArrowTable.meta`
 - `Result.kind`: json → `JsonData`，table → `ArrowTable`；`Result.json/Result.table` 工厂方法
 
@@ -155,14 +143,15 @@ src/stkoe/
    终态事件先落库/入队、再摘除 `_live`；EOF 分支要补读兜底
 3. `subscribe` 首条恒为 DataHeader（0 成功 / 非 0 业务错误）；终态后 EOF
 
-### TableController 不变式
+### TableController 不变式（已随 V2.0 死代码删除）
 
-1. **绝不写/删用户 parquet**：`delete` 只删 catalog 登记，数据目录保留（可重新 add）
-2. `add` 是"发现资产"语义：目录不存在报错、已注册报 `TableExistsError`（更新用 scan）
-3. `set` 只更新元数据：`display_name/description/source/tags`（tags 逗号分隔），
-   任意其他键进 `extra`，版本递增；未注册报 `TableNotFoundError`，不做隐式注册
-4. 读前快检 `_ensure_fresh`：stat 签名一致则继续，不一致自动 scan；未注册目录隐式注册
-5. `signature()` = sha256(排序后的 `rel_path|size|mtime_ns`)，相对表根
+原 V2.0 `TableController`（SQLite catalog 登记层）已于 2026-08 冗余清理中删除，
+业务统一走 GraphService。仍有效的物理约定由 `graph/service.py` 承担：
+
+1. **绝不写/删用户 parquet**：`table_delete` 只删 graph 节点/指纹登记，数据目录保留（可重新 add）
+2. `table_add` 是"发现资产"语义：目录不存在报错、已注册报 `TableExistsError`（更新用 scan/update）
+3. 读前快检签名：stat 签名一致则继续，不一致自动重扫对账；未注册目录隐式注册
+4. `signature()` = sha256(排序后的 `rel_path|size|mtime_ns`)，相对表根
 
 ### 测试
 
@@ -171,13 +160,11 @@ src/stkoe/
   终态事件落库再取 JSON）；源头造数统一走各文件的 `_gsetup`（GraphService 建链 + 依次
   update 就绪）与 `_write_idx`（index/ 目录）
 - 流式断言用 `_collect`（先 DataHeader，再数据消息）
-- **V2.0 死代码 controller 直测已移入 `V2.0/tests/`**（test_table/dataset/fieldset/sample/
-  feature/factor/factor_test.py，共 113 例）：默认全量不收集（pyproject `testpaths=["tests"]`
-  + `norecursedirs` 排除 V2.0）；如需运行 `.venv/Scripts/python.exe -m pytest
-  V2.0/tests/test_table.py -q`（死代码 controller 仍可从 `src/stkoe/<mod>/controller.py` 导入）。
-  V2.0/tests 其余文件（test_grpc/stat/task_manager 等）是 f290378 的历史基线快照，与当前
-  代码不兼容、默认不运行
-- 全量 173 用例约 40s（V3 graph/gRPC/任务链路为主），多连跑需稳定；**改动后优先只跑相关
+- **V2.0 死代码 controller 已删除**（2026-08 冗余清理，业务只剩 GraphService 一份；历史
+  代码可从 git 历史 + `V2.0/` 备份区恢复），随迁的 113 例死代码直测一并移除。
+  `V2.0/tests/` 现存文件（test_grpc/stat/task_manager/config/mock 等）是历史基线快照，
+  与当前代码不兼容、默认不运行（pyproject `testpaths=["tests"]` + `norecursedirs` 排除 V2.0）
+- 全量 194 用例约 44s（V3 graph/gRPC/任务链路为主），多连跑需稳定；**改动后优先只跑相关
   文件**：`.venv/Scripts/python.exe -m pytest tests/test_graph.py tests/test_grpc.py -q`
 
 #### 测试提速与排查经验（V2→V3 迁移中总结）
@@ -206,11 +193,35 @@ tasks.db 独立保留）；`graph lineage/nodes/stats` 已接入 gRPC Execute �
 portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-design.md §6-7）。
 
 **下一步**（详见 README「路线图」）：
-1. panel 物化（scan 落盘）、index 唯一性校验等物理细节
-2. 任务版 table/dataset handler 残余清理（V2.0 controller 死代码评估）
-3. 列级血缘（列节点图）、version_list 裁剪、图算法（PageRank 等）
+1. index 唯一性校验等物理细节
+2. 列级血缘（列节点图）、图算法（PageRank 等）
+3. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 冗余清理：删除 V2.0 死代码 controller（业务只剩 GraphService 一份）
+
+- **删除 6 个死 controller**（约 2500 行）：`src/stkoe/{dataset,fieldset,sample,feature,
+  factor,factor_test}/controller.py` —— 仅 V2.0/tests 死代码直测引用，当前业务全部走
+  GraphService；`table/catalog.py`（旧 SQLite catalog，仅死代码引用）一并删除
+- **`table/controller.py` 拆分**：TableController（V2.0 登记层）废弃删除；仍被活代码引用的
+  `DEFAULT_IGNORE_COLS / DependencyError / TableNotFoundError / TableExistsError` 迁至
+  新文件 `table/errors.py`（graph/service.py、stat/controller.py 引用同步更新）
+- **spec 瘦身**：table/spec.py 删 FileMeta/TableMeta/TableScanReport（留 TableLayout/
+  ColumnMeta/FileDiff）；fieldset/spec.py 删 FieldsetMeta/ScanReport/CheckResult（留
+  FieldMeta，engine 类型提示用）；factor_test/spec.py 删 FactorTestMeta/ScanReport/
+  CheckResult（留 FactorTesterSpec）；dataset/sample/feature/factor 的 spec.py 整体删除
+- **`__init__.py` 清导出**：dataset/fieldset/sample/feature/factor 改为纯 docstring
+  （dataset 注明旧别名转发 panel）；factor_test 仅保留 FactorTesterSpec；table 改从
+  errors 导出
+- **V2.0/tests 死代码直测移除**：7 个随迁文件（test_table/dataset/fieldset/sample/feature/
+  factor/factor_test.py，113 例）随死代码一并删除（可自 git 恢复）；V2.0/tests 余下
+  文件为历史基线快照，保持原样
+- **graph/handlers.py 评估结论：保留**——service.py 实际调用（PanelHandler.add/
+  FieldsetHandler.add/SampleHandler.add/FeatureHandler.add/FactorHandler.add/
+  TesterHandler.add），是 v3.0-def.py 形态的图账本层，非冗余
+- 测试：全量 194 用例绿；`tests/test_stat.py` 移除残留 tctl fixture（TableController 导入）
+- 文档：AGENTS.md 目录结构/测试节/状态同步
 
 ### 2026-08 沿链增量物化 + get 三态收口（P2 落地）
 

@@ -1,8 +1,4 @@
-"""feature 模块：因子定义库（add/set/meta/list/test/delete；纯定义，无物化）"""
-from .controller import FeatureController, FeatureExistsError, FeatureNotFoundError
+"""feature 模块：因子定义库（add/set/meta/list/test/delete，纯定义无物化，走 GraphService）。
 
-__all__ = [
-    "FeatureController",
-    "FeatureNotFoundError",
-    "FeatureExistsError",
-]
+任务版入口见 feature/handlers.py（TaskHandler）；公式引擎见 feature/engine.py。
+"""

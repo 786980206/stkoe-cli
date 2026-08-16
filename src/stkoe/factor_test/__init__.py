@@ -1,13 +1,7 @@
-"""factor_test 模块：因子测试数据集（test add/scan + stat testers）"""
-from .controller import (FactorTestController, FactorTestExistsError,
-                         FactorTestNotFoundError)
-from .spec import FactorTestCheckResult, FactorTestMeta, FactorTesterSpec
+"""factor_test 模块：因子测试数据集（test add/scan + stat testers，走 GraphService）。
 
-__all__ = [
-    "FactorTestController",
-    "FactorTestNotFoundError",
-    "FactorTestExistsError",
-    "FactorTesterSpec",
-    "FactorTestMeta",
-    "FactorTestCheckResult",
-]
+任务版入口见 factor_test/handlers.py（TaskHandler）；测试器见 factor_test/tester.py。
+"""
+from .spec import FactorTesterSpec
+
+__all__ = ["FactorTesterSpec"]

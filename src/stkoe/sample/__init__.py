@@ -1,8 +1,4 @@
-"""sample 模块：基于 dataset 的样本池（add/get/meta/list/set/check/delete，无物化）"""
-from .controller import SampleController, SampleExistsError, SampleNotFoundError
+"""sample 模块：样本池（add/get/meta/list/set/check/delete，无物化，走 GraphService）。
 
-__all__ = [
-    "SampleController",
-    "SampleNotFoundError",
-    "SampleExistsError",
-]
+任务版入口见 sample/handlers.py（TaskHandler）；过滤引擎见 sample/engine.py。
+"""

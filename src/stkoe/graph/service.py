@@ -190,12 +190,15 @@ class GraphService:
         return out
 
     def _scan_disk(self, asset_type: str, name: str, *, meta: dict | None = None,
-                   extra_data: dict | None = None) -> dict:
+                   extra_data: dict | None = None,
+                   col_meta: dict[str, dict] | None = None) -> dict:
         """核心：列目录 → 对账 → 有差异才扫 footer → 指纹 + 节点更新（幂等）。
 
         - 首次（隐式登记）：graph.add 建节点（版本 v1）；差异必然存在 → 写指纹 + 列
         - 非首次且变化：指纹替换 + 节点 patch + ``notify_change``（铸版本 + 下游置脏）
         - 无变化：不 bump 版本
+        - ``col_meta``：列级元数据覆盖（dbt manifest 等），按列名合并进登记列
+          （只由 add 传入；update 走本方法时不传，已有列说明保持不变）
         """
         root = self._asset_root(asset_type, name)
         if not root.exists():
@@ -246,13 +249,19 @@ class GraphService:
                                          self.ignore_cols):
                     prev = dict(old_cols.get(c.name, {}))
                     prev.update({k: v for k, v in c.to_dict().items() if v is not None or k == "is_tool"})
+                    if col_meta and c.name in col_meta:
+                        prev.update(col_meta[c.name])
                     new_cols.append(prev)
 
                 base = {}
                 if implicit and meta:
                     for k, v in meta.items():
                         if k == "tags":
-                            base["tags"] = [t.strip() for t in str(v).split(",") if t.strip()]
+                            if isinstance(v, str):
+                                base["tags"] = [t.strip() for t in v.split(",") if t.strip()]
+                            else:
+                                base["tags"] = [str(t).strip() for t in v
+                                                if str(t).strip()]
                         elif k in ("display_name", "description", "source"):
                             base[k] = str(v)
                         else:
@@ -408,8 +417,28 @@ class GraphService:
     # table
     # =====================================================================
 
+    def _manifest_meta(self, name: str) -> tuple[dict, dict]:
+        """dbt manifest 元数据：返回 (资产级 meta, 列级 col_meta)。
+
+        未配置 ``dbt-manifest-file`` 或 manifest 中无匹配节点 → 空；
+        配置了但文件缺失/解析失败 → 抛错（配置错误显式暴露）。
+        """
+        from ..dbt import asset_meta, column_meta, find_node, manifest_path
+
+        p = manifest_path()
+        if p is None:
+            return {}, {}
+        node = find_node(p, name)
+        if node is None:
+            return {}, {}
+        return asset_meta(node), column_meta(node)
+
     def table_add(self, name: str, *, all: bool = False, meta: dict | None = None):
-        """注册表（发现资产）：目录必须存在；已注册报 TableExistsError。"""
+        """注册表（发现资产）：目录必须存在；已注册报 TableExistsError。
+
+        配置了 ``dbt-manifest-file`` 时先应用 manifest 元数据（description/列说明等），
+        参数显式指定的值（``--display_name/--description/...``）覆盖 manifest。
+        """
         if all:
             if not self.tables_root.exists():
                 return []
@@ -417,7 +446,9 @@ class GraphService:
             for d in sorted(x for x in self.tables_root.iterdir() if x.is_dir()):
                 if self.store.get_node(node_id("table", d.name)) is None \
                         and any(d.rglob("*.parquet")):
-                    out.append(self._scan_disk("table", d.name))
+                    m, cols = self._manifest_meta(d.name)
+                    out.append(self._scan_disk(
+                        "table", d.name, meta={**m, **(meta or {})}, col_meta=cols))
             return out
         if not name:
             raise ValueError("add 需要表名（或 --all 批量发现）")
@@ -426,7 +457,8 @@ class GraphService:
             raise AssetNotFoundError(f"table dir not found: {root}")
         if self.store.get_node(node_id("table", name)) is not None:
             raise TableExistsError(f"table already registered: {name} (use scan to refresh)")
-        return self._scan_disk("table", name, meta=meta)
+        m, cols = self._manifest_meta(name)
+        return self._scan_disk("table", name, meta={**m, **(meta or {})}, col_meta=cols)
 
     def table_get(self, name: str, *, columns=None, where=None, partition=None,
                   exclude_tool: bool = False, limit=None, offset=None,
@@ -512,6 +544,7 @@ class GraphService:
 
         ``--all`` 批量发现：扫描 ``index/`` 下未登记且含 parquet 的目录（同 table add --all）。
         单表登记前校验 ``(symbol, datetime)`` 组合唯一（v3.0-def）。
+        配置了 ``dbt-manifest-file`` 时先应用 manifest 元数据（参数显式指定覆盖）。
         """
         if all:
             if not self.indexs_root.exists():
@@ -520,8 +553,9 @@ class GraphService:
             for d in sorted(x for x in self.indexs_root.iterdir() if x.is_dir()):
                 if self.store.get_node(node_id("index", d.name)) is None \
                         and any(d.rglob("*.parquet")):
+                    m, cols = self._manifest_meta(d.name)
                     out.append(self._scan_disk(
-                        "index", d.name, meta=meta,
+                        "index", d.name, meta={**m, **(meta or {})}, col_meta=cols,
                         extra_data={"symbol_col": symbol_col, "datetime_col": datetime_col,
                                     "materialize_partition": materialize_partition}))
             return out
@@ -533,8 +567,9 @@ class GraphService:
         if self.store.get_node(node_id("index", name)) is not None:
             raise TableExistsError(f"index already registered: {name}")
         self._check_index_unique(name, symbol_col=symbol_col, datetime_col=datetime_col)
+        m, cols = self._manifest_meta(name)
         return self._scan_disk(
-            "index", name, meta=meta,
+            "index", name, meta={**m, **(meta or {})}, col_meta=cols,
             extra_data={"symbol_col": symbol_col, "datetime_col": datetime_col,
                         "materialize_partition": materialize_partition})
 

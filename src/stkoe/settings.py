@@ -28,16 +28,18 @@ class StkoeConfig:
     """stkoe.json 配置的类型化视图
 
     已知键映射到字段（``grpc-host`` → ``grpc_host``、``grpc-port`` → ``grpc_port``、
-    ``data-dir`` → ``data_dir``），其余任意自定义键保留在 ``extra``（原样）。
+    ``data-dir`` → ``data_dir``、``dbt-manifest-file`` → ``dbt_manifest_file``），
+    其余任意自定义键保留在 ``extra``（原样）。
     """
 
     grpc_host: str = DEFAULT_HOST
     grpc_port: int = DEFAULT_PORT
     data_dir: str = DEFAULT_DATA_DIR
+    dbt_manifest_file: str = ""
     extra: dict[str, object] = field(default_factory=dict)
 
     #: JSON 键名（其余任意键进 extra）
-    _KNOWN = ("grpc-host", "grpc-port", "data-dir")
+    _KNOWN = ("grpc-host", "grpc-port", "data-dir", "dbt-manifest-file")
 
     def to_dict(self) -> dict:
         """输出用字典：键名回到连字符形态 + 任意自定义键"""
@@ -45,6 +47,7 @@ class StkoeConfig:
             "grpc-host": self.grpc_host,
             "grpc-port": self.grpc_port,
             "data-dir": self.data_dir,
+            "dbt-manifest-file": self.dbt_manifest_file,
         }
         out.update(self.extra)
         return out
@@ -92,6 +95,8 @@ def load_config() -> StkoeConfig:
         cfg.grpc_port = int(data["grpc-port"])
     if "data-dir" in data:
         cfg.data_dir = str(data["data-dir"])
+    if "dbt-manifest-file" in data:
+        cfg.dbt_manifest_file = str(data["dbt-manifest-file"])
     cfg.extra = {k: v for k, v in data.items() if k not in cfg._KNOWN}
     return cfg
 

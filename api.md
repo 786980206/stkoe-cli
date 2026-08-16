@@ -77,7 +77,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | source | action | 位置参数 | flags | 返回 |
 |---|---|---|---|---|
 | version | （空）/ `get` | — | — | JsonData `{"version"}` |
-| config | （空）/ `show` | — | — | JsonData `{"config_file", "grpc-host", "grpc-port", "data-dir", ...extra}` |
+| config | （空）/ `show` | — | — | JsonData `{"config_file", "grpc-host", "grpc-port", "data-dir", "dbt-manifest-file", ...extra}` |
 | config | `set` | — | `--<key> <value> ...`（任意键） | JsonData `{"written", "set"}` |
 | task | （空）/ `list` | — | `--state <state>` | JsonData `{"tasks": [...]}`（按创建时间倒序） |
 | mock | `demo` | — | `--n-syms N`（默认 300） `--n-days N`（默认 500，交易日数，从 2024-01-01 起） | JsonData（写入清单：`[{name, path, rows, columns}]`，写 `index/index`（index 资产目录）+ `table/m1`，不注册） |
@@ -161,6 +161,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 > `table update` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
 > `table add` 单表可携带初始元数据（键语义与 `table set` 一致，仅首次注册生效；`--all` 时不适用）。
+> 配置了 `dbt-manifest-file`（§7）时 add 先应用 manifest 元数据，参数显式指定覆盖。
 > `index add` 同语义：`--all` 批量发现 `index/` 下未登记且含 parquet 的目录（已登记/空目录跳过），
 > 返回 `indexes` 数组；批量时 `--symbol-col/--datetime-col` 等参数对全部新发现统一生效。
 > V3.0 起类型由节点 label 承载：table 恒 "table"，index 是独立资产（`index add`）；
@@ -498,8 +499,10 @@ t:<task_id>
 | `grpc-host` | `127.0.0.1` | gRPC 监听地址 |
 | `grpc-port` | `9569` | gRPC 监听端口 |
 | `data-dir` | `~/.stkoe` | 数据目录（表/数据集/统计/catalog/任务库） |
+| `dbt-manifest-file` | `""` | dbt 编译产物 `target/manifest.json` 路径（`stkoe config set --dbt-manifest-file <路径>`；expanduser，相对路径按当前工作目录解析）。配置后 **table/index add 时先应用 manifest 元数据**（按 name/alias 匹配 model/source 节点：资产级 `description` + `meta.display_name/source/tags`，列级 `description` + `meta.display_name/unit/tags`），**add 参数显式指定的值覆盖 manifest**；文件缺失/解析失败 → add 报错；无匹配节点 → 静默 |
 
 - 任意自定义键保留在 `extra`（`config show` 透出，`config set` 原样写入）
+- 示例：`stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json`
 
 日志：`STKOE_LOG_LEVEL` 环境变量可覆盖默认 INFO 级别。
 

@@ -22,8 +22,10 @@ def test_load_defaults(cfg_env):
     assert cfg.grpc_host == "127.0.0.1"
     assert cfg.grpc_port == 9569
     assert cfg.data_dir == "~/.stkoe"
+    assert cfg.dbt_manifest_file == ""
     assert cfg.to_dict() == {
-        "grpc-host": "127.0.0.1", "grpc-port": 9569, "data-dir": "~/.stkoe"}
+        "grpc-host": "127.0.0.1", "grpc-port": 9569, "data-dir": "~/.stkoe",
+        "dbt-manifest-file": ""}
 
 
 def test_save_then_load_merge(cfg_env):

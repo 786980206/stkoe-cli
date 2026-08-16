@@ -38,6 +38,7 @@ src/stkoe/
 ├── jsonutil.py        # 统一 orjson 序列化（dumps_str/loads）
 ├── logutil.py         # 统一 logger（LOG）+ setup_logging()（默认 INFO，STKOE_LOG_LEVEL 可覆盖）
 ├── settings.py        # stkoe.json 配置（StkoeConfig / load_config / save_config）
+├── dbt.py             # dbt manifest.json 元数据桥接（table/index add 应用模型/列说明）
 ├── grpc/
 │   ├── stkoe.proto + stkoe_pb2*.py     # 协议 + protoc 生成
 │   ├── dispatch.py    # Execute 同步命令分发（@handler 注册；version/config/table）
@@ -230,6 +231,23 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 feat(dbt): 配置 dbt-manifest-file——table/index add 自动应用 dbt 模型元数据
+
+- **配置键**：`stkoe config set --dbt-manifest-file <路径>`（StkoeConfig 新增已知键
+  `dbt_manifest_file`，config show 透出；路径 expanduser，相对路径按 cwd 解析）
+- **新模块 `src/stkoe/dbt.py`**：解析 dbt 编译产物 `target/manifest.json`，按
+  `name`（回退 `alias`）匹配 nodes/sources 的 model/source 节点；资产级提取
+  `description` + `meta.display_name/source/tags`，列级提取 `description` +
+  `meta.display_name/unit/tags`（tags 归一化为 list）
+- **应用语义**：`table_add`/`index_add`（含 `--all` 批量）先应用 manifest 元数据，
+  再应用 add 参数——**参数显式指定 > manifest > 默认**；`_scan_disk` 新增
+  `col_meta` 参数按列名合并列说明（仅 add 传入；update 不重应用，已有列说明保留）
+- **错误语义**：配置了但文件缺失/解析失败 → add 抛 ValueError（配置错误显式暴露）；
+  manifest 无匹配节点 → 静默（表不在 dbt 项目属正常）
+- 测试：新增 tests/test_dbt.py 9 例（解析单元 / config 读写 / table·index add 应用 /
+  参数覆盖 / --all 批量 / 未配置无影响 / 文件缺失报错）；全量 210 用例绿
+- 文档：api.md §7 配置表 + §3.1 add 下注、AGENTS.md 目录结构
 
 ### 2026-08 refactor: 清理过时概念——dataset 旧别名 + scan 旧名别名彻底移除
 

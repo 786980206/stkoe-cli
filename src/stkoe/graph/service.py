@@ -48,6 +48,11 @@ from .store import GraphStore
 _ASSET_TYPES = ("table", "index", "panel", "fieldset", "sample", "feature",
                 "factor", "tester")
 
+#: 变化文件行数超过该值时不再读列 distinct（symbol_scope 回退分区值/全集）——
+#: 大文件全量重写场景读全列代价远大于按标的裁剪的收益；真实日更增量文件
+#: （每天一个文件、几千到几万行）远低于该阈值，不受影响
+_SYMBOL_SCAN_LIMIT = 500_000
+
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
@@ -381,18 +386,25 @@ class GraphService:
             return list(dict.fromkeys(s for s in scope if s is not None)) or None
 
         def symbols_for(rel: str, part_path: str) -> list[str] | None:
-            """变化文件的标的集合：symbol 分区键直取；否则读该列 distinct（数据页）。"""
+            """变化文件的标的集合：symbol 分区键直取；小文件读该列 distinct（数据页）。
+
+            大文件（全量覆盖重写场景，行数超过 ``_SYMBOL_SCAN_LIMIT``）不再读列
+            distinct——读 2000 万行的列开销远大于裁剪收益（此时几乎所有标的都
+            变了，回退为分区值/全集仍正确，只是增量不按标的裁剪）。
+            """
             if not symbol_col:
                 return None
             vals = partition_values(rel, part_path, symbol_col)
             f = root / rel
             if f.exists():
                 try:
-                    lf = pl.scan_parquet(f)
-                    if symbol_col in lf.collect_schema().names():
-                        vals.extend(lf.select(
-                            pl.col(symbol_col).cast(pl.String).unique())
-                            .collect().to_series().to_list())
+                    ftr = T.footer(f)
+                    if ftr.get("row_count", 0) <= _SYMBOL_SCAN_LIMIT:
+                        lf = pl.scan_parquet(f)
+                        if symbol_col in lf.collect_schema().names():
+                            vals.extend(lf.select(
+                                pl.col(symbol_col).cast(pl.String).unique())
+                                .collect().to_series().to_list())
                 except Exception:
                     pass
             return list(dict.fromkeys(v for v in vals if v is not None)) or None
@@ -684,15 +696,16 @@ class GraphService:
         return {"deleted": name}
 
     def index_update(self, name: str, *, all: bool = False) -> dict | list:
-        """源头 index 更新：重扫对账（物理变化 → 版本递增 + 下游置脏）+ 唯一性校验。"""
+        """源头 index 更新：重扫对账（物理变化 → 版本递增 + 下游置脏）。
+
+        （symbol, datetime）唯一性校验只在 ``index_add`` 登记时执行；update 是
+        重扫对账语义（信任磁盘现状），跳过全表 unique 校验——大表下每次 update
+        全表扫描代价高（2000 万行 ~6s），且对账本身不改变数据。
+        """
         if all:
-            out = [self._scan_disk("index", n["name"]) for n in self.graph.list("index")]
-            for n in self.graph.list("index"):
-                self._check_index_unique(n["name"])
-            return out
-        r = self._scan_disk("index", name)
-        self._check_index_unique(name)
-        return r
+            return [self._scan_disk("index", n["name"])
+                    for n in self.graph.list("index")]
+        return self._scan_disk("index", name)
 
     def index_data_key(self, name: str) -> str:
         root = self._index_root(name)
@@ -1596,32 +1609,36 @@ class GraphService:
 
     def _factor_compute(self, node: dict, *, partition: str | None = None,
                         dt_range: tuple[str, str] | None = None,
-                        symbols: list[str] | None = None) -> pl.DataFrame:
+                        symbols: list[str] | None = None,
+                        view_df: pl.DataFrame | None = None) -> pl.DataFrame:
         """实时计算最终因子：sample 视图求 feature 公式 → 拼索引+因子列 → 算子链。
 
         ``dt_range=(lo, hi)`` / ``symbols`` 给出时只计算「时间区间 × 标的集合」
-        内的行（增量物化用，字符串/ISO 可比）。
+        内的行（增量物化用，字符串/ISO 可比）；``view_df`` 为调用方已构建并
+        过滤的 sample 视图（tester 沿链复用，避免同一视图重复 join/collect）。
         """
         feature = node.get("feature", "").split(":", 1)[1]
         sample = node.get("sample", "").split(":", 1)[1]
         fnode = self._require_node("feature", feature)
         keys = self._factor_keys(node)
-        lf = self._sample_view_lf(sample)
+        lf = view_df.lazy() if view_df is not None \
+            else self._sample_view_lf(sample)
         if dt_range:
             dt = keys[-1]
             lo, hi = dt_range
             lf = lf.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
         if symbols:
             lf = lf.filter(pl.col(keys[0]).is_in(symbols))
+        df = lf.collect()  # sample 视图只物化一次（field/idx/src_rows 共用）
         engine = get_factor_engine(node.get("engine") or "polars")
-        field = engine.field(lf, fnode.get("formula") or "")
-        src_rows = lf.select(pl.len()).collect().item()
+        field = engine.field(df.lazy(), fnode.get("formula") or "")
+        src_rows = df.height
         if field.height != src_rows:
             raise ValueError(f"feature 公式非逐行计算: 结果 {field.height} 行 != 样本 {src_rows} 行")
-        idx = lf.select(*[pl.col(k) for k in keys]).collect()
+        idx = df.select(*[pl.col(k) for k in keys])
         factor_col = node.get("factor_col") or feature
-        df = idx.hstack(field.rename({"field": factor_col}))
-        return engine.transform(df, node.get("pipeline") or "nothing()")
+        out = idx.hstack(field.rename({"field": factor_col}))
+        return engine.transform(out, node.get("pipeline") or "nothing()")
 
     def _factor_view_lf(self, name: str, *, where=None,
                         partition: str | None = None) -> pl.LazyFrame:
@@ -1847,7 +1864,8 @@ class GraphService:
         """测试数据集：sample 视图（含测试必需列）+ factor 列 → prepare_factor_data。
 
         ``dt_range=(lo, hi)`` / ``symbols`` 给出时只构造「时间区间 × 标的集合」
-        内的行（增量物化用）。
+        内的行（增量物化用）。sample 视图只 collect 一次，并传给
+        ``_factor_compute`` 复用（factor 计算不重复构建同一视图）。
         """
         factor = node.get("factor", "").split(":", 1)[1]
         fnode = self._require_node("factor", factor)
@@ -1861,18 +1879,19 @@ class GraphService:
             view = view.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
         if symbols:
             view = view.filter(pl.col(keys[0]).is_in(symbols))
-        view = view.collect()
+        view_df = view.collect()
         returns = node.get("returns", "r")
         groupby = node.get("groupby", "ic")
         marketcap = node.get("marketcap", "fv")
         need = ["date", "sym", returns, groupby, marketcap]
-        missing = [c for c in need if c not in view.columns]
+        missing = [c for c in need if c not in view_df.columns]
         if missing:
             raise ValueError(f"sample 缺少测试必需列: {missing}（需要 date/sym 与 "
                              f"returns/groupby/marketcap）")
-        fdf = self._factor_compute(fnode, dt_range=dt_range, symbols=symbols)
+        fdf = self._factor_compute(fnode, dt_range=dt_range, symbols=symbols,
+                                   view_df=view_df)
         base = (
-            view.select(*[pl.col(c) for c in need])
+            view_df.select(*[pl.col(c) for c in need])
             .with_columns(pl.lit(1, dtype=pl.Int32).alias("sample"))
             .join(fdf, on=keys, how="left")
             .rename({fm["factor_col"]: "factor", returns: "returns",

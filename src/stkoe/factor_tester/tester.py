@@ -27,6 +27,18 @@ def ts_cret(returns: pl.Expr, d: int) -> pl.Expr:
     return (cum.shift(-d).over("sym") - cum).exp() - 1
 
 
+def _fwd_return_exprs(periods: list[int]) -> list[tuple[str, pl.Expr]]:
+    """多个 d 共享一次 ``cum_sum().over("sym")`` 的前向收益表达式（性能优化）。
+
+    ``ts_cret`` 每个 period 都会重算 ``cum_sum`` 窗口（大表上开销明显）；
+    这里把累计对数收益物化到 ``_cum`` 列（先一步 with_columns），各 d 的
+    shift 表达式共享它（polars with_columns 同批内不能引用新列，故分两步）。
+    """
+    return [(f"d{d}",
+             (pl.col("_cum").shift(-d).over("sym") - pl.col("_cum")).exp() - 1)
+            for d in periods]
+
+
 def _quantile_expr(factor: pl.Expr, keys: list[str], quantiles: int) -> pl.Expr:
     """截面分位（qcut 近似）：rank/count 按 date(+group) 分桶取 1..quantiles"""
     rank = factor.rank("average").over(keys)
@@ -37,7 +49,8 @@ def _quantile_expr(factor: pl.Expr, keys: list[str], quantiles: int) -> pl.Expr:
 def prepare_factor_data(frame: pl.DataFrame, spec: FactorTesterSpec) -> pl.DataFrame:
     """把 (date/sym/sample/returns/group/marketcap/factor) 底表加工成测试数据集
 
-    - 前向收益 ``d{no} = ts_cret(returns, -no)``（sym 内按 date 升序）
+    - 前向收益 ``d{no} = ts_cret(returns, -no)``（sym 内按 date 升序；多个 period
+      共享一次 cum_sum 窗口计算）
     - 样本重整：sample=1(观测)/0(非观测)/-1(因子为空被剔除)；因子为空则剔除因子
     - 因子分位 ``factor_quantile``：按 date（by_group 时 +group）截面分位
     - 过滤 date_range，按 date/sym 排序
@@ -45,8 +58,12 @@ def prepare_factor_data(frame: pl.DataFrame, spec: FactorTesterSpec) -> pl.DataF
     df = frame.sort(["sym", "date"])
     out = (
         df.with_columns(
-            *[ts_cret(pl.col("returns"), d).alias(f"d{d}") for d in spec.periods]
+            (1 + pl.col("returns")).log().cum_sum().over("sym").alias("_cum")
         )
+        .with_columns(
+            *[e.alias(name) for name, e in _fwd_return_exprs(spec.periods)]
+        )
+        .drop("_cum")
         .with_columns(
             pl.when(pl.col("sample") > 0).then(1).otherwise(0).alias("sample")
         )

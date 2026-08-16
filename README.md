@@ -748,8 +748,10 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
      否则读变化文件 footer 的 datetime 列 min/max（只读元数据、不读数据页）；
      取不到范围 → 全集（None）；
    - 事件带 **symbol_scope（变化标的集合）**：登记了 `symbol_col` 的资产（index）——
-     hive 分区键 = symbol_col 时用分区值，否则读变化文件该列 distinct（读数据页）；
-     removed 文件取不到分区值 / 未登记 symbol_col 的资产（table）→ None（全集）；
+     hive 分区键 = symbol_col 时用分区值；小文件（≤50 万行，真实日更增量文件的量级）
+     读该列 distinct；大文件全量重写/removed 文件取不到时回退 None（全集，增量退化为
+     纯时间裁剪——大文件读全列 distinct 的代价远大于按标的裁剪的收益）；
+     未登记 symbol_col 的资产（table）→ None（全集）；
    - `notify_change`：源头**铸版本 + 事件入 version_list + BFS 全链下游置脏**
      （valid=False，materialized=False）。
 2. **逐级 update 恢复**（必须按依赖顺序，先上游后下游；`assert_ready` 检查全链就绪）：

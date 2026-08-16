@@ -252,6 +252,35 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
   （tempfile.mkdtemp），残留目录不再复用
 - 文档：AGENTS.md
 
+### 2026-08 perf: 物化/增量性能优化——factor/tester 全量物化 3x/2.2x（性能测试驱动）
+
+- **基准方法**：mock 生成器在独立临时目录造数（2000×1000=200 万行、10000×2000=
+  2000 万行），GraphService 直测全量物化（各资产首次 update）与增量更新（小文件
+  追加/大文件覆盖）耗时 + cProfile 热点；注意点：① Windows 上读旧文件后覆盖写
+  同一 parquet 会触发 polars mmap 占用（os error 1224）——基准脚本写临时文件再
+  os.replace；② 增量段多轮复测存在机器负载波动（一轮整链全慢），用 3 次中位数；
+  ③ 2000 万行整链基准会写几十 GB 临时文件——**磁盘紧张环境慎跑大规格基准**
+- **优化 1（`_factor_compute` 单次 collect）**：同一 sample 视图 lazy 计划原被
+  collect 3 次（field/src_rows/idx 各重算整个 join 链）→ 先 collect 一次，
+  src_rows 用 df.height、idx 从内存 df 取；`field` 在 df.lazy() 上只算公式列
+- **优化 2（`_tester_build` 视图复用）**：tester 构建时 sample 视图原被构建 2 次
+  （自身 collect + `_factor_compute` 内部重建）→ `_factor_compute` 加可选
+  `view_df` 参数，tester 传已 collect 且过滤后的视图
+- **优化 3（`prepare_factor_data` cum 共享）**：`ts_cret` 每个 period 重算
+  `cum_sum().over("sym")` → 先物化 `_cum` 列（一次窗口），各 d 的 shift 表达式
+  共享（polars with_columns 同批不能引用新列，分两步）
+- **优化 4（index_update 跳过全表唯一性校验）**：`(symbol, datetime)` 唯一性只
+  在 `index_add` 登记时校验；update 是重扫对账语义（信任磁盘现状），跳过
+  2000 万行 ~6s 的每次全表 unique
+- **优化 5（symbols_for 大文件阈值）**：变化文件行数 > `_SYMBOL_SCAN_LIMIT`
+  （50 万）不再读列 distinct（回退分区值/全集）——大文件全量重写时读全列
+  代价远大于按标的裁剪收益；真实日更小文件不受影响
+- **基准数据**（全量物化，2000 万行）：factor 112.75s → 37.75s（3.0x）、
+  tester 238.08s → 107.09s（2.2x）；200 万行：factor 1.75→0.76s、tester
+  3.62→1.94s；增量大覆盖（200 万行，3 次中位）：factor 2.17→1.00s、
+  tester 4.88→2.14s；index_update 2000 万行 8.03s → ~2.3s（省掉校验 5.7s）
+- 测试：全量 250 用例绿；文档：README §11.1（symbol 阈值语义）、AGENTS.md
+
 ### 2026-08 feat: symbol_scope 提取——源头事件带标的集合，增量按「时间 × 标的」裁剪
 
 - **背景**：P0 范围化事件只提取 datetime 区间，`symbol_scope` 恒 None（全集）——

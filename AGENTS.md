@@ -252,6 +252,27 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
   （tempfile.mkdtemp），残留目录不再复用
 - 文档：AGENTS.md
 
+### 2026-08 perf: 列级性能基准与优化——宽 panel（206 列）全链 ~5.4s、增量小文件 panel 2.2x
+
+- **基准场景**：50 万行（1000×500）× 多成员表合成 panel——窄表 8 列（index+m1）
+  vs 宽表 206 列（index 6 列 + 5 个成员表各 40 列），全量物化 + 增量（小文件
+  100 新标的一天 / 大覆盖 index 重写）沿链对比
+- **基准数据（宽表 206 列，秒）**：全量 panel 3.17 / fieldset 0.28 / sample 0.38 /
+  factor 0.48 / tester 1.09（合计 ~5.4s）；增量小文件 index 0.32 / panel 1.11 /
+  fieldset 0.49 / sample 0.40 / factor 0.67 / tester 1.03（合计 ~4.0s）；与窄表
+  8 列对比：panel 全量 8.9x、factor/tester ~2.5-3x（列数线性放大，无病态）
+- **优化 1（`_factor_compute` 列投影）**：物化前 `select(keys + 公式引用列)`
+  ——宽表下不再 collect 全列（join 投影下推只取所需列）；factor 0.74→0.48s
+- **优化 2（`_tester_build` 视图投影）**：view 只 collect 测试必需列 + keys +
+  factor 公式引用列（formula 从 feature 节点取）；tester 1.50→1.09s
+- **优化 3（`_panel_lazy` where 左表下推）**：`where` 为 pl.Expr 且只引用左表
+  （index）列时下推到 join 前——增量按「时间×标的」裁剪时避免全表 join 只为
+  取增量行；panel 增量小文件 2.43→1.11s（2.2x）；引用右表列/字符串谓词保持
+  join 后过滤（语义不变）
+- **剩余固有成本**：panel 全量/大覆盖增量 ~2.5-3.2s 是 206 列 join + 读写 parquet
+  的线性列数成本；yearly 桶下增量重写 = 全表桶重写（daily/monthly 桶可细分）
+- 测试：全量 250 用例绿；文档：AGENTS.md
+
 ### 2026-08 perf: 物化/增量性能优化——factor/tester 全量物化 3x/2.2x（性能测试驱动）
 
 - **基准方法**：mock 生成器在独立临时目录造数（2000×1000=200 万行、10000×2000=

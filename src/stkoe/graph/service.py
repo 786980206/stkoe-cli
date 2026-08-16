@@ -903,6 +903,14 @@ class GraphService:
         frames = [frame(index, "index")]
         frames += [frame(t, "table") for t in tables]
         joined = frames[0]
+        # where 只引用左表（index）列时下推到 join 前——增量物化按「时间×标的」
+        # 裁剪时避免全表 join 只为取增量行（宽表 panel 收益明显）；引用右表列或
+        # 字符串谓词保持 join 后过滤（语义不变）
+        left_push = False
+        if where is not None and isinstance(where, pl.Expr) \
+                and set(where.meta.root_names()) <= set(frames[0].collect_schema().names()):
+            joined = joined.filter(where)
+            left_push = True
         for i, t in enumerate(tables):
             f = frames[i + 1]
             if (table_map.get(t) or "asof_join") == "left_join":
@@ -910,7 +918,7 @@ class GraphService:
             else:
                 joined = _asof_join(joined, f, keys)
         joined = joined.select(*[c["name"] for c in cols])
-        if where is not None:
+        if where is not None and not left_push:
             joined = joined.filter(to_expr(where) if isinstance(where, str) else where)
         return joined, keys
 
@@ -1616,6 +1624,8 @@ class GraphService:
         ``dt_range=(lo, hi)`` / ``symbols`` 给出时只计算「时间区间 × 标的集合」
         内的行（增量物化用，字符串/ISO 可比）；``view_df`` 为调用方已构建并
         过滤的 sample 视图（tester 沿链复用，避免同一视图重复 join/collect）。
+        物化前做**列投影**（keys + 公式引用列）——宽表 panel（200+ 列）下避免
+        全列 collect，join 时只取所需列。
         """
         feature = node.get("feature", "").split(":", 1)[1]
         sample = node.get("sample", "").split(":", 1)[1]
@@ -1629,7 +1639,10 @@ class GraphService:
             lf = lf.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
         if symbols:
             lf = lf.filter(pl.col(keys[0]).is_in(symbols))
-        df = lf.collect()  # sample 视图只物化一次（field/idx/src_rows 共用）
+        view_cols = set(lf.collect_schema().names())
+        need = list(dict.fromkeys(
+            keys + _formula_refs(fnode.get("formula") or "", view_cols)))
+        df = lf.select(*need).collect()  # 只物化所需列（宽表 panel 收益明显）
         engine = get_factor_engine(node.get("engine") or "polars")
         field = engine.field(df.lazy(), fnode.get("formula") or "")
         src_rows = df.height
@@ -1864,8 +1877,9 @@ class GraphService:
         """测试数据集：sample 视图（含测试必需列）+ factor 列 → prepare_factor_data。
 
         ``dt_range=(lo, hi)`` / ``symbols`` 给出时只构造「时间区间 × 标的集合」
-        内的行（增量物化用）。sample 视图只 collect 一次，并传给
-        ``_factor_compute`` 复用（factor 计算不重复构建同一视图）。
+        内的行（增量物化用）。sample 视图只 collect 一次并做**列投影**（测试
+        必需列 + keys + factor 公式引用列），再传给 ``_factor_compute`` 复用
+        （宽表 panel 下避免全列物化）。
         """
         factor = node.get("factor", "").split(":", 1)[1]
         fnode = self._require_node("factor", factor)
@@ -1879,11 +1893,17 @@ class GraphService:
             view = view.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
         if symbols:
             view = view.filter(pl.col(keys[0]).is_in(symbols))
-        view_df = view.collect()
         returns = node.get("returns", "r")
         groupby = node.get("groupby", "ic")
         marketcap = node.get("marketcap", "fv")
         need = ["date", "sym", returns, groupby, marketcap]
+        view_cols = set(view.collect_schema().names())
+        feat_name = fm.get("feature") or fnode.get("feature", "").split(":", 1)[1]
+        formula = self._require_node("feature", feat_name).get("formula") or ""
+        proj = list(dict.fromkeys(
+            [c for c in need if c in view_cols] + keys
+            + _formula_refs(formula, view_cols)))
+        view_df = view.select(*proj).collect()
         missing = [c for c in need if c not in view_df.columns]
         if missing:
             raise ValueError(f"sample 缺少测试必需列: {missing}（需要 date/sym 与 "

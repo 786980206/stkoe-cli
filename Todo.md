@@ -7,14 +7,14 @@
 
 - **V3.0 graph 重构全部完成**：table/index/panel/fieldset/sample/feature/factor/test 基于
   graph（`src/stkoe/graph/service.py` GraphService），Execute/任务版/CLI 三路径共用一套实现。
-- **P0/P1/P2 全部落地**（graph-v3-gap.md 已标 ✅）：范围化事件 + factor/test 增量物化、
-  panel/fieldset 物化 + resolve 收口、沿链增量 + get 三态 + version_list 裁剪。
-- **冗余清理已完成**（2026-08 冗余清理提交）：6 个 V2.0 死 controller + table/catalog.py +
-  TableController 删除（~2500 行），错误/常量迁至 `table/errors.py`；spec 瘦身；
-  V2.0/tests 死代码直测（113 例）随删（git 可恢复）。**graph/handlers.py 评估结论：保留**
-  （service.py 实际调用，v3.0-def 形态图账本层）。
-- **测试全绿**：`tests/` 全量 **194 passed**（约 44s）。
-- **Git 最新提交**：冗余清理提交（删除 V2.0 死代码 controller）。
+- **P0/P1/P2 全部落地**（graph-v3-gap.md 已标 ✅）；**E5 事件记录语义已修**（upsert/delete
+  各记一条 + own_event）；**冗余清理已完成**（6 个死 controller + table/catalog.py +
+  TableController 删除，~2500 行；错误/常量迁至 `table/errors.py`；graph/handlers.py 保留）。
+- **优化循环已提交 3 项**：GraphStore WAL/busy_timeout、dispatch 线程本地 GraphService
+  缓存（修连接泄漏）、`stkoe serve` Ctrl+C 优雅退出。
+- **测试全绿**：`tests/` 全量 **196 passed**（约 28s，WAL + 连接复用后提速）。
+- **Git 最新提交**：`ae4f9fd`（serve 优雅退出）；本会话共 4 个提交（20d0e1e/c0021ec/
+  48c6b17/ae4f9fd）。
 
 ## 用户核心设计约束（必须遵守）
 
@@ -49,7 +49,10 @@
 
 | 提交 | 内容 |
 |---|---|
-| （最新） | 冗余清理：删除 V2.0 死代码 controller + table/catalog.py + TableController（errors.py 承接）+ spec 瘦身 + V2.0/tests 死代码直测移除；AGENTS.md 同步 |
+| `ae4f9fd` | fix(cli): stkoe serve Ctrl+C 优雅退出（stop gRPC + TaskManager） |
+| `48c6b17` | perf(graph): GraphStore WAL/busy_timeout + dispatch 线程本地 GraphService 缓存（修连接泄漏；全量 54s→28s） |
+| `c0021ec` | fix(graph): resolve 自身变更事件记录语义（E5）+ upsert/delete 各记一条 + own_event（fieldset 记录自身字段） |
+| `20d0e1e` | refactor(graph): 冗余清理——删除 V2.0 死代码 controller（业务只剩 GraphService 一份） |
 | `98a0e57` | fix: test 增量物化漏写盘 + factor/test 幂等 materialized 判断修正；测试适配 get 三态 |
 | `fc46b8e` | feat: 沿链增量物化 + get 三态 + Cypher 批量血缘（P2 主体：_walk 重写/version_list 裁剪/self_invalidate/分区镜像） |
 | `af71801` | docs: graph-v3-gap.md 标 P2 全部落地 |

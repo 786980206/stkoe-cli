@@ -1,7 +1,7 @@
 """graph：V3.0 资产血缘图（graphqlite 存储）。
 
 图模型：节点（label = 资产类型，id = "<type>:<name>"）+ DEPENDS 边
-（依赖方 → 被依赖方，带 required_version 消费水位）。详见仓库根 graph-design.md。
+（依赖方 → 被依赖方，带 required_version 消费水位）。详见仓库根 README.md §2 图设计。
 """
 from .controller import DEFINITION_KEYS, GraphController, NullStorage
 from .errors import (

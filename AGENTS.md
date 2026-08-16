@@ -78,7 +78,7 @@ src/stkoe/
 ├── mock/              # 演示数据生成（stkoe mock demo/gen，替代 scripts/gen_example_data.py）
 │   ├── gen.py         # 生成器（tdcal/common/index/feature/klday/m1 + demo）+ write（只写盘不注册）
 │   └── handlers.py    # 任务版 Handler（source="mock"，注册进 TaskRegistry）
-├── graph/             # V3.0 资产图（graphqlite 嵌入式图数据库 + GraphService，见 graph-design.md）
+├── graph/             # V3.0 资产图（graphqlite 嵌入式图数据库 + GraphService，见 README.md §2）
 │   ├── model.py       # DataChangeEvent / ColumnMeta / FieldMeta / AssetMeta / DependencyEdge
 │   ├── store.py       # GraphStore：节点/边 CRUD + 血缘遍历（BFS，带环保护）+ 物理指纹普通表
 │   ├── events.py      # 事件合并（symbol/datetime 并集、field 交集）与积累（水位线）
@@ -154,8 +154,10 @@ src/stkoe/
 
 ### API 文档同步
 
-仓库根 `api.md` 是对外 API 全量文档（gRPC 协议 / Execute / SubmitTask / CLI / 配置 / 存储布局）。
-**新增/修改任何对外接口（动词、参数、返回字段、配置键）时，必须同步更新 `api.md`。**
+仓库根 `README.md` 是唯一入口文档（数据资产与图设计 §2 / 对外 API 全量说明 §5-§13 /
+配置 / 存储布局 / 设计对照 §14；原 api.md、graph-design.md、graph-v3-gap.md 已并入）。
+**新增/修改任何对外接口（动词、参数、返回字段、配置键）时，必须同步更新 `README.md`
+的 API 文档节（§5-§13）。**
 
 ### data_dir 透传
 
@@ -224,13 +226,24 @@ src/stkoe/
 全部基于 graph 实现（`graph/service.py` 的 GraphService），Execute 与 SubmitTask 三路径统一；
 旧 catalog.db 废弃（登记/依赖/版本进 graph 节点/边，物理指纹表迁入 catalog.db 普通表；
 tasks.db 独立保留）；`graph lineage/nodes/stats` 已接入 gRPC Execute 通道，
-portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-design.md §6-7）。
+portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13）。
 
 **下一步**（详见 README「路线图」）：
 1. 列级血缘（列节点图）、图算法（PageRank 等）
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 docs: 文档整合——api.md / graph-design.md / graph-v3-gap.md 并入 README.md
+
+- **README.md 成为唯一入口文档**：整合原 4 份文档并去重——图设计（节点/边/版本/事件/
+  存储层，原 graph-design.md）、对外 API 全量说明（命令表/数据模型/资产语义/任务版/
+  CLI/gclient/配置/存储布局/典型工作流/portal 指南/增量语义，原 api.md）、设计对照与
+  实现出入（E1-E7/G1-G12/评审遗留，原 graph-v3-gap.md）；原 api.md / graph-design.md /
+  graph-v3-gap.md 已删除（git 历史可恢复）
+- **交叉引用收口**：AGENTS.md「API 文档同步」节改指 README.md §5-§13（原 api.md）；
+  目录结构注释/当前状态改指 README.md §2；`graph/__init__.py` docstring 改指 README.md §2
+- 保留：`example.md`（全流程演练）、`AGENTS.md`（开发指南）、`v3.0-def.py`（设计对照基准）
 
 ### 2026-08 refactor(cli): config show 改名 config get
 

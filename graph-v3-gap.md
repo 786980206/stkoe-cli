@@ -1,8 +1,8 @@
 # V3 定义 vs 当前实现 出入清单（对照 v3.0-def.py）
 
 > 对照基准：仓库根 `v3.0-def.py`（V3.0 初始设计定义）+ `graph-design.md`。
-> 状态：**P0 已落地**（范围化事件 + factor/test 增量物化）；中间件（accumulate/merge/水位）
-> 与消费端（增量物化）已接通，剩余 P1/P2 见文末。
+> 状态：**P0/P1/P2 已落地**（范围化事件 + factor/test 增量物化 + 沿链增量物化 +
+> get 三态 + version_list 裁剪 + index 唯一性校验）；剩余可选项见文末。
 
 ---
 
@@ -23,11 +23,19 @@
 
 - **定义**（PanelHandler.update → materialize）：积累事件合并出 `{upsert, delete}` → **按范围从上游提取增量数据 upsert 进现有物化存储、按范围 delete 现有数据** → 边水位对齐 + 节点有效。
 - **当前（已修）**：
-  - **factor / test update 增量物化**：`_upstream_scope` 从全部源头（table/index）收集 `version > consumed` 的积累事件 → datetime 区间；已有物化且区间明确时，读旧物化 + 范围外保留 + 仅重算范围内行（`_factor_compute`/`_test_build` 带 `dt_range`）合并写回；`extra.consumed_versions` 记录各源头水位（供下次判定）；`--resync` 或首次/无范围 → 全量重算兜底；
-  - **panel update 物化**：join 视图落盘 `panel/<name>/data.parquet`，`panel_get` 物化且 curated 读物化、否则实时 join；`_panel_hash` 依赖上游版本 → 上游变化 curated 失效回退实时；
-  - **fieldset update 物化衍生字段**：keys + 已校验字段落盘 `fieldset/<name>/data.parquet`，`_fieldset_view_lf` 物化且 curated 读物化字段（fields_only 直接返回 / 全视图与 panel join）；
+  - **沿链增量物化（全部物化资产）**：`_upstream_scope` 沿链收集**直接依赖**未消费事件
+    （`graph._accumulated` 按出边 `required_version` 水位）→ datetime 区间；已有物化且区间
+    明确时——分区场景只删受影响分区文件重算写回，flat 场景删区间+合并写回
+    （`_factor_compute`/`_test_build`/`_panel_lazy`/fieldset 计算均带 `dt_range`）；
+    `--resync`/首次/无区间 → 全量重算兜底；
+  - **panel/fieldset/factor/test 物化**：`panel/<name>/`、`fieldset/<name>/`、
+    `factor/<name>/`、`factor_test/<name>/`，分区布局**镜像 index**（`_index_partition_keys`
+    沿链找 index 取其分区键，分区写保留分区列 + hive 目录 `key=value/data.parquet`）；
+  - **get 三态**（`_require_materialized`）：已物化（curated）→ 读物化；未物化且资产
+    本应物化（panel/fieldset/factor/test）→ 报错提示先 `<type> update <name>`；
+    sample/feature 恒实时；
   - sample / feature 仍无物化（实时构造，update 只铸版本）。
-- **剩余**：panel/fieldset 物化暂无增量（全量重算 + curated 失效兜底）；`symbol_scope` 未参与过滤。
+- **剩余**：`symbol_scope` 未参与过滤（P2 可选）。
 
 ### E4【已修 ✅】边水位线（required_version）维护不完整
 
@@ -46,11 +54,13 @@
   ① upsert/delete 同时存在时**只记一个**；② 把**上游的 field_scope** 原样当作自己的变更事件写入 version_list（对 fieldset 而言，记录的应是它重算产生的字段，而非上游字段名）。
 - **性质**：小出入，语义不严谨，不影响全量重算路径。
 
-### E6 version_list 无限增长、无裁剪
+### E6【已修 ✅】version_list 无限增长、无裁剪
 
 - **定义**：未定义裁剪策略；README 路线图 **"version_list 裁剪"** 已列为待办。
-- **当前**：`_bump` 每版本追加一条事件，永不清除（每次 notify/update 都增长）。
-- **性质**：已知未完成项，属性能问题（节点属性体积随版本线性增长）。
+- **当前（已修）**：`_bump` 铸版本后顺带 `_prune_version_list`——按所有下游边
+  `required_version` 的 min 裁剪：`version <= min_rv` 的事件已被全部下游消费，可安全删除；
+  `> min_rv` 保留（`accumulate` 仍可取到未消费事件）。测试
+  `test_version_list_pruned_by_consumed` 验证。
 
 ### E7 notify_change 的传播与置脏
 
@@ -65,8 +75,8 @@
 | # | 定义（v3.0-def） | 当前实现 | 性质 |
 |---|---|---|---|
 | G1 | Handler 的 `get`"物化且有效时才返回物理数据" | handler `get` 返回节点元数据（示例占位）；物理数据读取走 service 的 `xxx_get`（实时视图 / 物化 parquet） | 形态分工差异，行为正确 |
-| G2 | `IndexHandler.add` 校验 symbol/datetime 列**唯一性** | `index_add` 无唯一性校验 | 已知未完成（README 路线图） |
-| G3 | `PanelHandler.get` 物化+有效才返回 | panel 恒实时 join（无物化） | 设计演变（简化）；panel 物化列为待办 |
+| G2 | `IndexHandler.add` 校验 symbol/datetime 列**唯一性** | ✅ 已修：`_check_index_unique`（symbol+datetime 组合唯一校验） | 已修（P2-2） |
+| G3 | `PanelHandler.get` 物化+有效才返回 | ✅ panel 物化 + get 三态（物化且 curated 读物化，否则报错提示 update） | 已修（P2） |
 | G4 | `FieldsetHandler.on_change` 输出 {upsert, delete} 供消费 | `ctrl.accumulated` 存在，但 service 层无消费方（物化全量重算） | 接口空转，属 E3 的一部分 |
 | G5 | `GraphHandler.scan()` 空定义 | graph 命令为 lineage/nodes/stats | 语义不同，无实质出入 |
 | G6 | `AssetNode.version: str` | `int`（time_ns 时间戳，可直接排序比较） | 类型改进 ✓ |

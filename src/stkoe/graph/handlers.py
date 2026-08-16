@@ -239,8 +239,11 @@ class FieldsetHandler:
 
     @classmethod
     def add_field(cls, ctrl: GraphController, name: str, field_name: str,
-                  formula: str, **kw: Any) -> dict:
-        """添加字段（validated=False，需 check 通过）。"""
+                  formula: str, *, window_size: int = 0, **kw: Any) -> dict:
+        """添加字段（validated=False，需 check 通过）。
+
+        ``window_size``：滚动窗口回看宽度（默认 0 逐行），用于事件范围展开。
+        """
         meta = ctrl.meta("fieldset", name)
         fields = dict(meta.get("fields") or {})
         if field_name in fields:
@@ -252,6 +255,7 @@ class FieldsetHandler:
             unit=kw.pop("unit", None),
             tags=tuple(kw.pop("tags", ()) or ()),
             validated=False, engine=kw.pop("engine", "polars"),
+            window_size=int(window_size or 0),
         ).to_dict()
         return ctrl.set("fieldset", name, definition=True, fields=fields)
 
@@ -380,16 +384,21 @@ class FeatureHandler:
     @classmethod
     def add(cls, ctrl: GraphController, name: str, formula: str, *,
             engine: str = "polars", unit: str | None = None,
+            window_size: int = 0,
             display_name: str | None = None, description: str = "",
             tags: list | tuple | None = None, source: str = "local",
             **kw: Any) -> dict:
-        """创建一个 Feature 节点（formula 必填）。"""
+        """创建一个 Feature 节点（formula 必填）。
+
+        ``window_size``：滚动窗口回看宽度（默认 0 逐行），用于事件范围展开。
+        """
         if not formula:
             raise ValueError("feature formula is required")
         return ctrl.add(
             "feature", name, display_name=display_name, description=description,
             tags=tags, source=source,
-            engine=engine, formula=formula, unit=unit, **kw,
+            engine=engine, formula=formula, unit=unit,
+            window_size=int(window_size or 0), **kw,
         )
 
     @classmethod

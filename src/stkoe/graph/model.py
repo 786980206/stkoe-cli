@@ -129,7 +129,12 @@ class ColumnMeta:
 
 @dataclass(frozen=True)
 class FieldMeta:
-    """fieldset 衍生指标 / feature 命名公式元数据。"""
+    """fieldset 衍生指标 / feature 命名公式元数据。
+
+    ``window_size``：滚动窗口回看宽度（0=逐行无窗口）。用于 data change event 的
+    datetime 范围计算——回看窗口 w 下，输入在 [lo, hi] 变化时输出受影响范围是
+    [lo, hi+w-1]（增量物化按此展开重算区间与事件范围，见 GraphService._expand_scope）。
+    """
 
     name: str
     formula: str = ""
@@ -139,6 +144,7 @@ class FieldMeta:
     tags: tuple[str, ...] = ()
     validated: bool = False
     engine: str = "polars"
+    window_size: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -150,6 +156,7 @@ class FieldMeta:
             "tags": list(self.tags),
             "validated": self.validated,
             "engine": self.engine,
+            "window_size": self.window_size,
         }
 
     @classmethod
@@ -158,6 +165,8 @@ class FieldMeta:
         kw = {k: v for k, v in d.items() if k in names}
         if "tags" in kw and not isinstance(kw["tags"], tuple):
             kw["tags"] = tuple(kw["tags"] or ())
+        if "window_size" in kw:
+            kw["window_size"] = int(kw["window_size"] or 0)
         return cls(**kw)
 
     def patch(self, **kw) -> "FieldMeta":

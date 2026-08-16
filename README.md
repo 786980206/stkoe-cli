@@ -300,9 +300,9 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 | stat | `list` | — | — | JsonData（StatMeta[]） |
 | stat | `delete`/`del` | `<table\|panel\|test> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData `{"deleted"}` |
 | fieldset | `add` | `<name>` | `--panel <panel 名>`（必选，已注册 panel） `--engine <e>`（默认 polars） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
-| fieldset | `add` | `<name> <field>` | `--formula <表达式>`（必选） `--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta，指标 validated=False） |
+| fieldset | `add` | `<name> <field>` | `--formula <表达式>`（必选） `--window_size <N>`（滚动窗口回看宽度，默认 0；用于事件范围展开） `--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta，指标 validated=False） |
 | fieldset | `set` | `<name>` | `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
-| fieldset | `set` | `<name> <field>` | `--formula/--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta；改公式 → validated 复位 False） |
+| fieldset | `set` | `<name> <field>` | `--formula/--window_size/--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta；改公式 → validated 复位 False） |
 | fieldset | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--fields-only` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | fieldset | `meta` | `<name>` | — | JsonData（FieldsetMeta） |
 | fieldset | `meta` | `<name> <field>` | — | JsonData（FieldMeta） |
@@ -320,8 +320,8 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 | sample | `update` | `<name>` | — | JsonData（SampleMeta；传导检查上游 fieldset 链 + 筛选 index 就绪后标记有效，无物化） |
 | sample | `check` | `<name>` | — | JsonData（SampleCheckResult） |
 | sample | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| feature | `add` | `<name>` | `--engine <e>`（默认 polars） `--formula <表达式>`（必填） `--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
-| feature | `set` | `<name>` | `--engine/--formula/--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
+| feature | `add` | `<name>` | `--engine <e>`（默认 polars） `--formula <表达式>`（必填） `--window_size <N>`（滚动窗口回看宽度，默认 0） `--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
+| feature | `set` | `<name>` | `--engine/--formula/--window_size/--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta；window_size 为定义键，变更置脏下游） |
 | feature | `meta` | `<name>` | — | JsonData（FeatureMeta） |
 | feature | `list` | — | — | JsonData（FeatureMeta[]） |
 | feature | `delete`/`del` | `<name>` | `--force`（下游 factor 依赖存在时） | JsonData `{"deleted"}` |
@@ -414,12 +414,12 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
 - **StatScanReport**：`target_type, target_name, kind, partitions[], files[{partition, rel_path, rows, size}]`
 - **ColumnMeta**：`name, display_name, description, data_type, unit, formula, tags[], as_index, is_tool, source_table, source_field`
 - **FieldsetMeta**：`name, version, panel(基于的 panel 名), engine, keys[], fields[FieldMeta], materialized, materialized_at, curated, columns[ColumnMeta]（源 panel 列）, extra, display_name, description, tags[], source, created_at, updated_at`
-- **FieldMeta**：`name, formula, display_name, description, unit, tags[], validated（是否已 check）`
+- **FieldMeta**：`name, formula, display_name, description, unit, tags[], validated（是否已 check）, window_size（滚动窗口回看宽度，0=逐行；用于 data change event 范围展开）`
 - **FieldsetScanReport**：`name, version, materialized, rows, fields_count`
 - **FieldsetCheckResult**：`fieldset, field, ok, message`
 - **SampleMeta**：`name, version, fieldset(依赖的 fieldset 名), index(筛选参照 index 名), keys[]（fieldset 底层 panel 主键）, columns[ColumnMeta]（panel 视图列 + fieldset 衍生指标列）, display_name, description, tags[], source, extra, created_at, updated_at`
 - **SampleCheckResult**：`sample, ok, rows, columns[], message`
-- **FeatureMeta**：`name, version, engine, formula, display_name, description, unit, tags[], source, extra, created_at, updated_at`
+- **FeatureMeta**：`name, version, engine, formula, window_size, display_name, description, unit, tags[], source, extra, created_at, updated_at`
 - **FeatureTestResult**：`feature, sample, ok, valid, rows, columns[], message`
 - **FactorMeta**：`name, version, feature, sample, pipeline, engine, factor_col, keys[]（样本索引）, partition_by, partition_gran, materialized, materialized_at, curated, columns[ColumnMeta]（源 sample 视图列）, field（Factor 因子列 FieldMeta）, extra, display_name, description, tags[], source, created_at, updated_at`（graph 版按 index.materialize_partition 时间桶物化：partition_by=`["part"]`、partition_gran=`yearly/monthly/daily`）
 - **FieldMeta（factor）**：`name, formula（源 feature 公式）, display_name, description, unit, tags[]`
@@ -732,6 +732,11 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
      时间桶并保留桶内区间外旧行合并写回，见 §6.5）；有积累事件 → 铸版本
      （合并事件入 version_list）；出边 `required_version` 对齐被依赖方当前版本；
    - `fieldset update`：衍生字段重新物化（增量同上）+ 铸版本；
+     **窗口展开**：字段带 `window_size`（滚动回看窗口 w）时，输入在 `[lo, hi]` 变化
+     会让输出 `[lo, hi+w-1]` 都受影响——增量重算区间与自身事件 `datetime_scope`
+     都按最大窗口向前展开（fieldset 字段 / feature 公式的 `window_size` 同理：
+     factor 增量重算与自身事件按 feature 窗口展开；test 的 `d{no}` 是前向收益
+     窗口，按 `max(periods)-1` 向后展开 lo）；
    - `sample update` / `feature update`：只铸版本（无物化）；
    - `factor update`：**增量**——从全部源头（table/index）收集
      `version > consumed` 的积累事件，得 datetime 区间；已有物化且区间明确 →

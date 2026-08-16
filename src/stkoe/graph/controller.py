@@ -40,7 +40,7 @@ DEFINITION_KEYS: dict[str, frozenset[str]] = {
     "panel": frozenset({"index", "tables", "keys"}),
     "fieldset": frozenset({"panel", "fields"}),
     "sample": frozenset({"fieldset", "index"}),
-    "feature": frozenset({"engine", "formula"}),
+    "feature": frozenset({"engine", "formula", "window_size"}),
     "factor": frozenset({"feature", "sample", "engine", "pipeline", "factor_col"}),
     "tester": frozenset({"factor", "returns", "groupby", "marketcap", "factor_col", "spec"}),
     "model": frozenset(),
@@ -272,6 +272,7 @@ class GraphController:
                 "unit": fd.get("unit"),
                 "formula": fd.get("formula"),
                 "tags": fd.get("tags"),
+                "window_size": fd.get("window_size", 0),
             })
         return cols
 
@@ -372,7 +373,8 @@ class GraphController:
     # ---------- 列节点图（列级血缘：Column 节点 + DERIVES 边） ----------
 
     _COL_PROPS = ("name", "display_name", "description", "data_type", "unit",
-                  "formula", "tags", "as_index", "source_table", "source_field")
+                  "formula", "tags", "as_index", "source_table", "source_field",
+                  "window_size")
 
     def _column_props(self, asset_id: str, asset_type: str, c: dict) -> dict:
         """列元数据 dict → 列节点属性（asset/asset_type 恒由所属资产推导）。"""
@@ -389,6 +391,7 @@ class GraphController:
             "as_index": bool(c.get("as_index", False)),
             "source_table": c.get("source_table"),
             "source_field": c.get("source_field"),
+            "window_size": c.get("window_size", 0),
         }
 
     def _ensure_column(self, asset_id: str, asset_type: str, col: str) -> str:

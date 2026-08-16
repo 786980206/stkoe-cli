@@ -234,6 +234,29 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 feat: window_size 回归——fieldset 字段 / feature 定义的滚动窗口用于 data change event 范围展开
+
+- **背景**：v3.0-def.py 的 FieldMeta 本有 ``window_size``（滚动窗口回看宽度），当前
+  实现丢失——回看窗口 w 下，输入在 [lo, hi] 变化会让输出 [lo, hi+w-1] 都受影响，
+  增量物化只重算 [lo, hi] 会漏掉窗口内受影响的行（正确性缺口）
+- **字段**：FieldMeta 补 ``window_size: int = 0``（to_dict/from_dict 归一 int）；
+  fieldset ``add_field/set_field --window_size N``、feature ``add/set --window_size N``
+  （feature 的 window_size 纳入定义键 DEFINITION_KEYS，变更置脏下游；_fieldset_hash
+  与列节点属性同步携带）
+- **范围展开**（service ``_expand_scope``，ISO 日期 ±N 天，解析失败原样返回）：
+  - fieldset_update：增量重算区间 + 自身事件 datetime_scope 按已校验字段最大窗口
+    向前展开 w-1（own_event 显式携带，下游沿链增量不丢范围）
+  - factor：按 feature 窗口展开增量重算区间，own_event（field_scope=[factor_col] +
+    展开后范围）供下游 test 沿链增量
+  - test：d{no} 为**前向收益窗口**（t 时刻输出用到 t..t+no-1 的 returns），增量重算
+    区间按 max(periods)-1 **向后**展开 lo
+- 测试：新增 TestWindowScope 3 例（fieldset 事件范围/feature→factor 重算区间与事件/
+  test 向后展开；含列节点 window_size）+ TestColumnLineage 多引用公式 1 例（Q1：
+  一字段多源列 → 每个引用列一条 DERIVES 边）；适配 test 增量断言（2023-12-24 起点）；
+  全量 222 用例绿
+- 文档：README §6.7 FieldMeta/FeatureMeta、§6.8/§6.10 命令行（--window_size）、
+  §11.2 窗口展开语义
+
 ### 2026-08 feat: 列级血缘——DEPENDS 边 detail 字段映射升级为独立列节点图
 
 - **列节点图**：每列一个 `Column` 节点（label=Column，id=`column:<资产 id>.<列名>`，

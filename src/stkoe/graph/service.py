@@ -13,6 +13,7 @@ import hashlib
 import re
 import shutil
 import time
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,23 @@ def _formula_refs(formula: str, candidates: set[str]) -> list[str]:
     """
     return list(dict.fromkeys(m for m in _IDENT_RE.findall(formula or "")
                               if m in candidates))
+
+
+def _expand_scope(scope, back: int = 0, forward: int = 0):
+    """按窗口展开 datetime 区间：``[lo, hi] → [lo-back, hi+forward]``。
+
+    滚动窗口语义（回看 w）：t 时刻输出用到 [t-w+1, t] 的输入 → 输入在 [lo, hi]
+    变化时输出受影响范围是 **[lo, hi+w-1]**（向前延伸）；前向收益类窗口（如
+    test 的 d{no}）则相反向后延伸 lo。非 ISO 日期/解析失败 → 原样返回。
+    """
+    if not scope or (not back and not forward):
+        return scope
+    try:
+        lo = (date.fromisoformat(scope[0]) - timedelta(days=back)).isoformat()
+        hi = (date.fromisoformat(scope[1]) + timedelta(days=forward)).isoformat()
+    except (ValueError, TypeError):
+        return scope
+    return [lo, hi]
 
 
 def _asof_join(left: pl.LazyFrame, right: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
@@ -890,12 +908,12 @@ class GraphService:
     # =====================================================================
 
     def _fieldset_hash(self, node: dict) -> str:
-        """fieldset 物化签名 = panel 版本 + 已校验字段公式 + engine。"""
+        """fieldset 物化签名 = panel 版本 + 已校验字段公式/窗口 + engine。"""
         panel = node.get("panel", "").split(":", 1)[1]
         parts = [f"panel:{panel}:{self._require_node('panel', panel).get('version', 0)}"]
         for fname, f in (node.get("fields") or {}).items():
             if f.get("validated"):
-                parts.append(f"{fname}:{f.get('formula', '')}")
+                parts.append(f"{fname}:{f.get('formula', '')}:{f.get('window_size', 0)}")
         parts.append(f"engine:{node.get('engine', 'polars')}")
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
@@ -1076,6 +1094,11 @@ class GraphService:
         pkeys, gran = self._partition_plan(node, dt_col=dt)
         out_path = out_dir / ("data.parquet" if not pkeys else "")
         scope = None if resync else self._upstream_scope(node)
+        # 滚动窗口（fieldset 字段 window_size）：输入 [lo, hi] 变化 → 输出受影响
+        # [lo, hi+w-1]，增量重算区间与自身事件范围都按最大回看宽度向前展开
+        win = max((f.window_size for f in fields), default=0)
+        if scope and win > 1:
+            scope = _expand_scope(scope, forward=win - 1)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
             lo, hi = scope
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
@@ -1102,6 +1125,7 @@ class GraphService:
         }, own_event=DataChangeEvent(
             action="upsert",
             field_scope=[f.name for f in fields],  # 记录自身重算的字段，而非上游列
+            datetime_scope=scope if scope else None,  # 窗口展开后的范围，供下游增量
         ))
         return {"name": name, "materialized": True, "valid": True, "rows": rows,
                 "fields_count": len(fields), "version": m["version"]}
@@ -1266,6 +1290,8 @@ class GraphService:
 
     def feature_set(self, name: str, **kw) -> dict:
         self._require_node("feature", name)
+        if "window_size" in kw:
+            kw["window_size"] = int(kw["window_size"] or 0)
         return self.graph.set("feature", name, **kw)
 
     def feature_update(self, name: str) -> dict:
@@ -1636,9 +1662,15 @@ class GraphService:
         dt = keys[-1] if keys else ""
         pkeys, gran = self._partition_plan(node, dt_col=dt)
         out_path = out_dir / ("data.parquet" if not pkeys else "")
+        feature = node.get("feature", "").split(":", 1)[1]
+        fnode = self._require_node("feature", feature)
         # 增量物化：最近上游积累事件有明确 datetime 区间且已有物化 → 只重算该区间
         # （分区场景只替换受影响分区文件，flat 场景删区间+合并）
+        # feature 滚动窗口：输入 [lo, hi] 变化 → factor 输出受影响 [lo, hi+w-1]
         scope = None if resync else self._upstream_scope(node)
+        fwin = int(fnode.get("window_size") or 0)
+        if scope and fwin > 1:
+            scope = _expand_scope(scope, forward=fwin - 1)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
             lo, hi = scope
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
@@ -1655,18 +1687,21 @@ class GraphService:
         else:
             df = self._factor_compute(node)
             self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
-        feature = node.get("feature", "").split(":", 1)[1]
-        fnode = self._require_node("feature", feature)
-        # 物化成功 → resolve 收口：铸版本并记录**消费的合并事件**（带 datetime_scope，
-        # 供下游沿链增量）+ 出边 required_version 对齐 + valid/materialized
+        # 物化成功 → resolve 收口：铸版本并记录**消费的合并事件**（own_event 带
+        # 窗口展开后的 datetime_scope，供下游 test 沿链增量）+ 出边水位对齐
         m = self.graph.resolve("factor", name, extra={
             "dependency_hash": cur_hash, "partition_by": pkeys,
             "partition_gran": gran, "materialized_at": _now_iso(),
             "field": {"name": node.get("factor_col") or feature,
                       "formula": fnode.get("formula") or "",
                       "display_name": node.get("factor_col") or feature,
-                      "description": "", "unit": None, "tags": []},
-        })
+                      "description": "", "unit": None, "tags": [],
+                      "window_size": fwin},
+        }, own_event=DataChangeEvent(
+            action="upsert",
+            field_scope=[node.get("factor_col") or feature],
+            datetime_scope=scope if scope else None,
+        ))
         version_after = m["version"]
         return {"name": name, "version_before": version_before,
                 "version_after": version_after, "materialized": True, "changed": True,
@@ -1892,6 +1927,11 @@ class GraphService:
         # 增量物化：最近上游积累事件有明确 datetime 区间且已有物化 → 只重算该区间
         # （分区场景只替换受影响分区文件，flat 场景删区间+合并）
         scope = None if resync else self._upstream_scope(node)
+        # d{no} 为前向累计收益（t 时刻输出用到 t..t+no-1 的 returns）：输入在
+        # [lo, hi] 变化 → 输出受影响 [hi-no+1, hi]，重算区间按最大 period 向后展开
+        max_no = max(spec.periods, default=0)
+        if scope and max_no > 1:
+            scope = _expand_scope(scope, back=max_no - 1)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
             lo, hi = scope
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))

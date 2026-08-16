@@ -857,8 +857,8 @@ class TestTesterGraph:
             getattr(svc, f"{t}_update")(n)
         svc.test_update("t1")
 
-        assert calls and calls[-1] == ("2024-01-02", "2024-01-02"), \
-            f"增量应带 dt_range，实际 {calls}"
+        assert calls and calls[-1] == ("2023-12-24", "2024-01-02"), \
+            f"增量应带 dt_range（d{{no}} 前向窗口向后展开 9 天），实际 {calls}"
         d = svc.test_data("t1")
         assert d.height == 3
         assert sorted(d["date"].to_list()) == ["2024-01-01", "2024-01-01", "2024-01-02"]
@@ -1008,6 +1008,24 @@ class TestColumnLineage:
         assert "column:sample:sp1.x2" in cids    # 下游派生
         assert "fieldset:fs1" in cids            # 所属资产上下文
 
+    def test_field_formula_multiple_refs(self, svc):
+        """字段公式依赖多个列 → 每个引用列一条 DERIVES 边（fieldset 字段 + factor_col）。"""
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "xsum", "(code + price) * 2")
+        st = svc.store
+        targets = {e["target"] for e in
+                   st.deps_of("column:fieldset:fs1.xsum", rel_type="DERIVES")}
+        assert targets == {"column:panel:ds1.code", "column:panel:ds1.price"}
+        svc.sample_add("sp1", "fs1", "index")
+        svc.feature_add("f1", "(code + price) * 2")
+        svc.factor_add("fac1", "f1", "sp1")
+        ftargets = {e["target"] for e in
+                    st.deps_of("column:factor:fac1.f1", rel_type="DERIVES")}
+        assert ftargets == {"column:sample:sp1.code", "column:sample:sp1.price"}
+
     def test_dispatch_columns_and_column_lineage(self, svc):
         """Execute 通道：graph columns / lineage --columns / --column。"""
         import json
@@ -1030,3 +1048,106 @@ class TestColumnLineage:
                                  data_dir=base)[0].data)
         assert cp["graph"]["center"] == "column:fieldset:fs1.x2"
         assert cp["elements"]["nodes"]
+
+
+class TestWindowScope:
+    """window_size（滚动窗口）→ data change event 范围展开。
+
+    - fieldset 字段 / feature 为**回看窗口** w：t 时刻输出用到 [t-w+1, t] 的输入，
+      输入在 [lo, hi] 变化 → 输出受影响 [lo, hi+w-1]（增量重算区间与自身事件
+      datetime_scope 都向前展开 w-1 天）；
+    - test 的 d{no} 为**前向收益窗口**：输入在 [lo, hi] 变化 → 输出受影响
+      [hi-no+1, hi]（重算区间按 max(periods)-1 向后展开 lo）。
+    """
+
+    def _chain(self, svc, *, fset_win=0, feat_win=0):
+        # 覆盖 index/data.parquet 加入测试必需列（多文件 scan 不 union schema）
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
+                      "code": [1, 2]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "data.parquet"))
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2", window_size=fset_win)
+        svc.fieldset_check("fs1", "x2")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.feature_add("f1", "code * 2", window_size=feat_win)
+        svc.factor_add("fac1", "f1", "sp1")
+
+    def _seed(self, svc):
+        """首次全量就绪（panel/fieldset/sample/feature/factor 依次 update）。"""
+        for t, n in [("panel", "ds1"), ("fieldset", "fs1"), ("sample", "sp1"),
+                     ("feature", "f1"), ("factor", "fac1")]:
+            getattr(svc, f"{t}_update")(n)
+
+    def _append_new_day(self, svc):
+        """源头追加 2024-01-02 → 沿链置脏 → 依次 update 到 feature（目标 update 由用例调）。"""
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "r": [0.03],
+                      "ic": ["G1"], "fv": [3.0], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        for t, n in [("panel", "ds1"), ("fieldset", "fs1"),
+                     ("sample", "sp1"), ("feature", "f1")]:
+            getattr(svc, f"{t}_update")(n)
+
+    @staticmethod
+    def _latest_event(node: dict) -> dict:
+        vl = node["version_list"]
+        return vl[str(max(int(k) for k in vl))]
+
+    def test_fieldset_window_expands_event_scope(self, svc):
+        """fieldset 字段 window_size=5：自身事件 datetime_scope 向前展开 4 天。"""
+        self._chain(svc, fset_win=5)
+        self._seed(svc)
+        svc.fieldset_update("fs1")  # 幂等不 bump（无新事件）
+        self._append_new_day(svc)   # 内部 fieldset_update 走增量分支
+        ev = self._latest_event(svc.store.get_node("fieldset:fs1"))
+        assert ev["datetime_scope"] == ["2024-01-02", "2024-01-06"], \
+            f"事件范围应按窗口展开: {ev['datetime_scope']}"
+        # 列节点带 window_size
+        cols = {c["name"]: c for c in svc.store.columns_of("fieldset:fs1")}
+        assert cols["x2"]["window_size"] == 5
+        assert cols["x2"]["formula"] == "code * 2"
+
+    def test_feature_window_expands_factor_recompute(self, svc, monkeypatch):
+        """feature window_size=5：factor 增量重算区间向前展开 4 天。"""
+        self._chain(svc, feat_win=5)
+        self._seed(svc)
+        calls: list = []
+        orig = GraphService._factor_compute
+
+        def spy(self, node, **kw):
+            calls.append(kw.get("dt_range"))
+            return orig(self, node, **kw)
+
+        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+        self._append_new_day(svc)
+        svc.factor_update("fac1")
+        assert calls and calls[-1] == ("2024-01-02", "2024-01-06"), \
+            f"factor 增量应带展开后 dt_range，实际 {calls}"
+        # factor 自身事件同样展开（供下游 test 沿链增量）
+        ev = self._latest_event(svc.store.get_node("factor:fac1"))
+        assert ev["datetime_scope"] == ["2024-01-02", "2024-01-06"]
+        assert ev["field_scope"] == ["f1"]  # 记录自身产出字段
+
+    def test_test_periods_expand_recompute_back(self, svc, monkeypatch):
+        """test 的 d{no} 前向窗口：增量重算区间按 max(periods)-1 向后展开 lo。"""
+        self._chain(svc)
+        self._seed(svc)
+        svc.test_add("t1", "fac1")
+        svc.test_update("t1")  # 首次全量
+        calls: list = []
+        orig = GraphService._test_build
+
+        def spy(self, node, **kw):
+            calls.append(kw.get("dt_range"))
+            return orig(self, node, **kw)
+
+        monkeypatch.setattr(GraphService, "_test_build", spy)
+        self._append_new_day(svc)
+        svc.factor_update("fac1")
+        svc.test_update("t1")
+        assert calls and calls[-1] == ("2023-12-24", "2024-01-02"), \
+            f"test 增量应向后展开 lo，实际 {calls}"

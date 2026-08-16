@@ -38,6 +38,70 @@ def svc():
     shutil.rmtree(base, ignore_errors=True)
 
 
+def test_task_framework_index_handlers(tmp_path):
+    """index 任务版（§9）：s:index add→meta→get 全链路"""
+    from stkoe.task import TaskManager
+    from stkoe.task.model import TERMINAL_STATES
+    import time
+
+    mgr = TaskManager(data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        root = mgr.data_dir
+        d = root / "index" / "index"
+        d.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "code": [1, 2]}).write_parquet(d / "data.parquet")
+
+        t_add = mgr.submit("index", "add", ["index"])
+        _await_task(mgr, t_add, TERMINAL_STATES)
+        assert _mgr_task_result(mgr, t_add)["name"] == "index"
+
+        t_meta = mgr.submit("index", "meta", ["index"])
+        _await_task(mgr, t_meta, TERMINAL_STATES)
+        assert _mgr_task_result(mgr, t_meta)["symbol_col"] == "sym"
+
+        t_get = mgr.submit("index", "get", ["index"])
+        _await_task(mgr, t_get, TERMINAL_STATES)
+        assert _mgr_task_result(mgr, t_get)["rows"] == 2
+
+        t_col = mgr.submit("index", "col", ["index", "code", "--unit", "股"])
+        _await_task(mgr, t_col, TERMINAL_STATES)
+        assert _mgr_task_result(mgr, t_col)["columns"][0]["name"] == "sym"
+    finally:
+        mgr.stop()
+
+
+def _await_task(mgr, task, terminal, timeout=5.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        cur = mgr.get(task.task_id)
+        if cur is not None and cur.state in terminal:
+            return cur
+        time.sleep(0.02)
+    raise TimeoutError(f"task not terminal: {mgr.get(task.task_id).state}")
+
+
+def _mgr_task_result(mgr, task):
+    """终态事件落库后取 result JSON（任务版断言专用 helper）。"""
+    import json
+    import time
+
+    from stkoe.task.model import TERMINAL_STATES
+
+    task_id = task.task_id if hasattr(task, "task_id") else task
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        evs = mgr.events.list_by_task(task_id)
+        if evs and evs[-1].state in TERMINAL_STATES:
+            return json.loads(evs[-1].data) if evs[-1].data else None
+        time.sleep(0.01)
+    evs = mgr.events.list_by_task(task_id)
+    return json.loads(evs[-1].data) if evs and evs[-1].data else None
+
+
 class TestTableGraph:
     def test_unregistered_raises_asset_not_found(self, svc):
         """§8 错误体系统一：未注册资产抛 AssetNotFoundError（不再抛 TableNotFoundError）"""

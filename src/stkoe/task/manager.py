@@ -66,9 +66,15 @@ class TaskManager:
         from ..table.handlers import register as _register_table_handlers
 
         _register_table_handlers(self.registry)
+        from ..index.handlers import register as _register_index_handlers
+
+        _register_index_handlers(self.registry)
         from ..dataset.handlers import register as _register_dataset_handlers
 
         _register_dataset_handlers(self.registry)
+        from ..panel.handlers import register as _register_panel_handlers
+
+        _register_panel_handlers(self.registry)
         from ..stat.handlers import register as _register_stat_handlers
 
         _register_stat_handlers(self.registry)

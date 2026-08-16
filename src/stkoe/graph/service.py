@@ -152,7 +152,7 @@ class GraphService:
         disk = T.disk_files(root)
         consistent = bool(node.get("signature")) and \
             node["signature"] == T.signature(disk) if root.exists() else True
-        return {
+        out = {
             "name": name,
             "version": node.get("version", 0),
             "layout": node.get("layout", "single"),
@@ -170,6 +170,11 @@ class GraphService:
             "created_at": node.get("create_time", ""),
             "updated_at": node.get("update_time", ""),
         }
+        # index 专属键（symbol/datetime 列 + 物化分区粒度）并入 meta 顶层
+        for k in ("symbol_col", "datetime_col", "materialize_partition"):
+            if node.get(k):
+                out[k] = node[k]
+        return out
 
     def _scan_disk(self, asset_type: str, name: str, *, meta: dict | None = None,
                    extra_data: dict | None = None) -> dict:

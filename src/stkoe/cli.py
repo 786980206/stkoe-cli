@@ -125,6 +125,10 @@ def _cmd_mock(raw: list[str]) -> int:
     return _cmd_dispatch("mock", raw)
 
 
+def _cmd_graph(raw: list[str]) -> int:
+    return _cmd_dispatch("graph", raw)
+
+
 def _help() -> str:
     return (
         "用法: stkoe <command>\n"
@@ -142,7 +146,10 @@ def _help() -> str:
         "  test <action> <args...>        test 命令（add/get/meta/list/set/check/scan/delete；因子测试数据集）\n"
         "  mock demo [--n-syms N] [--n-days N] 生成演示源表 index + m1（默认 300×500，写 tables/，需 table add 注册）\n"
         "  mock gen <name> --kind <kind>  参数化生成单张表（tdcal/common/index/feature/klday/m1）\n"
-        "  task list [--state <state>]     任务列表（按创建时间倒序）"
+        "  task list [--state <state>]     任务列表（按创建时间倒序）\n"
+        "  graph lineage [--node <type:name>] [--depth N]  血缘图（Cytoscape elements JSON）\n"
+        "  graph nodes [--type <t>]        节点摘要列表\n"
+        "  graph stats                     节点/边统计"
     )
 
 
@@ -183,5 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_task(args[1:])
     if cmd == "mock":
         return _cmd_mock(args[1:])
+    if cmd == "graph":
+        return _cmd_graph(args[1:])
     print(f"未知命令: {cmd}\n{_help()}")
     return 1

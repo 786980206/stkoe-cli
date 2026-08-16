@@ -102,12 +102,11 @@ uv run stkoe stat scan table demo | stat scan dataset ds1 | stat scan t1 --kind 
 uv run stkoe mock demo                          # 生成演示 parquet（需 table add 注册）
 uv run stkoe task list                          # 后台任务列表
 
-# V3.0 血缘图（JSON 返回，供 portal 血缘模块 / 脚本使用；仅 gRPC Execute 通道——
-# CLI 无 graph 子命令，用 gclient.py REPL 输入 e:graph ...）
-e:graph lineage                      # 全图（Cytoscape elements payload）
-e:graph lineage --node panel:ds1 --depth 3   # 指定节点上下游子图
-e:graph nodes --type panel           # 节点摘要（中心节点选择器）
-e:graph stats                        # 节点/边统计
+# V3.0 血缘图（JSON 返回，供 portal 血缘模块 / 脚本使用）
+uv run stkoe graph lineage                      # 全图（Cytoscape elements payload）
+uv run stkoe graph lineage --node panel:ds1 --depth 3   # 指定节点上下游子图
+uv run stkoe graph nodes --type panel           # 节点摘要（中心节点选择器）
+uv run stkoe graph stats                        # 节点/边统计
 ```
 
 ## 血缘可视化

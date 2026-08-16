@@ -108,3 +108,39 @@ def test_cli_serve_uses_config_host_port(cfg_env, capsys):
     assert srv.host == "127.0.0.1"
     assert srv.port == port  # 来自配置 grpc-port
     srv.stop()
+
+
+def test_cli_graph_commands(cfg_env, tmp_path, capsys, monkeypatch):
+    """CLI graph 子命令（§9）：lineage/nodes/stats 与 Execute 同一分发"""
+    import polars as pl
+
+    data_dir = tmp_path / "data"
+    (data_dir / "index" / "index").mkdir(parents=True)
+    pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"], "code": [1]}).write_parquet(
+        data_dir / "index" / "index" / "data.parquet")
+    (data_dir / "table" / "m1").mkdir(parents=True)
+    pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"], "price": [1.5]}).write_parquet(
+        data_dir / "table" / "m1" / "data.parquet")
+    settings.save_config({"data-dir": str(data_dir)})
+    from stkoe.graph.service import GraphService
+
+    svc = GraphService(data_dir=data_dir)
+    svc.table_add("m1")
+    svc.index_add("index")
+    svc.close()
+
+    assert main(["graph", "stats"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["node_count"] == 2
+
+    assert main(["graph", "nodes"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert {n["name"] for n in out} == {"index", "m1"}
+
+    assert main(["graph", "lineage", "--node", "table:m1"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["elements"]  # Cytoscape elements payload
+
+    assert main(["graph", "lineage", "--node", "panel:xx"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["elements"]["nodes"] == [] and out["elements"]["edges"] == []  # 不存在 → 空图

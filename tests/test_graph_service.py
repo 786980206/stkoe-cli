@@ -784,6 +784,156 @@ class TestFactorGraph:
         assert calls == [None]  # 全量：无 dt_range
 
 
+class TestFactorBatch:
+    """因子批量抽象（批次 3）：同 sample 多因子共享视图计算 + 分别物化（--all）。
+
+    factor update --all：按 sample 分组——每组只构建一次 sample 视图（一次
+    collect），组内全部因子列一次算齐（FactorEngine.fields），各因子按自己的
+    增量范围过滤后分别写盘。
+    """
+
+    def _chain(self, svc):
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_check("fs1", "x2")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.sample_add("sp2", "fs1", "index")
+        svc.feature_add("f1", "code * 2")
+        svc.feature_add("f2", "code + 1")
+        for t, n in [("panel", "ds1"), ("fieldset", "fs1"),
+                     ("sample", "sp1"), ("sample", "sp2"),
+                     ("feature", "f1"), ("feature", "f2")]:
+            getattr(svc, f"{t}_update")(n)
+
+    def _view_spy(self, monkeypatch):
+        calls: list = []
+        orig = GraphService._sample_view_lf
+
+        def spy(self, sample, **kw):
+            calls.append(sample)
+            return orig(self, sample, **kw)
+
+        monkeypatch.setattr(GraphService, "_sample_view_lf", spy)
+        return calls
+
+    def test_factor_update_all_shared_view(self, svc, monkeypatch):
+        """同 sample 两因子 + 另一样本一因子 --all：每组只构建一次视图，分别物化"""
+        self._chain(svc)
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_add("fac2", "f2", "sp1")
+        svc.factor_add("fac3", "f1", "sp2")
+        calls = self._view_spy(monkeypatch)
+
+        reports = svc.factor_update(all=True)
+        assert {r["name"] for r in reports} == {"fac1", "fac2", "fac3"}
+        assert all(r["changed"] is True for r in reports)
+        # 共享：sp1 两个因子只构建一次视图；sp2 单独一组（共 2 次视图构建）
+        assert calls == ["sp1", "sp2"], f"视图应按 sample 分组共享，实际 {calls}"
+        df1, _ = svc.factor_get("fac1", count_total=True)
+        df2, _ = svc.factor_get("fac2", count_total=True)
+        df3, _ = svc.factor_get("fac3", count_total=True)
+        assert df1.columns == ["sym", "date", "f1"]
+        assert sorted(df1["f1"].to_list()) == [2.0, 4.0]
+        assert sorted(df2["f2"].to_list()) == [2.0, 3.0]
+        assert sorted(df3["f1"].to_list()) == [2.0, 4.0]
+        assert svc.factor_meta("fac1")["curated"] is True
+        assert svc.factor_meta("fac2")["curated"] is True
+        assert svc.factor_meta("fac3")["curated"] is True
+
+    def test_factor_update_all_mixed_incremental_full(self, svc):
+        """同 sample 一因子增量 + 一因子首物化（全量）：共享视图下各自写盘正确"""
+        self._chain(svc)
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_update("fac1")  # 首次全量（2 行）
+        # 源头追加一天 → 沿链置脏 → fac1 已有物化走增量；fac2 尚未物化走全量
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        for t, n in [("panel", "ds1"), ("fieldset", "fs1"),
+                     ("sample", "sp1"), ("sample", "sp2"),
+                     ("feature", "f1"), ("feature", "f2")]:
+            getattr(svc, f"{t}_update")(n)
+        svc.factor_add("fac2", "f2", "sp1")
+
+        reports = {r["name"]: r for r in svc.factor_update(all=True)}
+        assert reports["fac1"]["changed"] is True
+        assert reports["fac2"]["changed"] is True
+        df1, _ = svc.factor_get("fac1", count_total=True)
+        df2, _ = svc.factor_get("fac2", count_total=True)
+        # fac1 增量：旧行（01-01 a/b）保留 + 新行（01-02 c）重算
+        assert df1.height == 3
+        assert sorted(df1["date"].to_list()) == ["2024-01-01", "2024-01-01", "2024-01-02"]
+        assert sorted(df1["f1"].to_list()) == [2.0, 4.0, 6.0]
+        # fac2 全量：全部 3 行
+        assert df2.height == 3
+        assert sorted(df2["f2"].to_list()) == [2.0, 3.0, 4.0]
+
+    def test_factor_update_all_idempotent_skips(self, svc, monkeypatch):
+        """--all 二次执行幂等跳过（不触发视图构建与计算）"""
+        self._chain(svc)
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_add("fac2", "f2", "sp1")
+        svc.factor_update(all=True)
+        calls = self._view_spy(monkeypatch)
+
+        reports = svc.factor_update(all=True)
+        assert calls == []  # 幂等：不构建任何视图
+        assert all(r["changed"] is False for r in reports)
+        assert all(r["version_after"] == r["version_before"] for r in reports)
+
+    def test_factor_update_all_single_equiv(self, svc):
+        """--all 批量结果与逐个 update 等价（值一致）"""
+        self._chain(svc)
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_add("fac2", "f2", "sp1")
+        svc.factor_update("fac1")
+        svc.factor_update("fac2")
+        svc.factor_update(all=True)  # 幂等后再触发上游变化走批量
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        for t, n in [("panel", "ds1"), ("fieldset", "fs1"),
+                     ("sample", "sp1"), ("sample", "sp2"),
+                     ("feature", "f1"), ("feature", "f2")]:
+            getattr(svc, f"{t}_update")(n)
+        svc.factor_update(all=True)
+        df1, _ = svc.factor_get("fac1", count_total=True)
+        df2, _ = svc.factor_get("fac2", count_total=True)
+        assert df1.height == 3 and sorted(df1["f1"].to_list()) == [2.0, 4.0, 6.0]
+        assert df2.height == 3 and sorted(df2["f2"].to_list()) == [2.0, 3.0, 4.0]
+
+    def test_factor_engine_fields(self):
+        """FactorEngine.fields：polars 单 select 一次算齐多公式；默认实现逐公式拼接"""
+        from stkoe.factor.engine import FactorEngine, PolarsEngine
+
+        lf = pl.LazyFrame({"a": [1, 2], "b": [3, 4]})
+
+        class Stub(FactorEngine):
+            """默认 fields 实现（逐公式 field + 拼接）的载体"""
+
+            name = "stub"
+
+            def field(self, lf, formula):
+                scope = {c: pl.col(c) for c in lf.collect_schema().names()}
+                scope["pl"] = pl
+                return lf.select(eval(formula, {"__builtins__": {}},
+                                      scope).alias("field")).collect()
+
+        out = Stub().fields(lf, {"s1": "pl.col('a') * 2", "s2": "pl.col('b') + 1"})
+        assert out.columns == ["s1", "s2"]
+        assert out["s1"].to_list() == [2, 4]
+        assert out["s2"].to_list() == [4, 5]
+
+        pout = PolarsEngine().fields(lf, {"p1": "a * 3", "p2": "b - 1"})
+        assert pout.columns == ["p1", "p2"]
+        assert pout["p1"].to_list() == [3, 6]
+        assert pout["p2"].to_list() == [2, 3]
+        assert PolarsEngine().fields(lf, {}).height == 0  # 空公式表 → 空 DataFrame
+
+
 class TestTesterGraph:
     """test：factor 关联 sample 视图 + 测试必需列；scan 物化，test_data 供 stat。"""
 

@@ -252,6 +252,34 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
   （tempfile.mkdtemp），残留目录不再复用
 - 文档：AGENTS.md
 
+### 2026-08 因子批量抽象：同 sample 多因子共享视图计算、分别物化（FactorEngine.fields）
+
+- **背景**：`factor update --all` 原逐因子独立 `_factor_compute`——同一 sample 的
+  N 个因子各自构建/collect 一遍 sample 视图（join 链重复计算），宽表 panel 下
+  计算量随因子数线性放大
+- **`FactorEngine.fields(lf, formulas)` 批量接口**（`factor/engine.py`）：一次调用
+  算齐多个公式，返回多列 DataFrame（列名 = dict 键）；默认实现逐公式 `field`
+  后 hstack（正确性兜底），**polars 覆盖为单 select 一次 collect**（共享视图下
+  避免逐公式重复扫描）；新引擎实现 `fields` 即获得批量能力——为批量计算引擎
+  插件铺路
+- **service 三阶段批量**（`factor_update(all=True)` → `_factor_scan_many`）：
+  - ① `_factor_plan`：**纯图内元数据**出物化计划（幂等判定/keys/分区方案/增量
+    范围与 feature 窗口展开/物化存在性，不触数据计算）——单因子
+    `_factor_scan_one` 与批量共用
+  - ② `_factor_batch_compute`：按 sample 分组——每组只构建**一次** sample 视图
+    （join 链 lazy 计划 + 一次 collect，列投影 = keys + 组内全部公式引用列并集），
+    组内按引擎分组一次 `fields` 算齐全部因子列（**同公式去重共享一列**），各
+    因子按**自己的增量范围**在内存精确过滤、施加各自 pipeline 算子链
+  - ③ `_factor_write`：逐因子增量/全量写盘 + resolve 收口（与单因子路径同语义，
+    共享计算、**分别物化**）
+- **联合范围**：组内任一因子全量（首次物化/无范围/resync）→ 整视图；否则并集
+  datetime 区间与 symbol 集合（任一因子全集 → 视图不按标的过滤，各自再精确
+  过滤）——各自写盘仍只删各自范围的行，增量正确性不变
+- 测试：TestFactorBatch 5 例（共享视图一次构建 spy / 混合「增量 + 首物化」各自
+  写盘正确 / --all 二次幂等跳过不构建视图 / 批量与逐个 update 结果等价 /
+  fields 接口单元：polars 单 select + 默认拼接 + 空表）；全量 260 用例绿
+- 文档：README §3 路线图勾选 + §6.11（--all 批量语义）、AGENTS.md
+
 ### 2026-08 评审修复批次 2：列元数据引用化——源头列 meta 沿 DERIVES 全链自动反映
 
 - **设计**：列完整元数据只在**定义点**保存——(a) table/index 源头列

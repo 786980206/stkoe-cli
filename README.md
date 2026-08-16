@@ -217,6 +217,9 @@ DataChangeEvent {
   纯 Python）+ `graph impact`（资产 DEPENDS / 列 DERIVES 下游闭包，见 §6.13）
 - ✅ **symbol_scope 提取**：源头事件带变化标的集合，下游增量按「datetime 区间 ×
   symbol 集合」裁剪（未变化标的不重算，见 §11.1）
+- ✅ **因子批量抽象**：`FactorEngine.fields` 批量求值接口（polars 单 select 一次
+  算齐）+ `factor update --all` 同 sample 多因子**共享视图计算、分别物化**
+  （每组一次视图构建/collect，见 §6.11）
 
 剩余规划：
 1. **可选 P2**：stat 是否纳入图资产（G9 设计决策，当前保持不进图）；
@@ -487,6 +490,12 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
 - **物化**：`factor update` 落盘 `factor/<name>/part=<v>/`（时间桶，见 §6.5）；
   **幂等**——依赖签名（上游 feature/sample 的 graph 版本 + engine/pipeline/factor_col hash）
   不变则跳过；`--resync` 强制重建
+- **批量（`--all`）**：`factor update --all` 同 sample 多因子**共享视图计算、分别
+  物化**——按 sample 分组，每组只构建一次 sample 视图（join 链 + 一次 collect，
+  列投影 = keys + 组内全部公式引用列并集），组内按引擎分组一次
+  `FactorEngine.fields` 算齐全部因子列（polars 单 select，同公式去重共享一列），
+  各因子按自己的增量范围过滤后**各自写盘**（增量/幂等语义与单因子一致；
+  `FactorEngine.fields` 为批量引擎插件接口，见 `factor/engine.py`）
 - **读取**：物化完成且与源+feature+pipeline 一致（`curated`）读物化 parquet；否则实时基于
   sample 视图计算，不隐式物化（显式 `update` 触发）
 - **校验**：`factor check` 实时计算——成功、含全部索引列、因子列恰好 1 列、行数 > 0 才算

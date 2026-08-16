@@ -3,6 +3,13 @@
 因子 = 在样本池视图上经 feature 公式求值得到「样本索引列 + 一列因子列」，
 再经 ``pipeline`` 算子链（如 ``nothing()|standardlize()|rankliezd()``）变换。
 
+引擎接口（``FactorEngine``，按名字注册，当前仅 ``polars``）：
+- ``field(lf, formula)``：单公式求值，返回单列 DataFrame（命名 ``field``）
+- ``fields(lf, formulas)``：**批量求值**——一次调用算齐多个公式（列名 = dict 键）；
+  默认实现逐公式调 ``field`` 拼接，polars 覆盖为单 select 一次 collect——
+  ``factor update --all`` 同 sample 多因子共享视图时只 collect 一次
+- ``transform(df, pipeline)``：对「样本索引列 + 因子列」DataFrame 施加算子链
+
 算子接口（``FactorOperator``）：
 - ``apply(df) -> df``：输入/输出均为「样本索引列 + 单因子列」的 DataFrame
 
@@ -90,6 +97,22 @@ class FactorEngine:
         """在样本池视图上求值 feature 公式，返回单列 DataFrame（命名 ``field``）"""
         raise NotImplementedError
 
+    def fields(self, lf: pl.LazyFrame, formulas: dict[str, str]) -> pl.DataFrame:
+        """批量求值多个公式：返回 DataFrame，列名 = ``formulas`` 的键。
+
+        默认实现逐公式调 ``field`` 后横向拼接（正确性保证）；**批量引擎应覆盖
+        为单遍实现**——polars 用一个 select 一次 collect 算齐全部公式列，
+        同 sample 多因子共享视图场景下避免逐公式重复扫描同一份视图。
+        """
+        if not formulas:
+            return pl.DataFrame()
+        parts = [self.field(lf, formula).rename({"field": name})
+                 for name, formula in formulas.items()]
+        out = parts[0]
+        for part in parts[1:]:
+            out = out.hstack(part)  # 高度必然相等（同一视图逐行求值）
+        return out
+
     def transform(self, df: pl.DataFrame, pipeline: str) -> pl.DataFrame:
         """对「样本索引列 + 因子列」DataFrame 施加算子链"""
         for op in parse_pipeline(pipeline):
@@ -112,6 +135,19 @@ class PolarsEngine(FactorEngine):
         scope = self._scope(lf)
         expr = eval(f"({formula})", {"__builtins__": {}}, scope)
         return lf.select(expr.alias("field")).collect()
+
+    def fields(self, lf: pl.LazyFrame, formulas: dict[str, str]) -> pl.DataFrame:
+        """批量公式求值：**一个 select 一次 collect** 算齐全部公式列（列名 = 键）。
+
+        共享视图多因子场景（``factor update --all``）下，所有因子公式在同一个
+        lazy 计划里求值，避免逐公式重复扫描同一份已投影视图。
+        """
+        if not formulas:
+            return pl.DataFrame()
+        scope = self._scope(lf)
+        exprs = [eval(f"({formula})", {"__builtins__": {}}, scope).alias(name)
+                 for name, formula in formulas.items()]
+        return lf.select(*exprs).collect()
 
 
 # ---------- 引擎注册表 ----------

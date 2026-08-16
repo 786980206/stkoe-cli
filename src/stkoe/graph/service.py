@@ -1832,32 +1832,30 @@ class GraphService:
                       resync: bool = False) -> dict | list[dict]:
         """factor 更新：传导检查上游（sample/feature 全链）就绪 → 物化 factors/<name>/。
 
-        幂等（依赖签名一致则跳过）；update 成功后节点置 valid=True。scan 为旧名别名。
+        ``--all`` 批量：同 sample 多因子**共享视图计算、分别物化**（见
+        ``_factor_scan_many``）。幂等（依赖签名一致则跳过）；update 成功后节点置
+        valid=True。scan 为旧名别名。
         """
         if all:
-            return [self._factor_scan_one(n["name"], resync=resync)
-                    for n in self.graph.list("factor")]
+            return self._factor_scan_many(resync=resync)
         if not name:
             raise ValueError("factor update 需要因子名（或 --all）")
         self.graph.assert_ready("factor", name)
         return self._factor_scan_one(name, resync=resync)
 
-    def _factor_scan_one(self, name: str, *, resync: bool = False) -> dict:
-        node = self._require_node("factor", name)
+    def _factor_plan(self, node: dict, *, resync: bool = False) -> dict:
+        """因子物化计划（**纯图内元数据，不触数据计算**）：幂等判定 + keys/分区
+        方案 + 增量范围（feature 窗口展开）+ 物化存在性。
+
+        供单因子 ``_factor_scan_one`` 与批量 ``_factor_scan_many`` 共用——
+        批量先给全部因子出计划（阶段 1），再共享计算（阶段 2）、分别写盘（阶段 3）。
+        """
         extra = dict(node.get("extra") or {})
-        cur_hash = self._factor_hash(node)
-        version_before = node.get("version", 0)
-        # 幂等仅当节点有效：上游变化置脏（valid=False）后 update 必须强制重建
-        if not resync and node.get("valid") \
-                and extra.get("dependency_hash") == cur_hash \
-                and (node.get("materialized") or extra.get("materialized")):
-            return {"name": name, "version_before": version_before,
-                    "version_after": version_before, "materialized": True,
-                    "changed": False, "partition_by": list(extra.get("partition_by") or ())}
-        out_dir = self.data_dir / "factor" / name
+        name = node["name"]
         keys = self._factor_keys(node)
         dt = keys[-1] if keys else ""
         pkeys, gran = self._partition_plan(node, dt_col=dt)
+        out_dir = self.data_dir / "factor" / name
         out_path = out_dir / ("data.parquet" if not pkeys else "")
         feature = node.get("feature", "").split(":", 1)[1]
         fnode = self._require_node("feature", feature)
@@ -1869,50 +1867,189 @@ class GraphService:
         if scope and fwin > 1:
             (lo, hi), syms = scope
             scope = (_expand_scope([lo, hi], forward=fwin - 1), syms)
-        if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
+        has_old = (pkeys and out_dir.exists()) or (not pkeys and out_path.exists())
+        cur_hash = self._factor_hash(node)
+        return {
+            "node": node, "name": name, "keys": keys, "dt": dt,
+            "pkeys": pkeys, "gran": gran, "scope": scope,
+            "incremental": bool(scope) and has_old,
+            "out_dir": out_dir, "out_path": out_path,
+            "feature": feature, "fnode": fnode, "cur_hash": cur_hash,
+            "version_before": node.get("version", 0),
+            "skip": (not resync and node.get("valid")
+                     and extra.get("dependency_hash") == cur_hash
+                     and (node.get("materialized") or extra.get("materialized"))),
+        }
+
+    @staticmethod
+    def _factor_skip_report(plan: dict) -> dict:
+        """幂等跳过的 update 报告（changed=False，版本不推进）。"""
+        return {"name": plan["name"], "version_before": plan["version_before"],
+                "version_after": plan["version_before"], "materialized": True,
+                "changed": False, "partition_by": list(plan["pkeys"])}
+
+    def _factor_write(self, plan: dict, df: pl.DataFrame) -> dict:
+        """按物化计划写盘（增量/全量）+ resolve 收口；返回 update 报告。
+
+        单因子路径（``_factor_scan_one``）与批量路径（``_factor_scan_many``）共用
+        同一写盘语义——共享计算出的 df 逐因子**分别物化**。
+        """
+        node = plan["node"]
+        name, keys, dt = plan["name"], plan["keys"], plan["dt"]
+        pkeys, gran, scope = plan["pkeys"], plan["gran"], plan["scope"]
+        out_dir, out_path = plan["out_dir"], plan["out_path"]
+        fnode = plan["fnode"]
+        if plan["incremental"]:
             (lo, hi), syms = scope
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
             sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
-            inc = self._factor_compute(node, dt_range=(lo, hi), symbols=syms)
             if pkeys:
                 old = pl.scan_parquet(out_dir, hive_partitioning=True)
-                df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt,
-                                           sym_expr=sym_expr,
-                                           sort_cols=[dt, keys[0]] if dt else None)
+                self._rewrite_buckets(old, df, dt_expr, pkeys, out_dir, gran, dt,
+                                      sym_expr=sym_expr,
+                                      sort_cols=[dt, keys[0]] if dt else None)
             else:
                 keep = pl.scan_parquet(out_path).filter(
                     ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
                 ).collect()
-                df = pl.concat([keep, inc], how="vertical_relaxed"
+                df = pl.concat([keep, df], how="vertical_relaxed"
                                ).unique(subset=keys, keep="last")
                 if dt:
                     df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
                 df.write_parquet(out_path)
         else:
-            df = self._factor_compute(node)
             if dt:
                 df = df.sort([dt, keys[0]])  # 物化存储时间优先
             self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
         # 物化成功 → resolve 收口：铸版本并记录**消费的合并事件**（own_event 带
         # 窗口展开后的 datetime_scope，供下游 test 沿链增量）+ 出边水位对齐
         m = self.graph.resolve("factor", name, extra={
-            "dependency_hash": cur_hash, "partition_by": pkeys,
+            "dependency_hash": plan["cur_hash"], "partition_by": pkeys,
             "partition_gran": gran, "materialized_at": _now_iso(),
-            "field": {"name": node.get("factor_col") or feature,
+            "field": {"name": node.get("factor_col") or plan["feature"],
                       "formula": fnode.get("formula") or "",
-                      "display_name": node.get("factor_col") or feature,
+                      "display_name": node.get("factor_col") or plan["feature"],
                       "description": "", "unit": None, "tags": [],
-                      "window_size": fwin},
+                      "window_size": int(fnode.get("window_size") or 0)},
         }, own_event=DataChangeEvent(
             action="upsert",
-            field_scope=[node.get("factor_col") or feature],
+            field_scope=[node.get("factor_col") or plan["feature"]],
             datetime_scope=scope[0] if scope else None,
             symbol_scope=scope[1] if scope else None,
         ))
-        version_after = m["version"]
-        return {"name": name, "version_before": version_before,
-                "version_after": version_after, "materialized": True, "changed": True,
+        return {"name": name, "version_before": plan["version_before"],
+                "version_after": m["version"], "materialized": True, "changed": True,
                 "partition_by": list(pkeys), "rebuilt_partitions": [""]}
+
+    def _factor_batch_compute(self, plans: list[dict]) -> dict[str, pl.DataFrame]:
+        """同 sample 多因子**共享视图批量计算**（``factor update --all`` 阶段 2）。
+
+        按 sample 分组：每组只构建一次 sample 视图（join 链 lazy 计划 + **一次
+        collect**，列投影 = keys + 组内全部 feature 公式引用列并集）；组内按引擎
+        分组，一次 ``FactorEngine.fields`` 算齐全部公式列（polars 单 select，
+        同公式去重共享一列）；每个因子再按**自己的增量范围**过滤、施加各自
+        pipeline 算子链。返回 ``{因子名: DataFrame}``——物化写盘由调用方逐因子
+        执行（共享计算、分别物化）。
+        """
+        out: dict[str, pl.DataFrame] = {}
+        groups: dict[str, list[dict]] = {}
+        for p in plans:
+            sample = p["node"].get("sample", "").split(":", 1)[1]
+            groups.setdefault(sample, []).append(p)
+        for sample, items in groups.items():
+            keys = items[0]["keys"]
+            # 联合范围：任一因子全量（无范围/首次/resync）→ 整视图；否则并集区间
+            # 与标的（任一因子全集 → 视图不按标的过滤，各自再精确过滤）
+            incs = [p for p in items if p["incremental"]]
+            if len(incs) == len(items):
+                los = [p["scope"][0][0] for p in incs]
+                his = [p["scope"][0][1] for p in incs]
+                lo, hi = min(los), max(his)
+                sym_sets = [p["scope"][1] for p in incs]
+                syms = list(dict.fromkeys(
+                    s for sl in sym_sets if sl for s in sl)) \
+                    if all(sym_sets) else None
+            else:
+                lo = hi = None
+                syms = None
+            lf = self._sample_view_lf(sample)
+            if lo is not None and keys:
+                dt = keys[-1]
+                lf = lf.filter(pl.col(dt).cast(pl.String)
+                               .is_between(pl.lit(lo), pl.lit(hi)))
+            if syms and keys:
+                lf = lf.filter(pl.col(keys[0]).is_in(syms))
+            view_cols = set(lf.collect_schema().names())
+            need = list(dict.fromkeys(
+                keys + [r for p in items
+                        for r in _formula_refs(p["fnode"].get("formula") or "",
+                                               view_cols)]))
+            df = lf.select(*need).collect()  # 每组一次 collect（共享视图）
+            by_engine: dict[str, list[dict]] = {}
+            for p in items:
+                by_engine.setdefault(p["node"].get("engine") or "polars", []).append(p)
+            for eng_name, eng_items in by_engine.items():
+                engine = get_factor_engine(eng_name)
+                formula_cols: dict[str, str] = {}  # 公式 → 临时列名（同公式共享一列）
+                formulas: dict[str, str] = {}      # 临时列名 → 公式（fields 入参）
+                for p in eng_items:
+                    formula = p["fnode"].get("formula") or ""
+                    temp = formula_cols.setdefault(
+                        formula, f"__f{len(formula_cols)}")
+                    p["_temp"] = temp
+                    formulas[temp] = formula
+                field_df = engine.fields(df.lazy(), formulas)
+                if field_df.height != df.height:
+                    raise ValueError(
+                        f"feature 公式非逐行计算: 结果 {field_df.height} 行 != "
+                        f"样本 {df.height} 行")
+                for p in eng_items:
+                    node = p["node"]
+                    fcol = node.get("factor_col") or p["feature"]
+                    fdf = df.select(*[pl.col(k) for k in keys]).hstack(
+                        field_df.select(pl.col(p["_temp"]).alias(fcol)))
+                    if p["incremental"] and keys:
+                        (lo1, hi1), syms1 = p["scope"]
+                        dt = keys[-1]
+                        fdf = fdf.filter(
+                            pl.col(dt).cast(pl.String)
+                            .is_between(pl.lit(lo1), pl.lit(hi1)))
+                        if syms1:
+                            fdf = fdf.filter(pl.col(keys[0]).is_in(syms1))
+                    out[p["name"]] = engine.transform(
+                        fdf, node.get("pipeline") or "nothing()")
+        return out
+
+    def _factor_scan_many(self, *, resync: bool = False) -> list[dict]:
+        """``factor update --all``：同 sample 多因子**共享视图批量计算**，分别物化。
+
+        阶段 1（纯图内元数据，无计算）：``_factor_plan`` 逐因子判幂等、取 keys/
+        分区方案/增量范围；阶段 2（共享计算）：``_factor_batch_compute`` 按 sample
+        分组——每组构建一次视图 + 一次 collect，组内全部因子列一次算齐
+        （``FactorEngine.fields``）；阶段 3（分别物化）：逐因子增量/全量写盘 +
+        resolve 收口（``_factor_write``，与单因子路径同语义）。
+        """
+        plans = [self._factor_plan(self._require_node("factor", n["name"]),
+                                   resync=resync)
+                 for n in self.graph.list("factor")]
+        reports = [self._factor_skip_report(p) for p in plans if p["skip"]]
+        active = [p for p in plans if not p["skip"]]
+        if active:
+            computed = self._factor_batch_compute(active)
+            reports += [self._factor_write(p, computed[p["name"]]) for p in active]
+        return reports
+
+    def _factor_scan_one(self, name: str, *, resync: bool = False) -> dict:
+        node = self._require_node("factor", name)
+        plan = self._factor_plan(node, resync=resync)
+        if plan["skip"]:
+            return self._factor_skip_report(plan)
+        if plan["incremental"]:
+            (lo, hi), syms = plan["scope"]
+            df = self._factor_compute(node, dt_range=(lo, hi), symbols=syms)
+        else:
+            df = self._factor_compute(node)
+        return self._factor_write(plan, df)
 
     # =====================================================================
     # test（因子测试数据集：factor 关联 sample 视图 + 测试必需列；物化落盘）

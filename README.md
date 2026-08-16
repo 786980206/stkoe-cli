@@ -680,6 +680,22 @@ HealthRequest {}                                   HealthResponse { status, vers
 `StkoeServer.data_dir` → `_StkoeServicer` → `_execute_stream` → `dispatch(...)`，保证 Execute
 与 SubmitTask 用同一数据目录。命令行直接调用（无 data_dir）时回退 `load_config().data_dir`。
 
+### 8.4 serve 运行期缓存与一致性
+
+- **GraphService 连接缓存**：Execute 处理器在**线程本地**缓存 GraphService（key =
+  data_dir 真实路径）——同线程内顺序复用同一 SQLite 连接（连接数有界：线程数 ×
+  目录数），跨线程各自独立连接（SQLite 文件锁 + `busy_timeout` 兜底）。因此
+  **进程内新代码不生效**：修改代码后必须重启 `stkoe serve`
+- **读前快检**：table/index `get`/lazy 读取前比对磁盘签名
+  （sha256(rel_path|size|mtime_ns)）与登记指纹——一致直接读；不一致**自动重扫对账**
+  （铸版本 + 下游置脏）；未登记目录**隐式注册**（见 §14.2）
+- **update 幂等**：`table update`/`index update`/下游物化 update 依赖签名不变 →
+  `changed=False` 跳过重建（物化资产另要求 curated 哈希一致，见 §6.11/§6.12）
+- **物化读取**：panel/fieldset/factor/tester `get` 在物化且 curated 时读 `part=<v>/`
+  物化 parquet；上游变化使 curated 失效 → 自动回退实时视图（数据一致性靠显式
+  update 恢复，见 §11）
+- **stat 产物独立**：统计文件只落盘 `stat/` 目录，读取按目录直读（无内存缓存）
+
 ## 9. 测试客户端（`gclient.py`）
 
 ```bash

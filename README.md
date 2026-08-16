@@ -92,7 +92,7 @@ uv run stkoe config show | set --<key> <value> ...
 
 ```bash
 uv run stkoe table list | meta demo | add demo | set demo --display_name 演示表 | col demo sym --unit 元
-uv run stkoe dataset add ds1 index m1 --keys sym,date | scan ds1 | get ds1 | meta ds1
+uv run stkoe panel add ds1 index m1 | panel update ds1 | panel get ds1 | panel meta ds1
 uv run stkoe fieldset add fs1 --dataset ds1 | fieldset add fs1 ma5 --formula "price.rolling_mean(5)"
 uv run stkoe sample add sp1 --dataset ds1 --formula "(date>='2026-01-01')"
 uv run stkoe feature add ma5 --formula "price.rolling_mean(5)"
@@ -102,11 +102,12 @@ uv run stkoe stat scan table demo | stat scan dataset ds1 | stat scan t1 --kind 
 uv run stkoe mock demo                          # 生成演示 parquet（需 table add 注册）
 uv run stkoe task list                          # 后台任务列表
 
-# V3.0 血缘图（JSON 返回，供 portal 血缘模块 / 脚本使用）
-uv run stkoe graph lineage                      # 全图（Cytoscape elements payload）
-uv run stkoe graph lineage --node panel:ds1 --depth 3   # 指定节点上下游子图
-uv run stkoe graph nodes --type panel           # 节点摘要（中心节点选择器）
-uv run stkoe graph stats                        # 节点/边统计
+# V3.0 血缘图（JSON 返回，供 portal 血缘模块 / 脚本使用；仅 gRPC Execute 通道——
+# CLI 无 graph 子命令，用 gclient.py REPL 输入 e:graph ...）
+e:graph lineage                      # 全图（Cytoscape elements payload）
+e:graph lineage --node panel:ds1 --depth 3   # 指定节点上下游子图
+e:graph nodes --type panel           # 节点摘要（中心节点选择器）
+e:graph stats                        # 节点/边统计
 ```
 
 ## 血缘可视化

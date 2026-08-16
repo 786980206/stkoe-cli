@@ -106,6 +106,34 @@ src/stkoe/
 
 ## 架构要点（改代码前必读）
 
+### GraphService 设计约束（V3.0 全局）
+
+1. **scan → update 语义**：上游传导就绪检查（`assert_ready` BFS 全链 valid）；源头不齐失败
+2. **下游物化分区镜像 index**：`_index_partition_keys(node)` 沿链 Cypher 找 index 取其分区键；
+   分区写保留分区列 + hive 目录（`key=value/data.parquet`），读 `hive_partitioning=True`
+3. **沿链增量物化**（不找最上游）：`_upstream_scope` 用 `graph._accumulated`（按出边
+   required_version 水位取直接依赖未消费事件）得 datetime 区间；有区间且已有物化 → 分区
+   删受影响分区重算 / flat 删区间+合并写回；`--resync`/首次/无区间 → 全量
+4. **get 三态**（`_require_materialized`）：已物化（curated）读物化；本应物化但未物化
+   （panel/fieldset/factor/test）→ 报错提示先 `<type> update <name>`；sample/feature 恒实时
+5. **依赖查询用 Cypher**（变长/批量），不用 Python 循环：`store._walk` 逐层批量
+   `MATCH (a)-[r:DEPENDS]->(n) WHERE a.id IN $ids`
+6. **单一实现**：业务只在 GraphService 一份；CLI/Execute/task handlers 只是薄参数解析
+7. **resolve 收口**：update 成功后走 `graph.resolve` → 铸版本 + 合并事件入 version_list +
+   出边 required_version 对齐 + valid/materialized；`set(self_invalidate=...)` 定义键变更
+   置脏自身（fieldset check 写回 validated 用 `self_invalidate=False` 例外）
+8. 目录单数：`table/ index/ panel/ fieldset/ factor/ factor_test/ stat/ task/`
+
+实测结论（graphqlite / 版本 / 幂等 / polars）：
+- graphqlite 变长路径 `-[:DEPENDS*1..N]->` 可用但 `length(p)` 对多跳恒返回 1（不可靠）；
+  批量 `MATCH ... WHERE a.id IN $ids` 逐层拿下一层+边属性（可靠，用于 `_walk`）
+- Python 3.13 `isolation_level=''`（legacy）：`GraphStore.execute` txn() 外 DML 必须立即
+  commit（否则 close 回滚，指纹残留 bug 的根因）
+- 幂等 materialized 读位置：`resolve` 把 materialized 放节点顶层而非 extra → 幂等判断用
+  `node.get("materialized") or extra.get("materialized")`
+- polars：`is_between` 需 `pl.lit()` 包裹；多文件 dtype 不一致用 `vertical_relaxed`
+- asof join：String 日期先 cast Date 再 `join_asof`，结果 cast 回 String（触发 UserWarning 无碍）
+
 ### 双命令路径：Execute 与 SubmitTask 各自注册
 
 同一业务命令有两条路径，**新增动词必须两处都注册并保持行为对齐**：
@@ -193,11 +221,27 @@ tasks.db 独立保留）；`graph lineage/nodes/stats` 已接入 gRPC Execute �
 portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-design.md §6-7）。
 
 **下一步**（详见 README「路线图」）：
-1. index 唯一性校验等物理细节
-2. 列级血缘（列节点图）、图算法（PageRank 等）
-3. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
+1. 列级血缘（列节点图）、图算法（PageRank 等）
+2. 三路径补齐（迁移评审遗留）：index/panel 任务版 handler（`s:index`/`s:panel`）、
+   CLI graph 子命令（graph 目前仅 Execute）
+3. 错误体系统一（`service._require_node` 对非 table 资产抛 `TableNotFoundError` 语义错位）
+4. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 版本 0.7.0（tag v0.7.0）：V3.0 全量落地收尾——文档清理 + 会话存档归档
+
+- **删除 `Todo.md` 会话断点存档**：任务已全部完成（冗余清理/E5/优化循环），独有信息
+  （GraphService 设计约束 8 条 + 关键技术实测结论）已并入本文件「架构要点」新节
+  「GraphService 设计约束」；命令速查/已知 flaky 本文件已有
+- **删除 `graph-migration-review.md` 迁移评审**：13 项问题中已解决 11 项（§1/§3/§4/§5/§6/
+  §7/§11/§12 及部分 §2/§9），未解决项（§8 错误体系统一、§9 index/panel 任务版 + CLI graph、
+  §13 图读取重复、§10 返回字段形态）已并入 graph-v3-gap.md「评审遗留」清单跟踪
+- **README 命令示例修正**：`dataset add --keys` → `panel add`（keys 由 index 推断）；
+  `stkoe graph lineage/nodes/stats` → 注明仅 gRPC Execute 通道（CLI 无 graph 子命令，
+  用 gclient.py 的 `e:graph ...`）
+- **pyproject 版本 0.6.0 → 0.7.0**（V3.0 graph 重构 + 冗余清理 + P0/P1/P2/E5 + 优化全部落地）
+- 测试：全量 196 用例绿
 
 ### 2026-08 优化：`stkoe serve` Ctrl+C 优雅退出
 

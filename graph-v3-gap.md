@@ -114,3 +114,17 @@
      **fieldset `fields` 变更的 curated 联动**（`set` 定义键 self_invalidate 置脏，已落地）；
    - **剩余可选项**：symbol_scope 提取（读数据页，datetime 区间已够用）；
      stat 是否纳入图资产（设计决策，当前保持不进图）；ModelNode（G10 后续规划）。
+
+---
+
+## 四、评审遗留（graph-migration-review.md 已归档，未解决项迁移至此）
+
+原「V2 → V3 迁移评审」13 项中 11 项已解决（§1/§3/§4/§5/§6/§7/§11/§12 全部 + §2/§9 部分），
+其余为打磨项：
+
+| # | 事项 | 现状 |
+|---|---|---|
+| §8 | 错误体系统一：`service._require_node` 对非 table 资产抛 `TableNotFoundError`（语义错位，对外 message 正确；dispatch 层统一转 CommandError） | 打磨项 |
+| §9 | 三路径补齐：`index`/`panel` 无 SubmitTask 任务版（`s:index`/`s:panel` 不可用）；CLI 无 `graph` 子命令（lineage/nodes/stats 仅 Execute，portal 经 gRPC 调用不受影响） | 打磨项 |
+| §10 | 返回字段形态：sample/factor/test 的 meta columns 仍简化（`{name, data_type}`）；scan 返回字段已按 V3 定稿（api.md 为准） | 打磨项 |
+| §13 | 图读取重复：`dispatch._graph_store` 与 GraphService 各自开 catalog.db（只读场景 OK，连接管理分散） | 打磨项 |

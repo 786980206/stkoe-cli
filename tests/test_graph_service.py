@@ -1227,17 +1227,26 @@ class TestColumnLineage:
         assert "column:fieldset:fs1.x2" in ids
         assert "column:table:m1.price" in ids
         assert "column" in p["graph"]["types"]
-        assert any(e["data"]["id"].startswith("column:")
-                   for e in p["elements"]["edges"])  # DERIVES 边
-        # 不带 --columns：资产图口径不变
+        edges = {e["data"]["id"]: e["data"] for e in p["elements"]["edges"]}
+        assert any(cid.startswith("column:") for cid in edges)  # DERIVES 边
+        # BELONGS_TO：列 → 所属资产（跨层接图），带 type 标注
+        assert edges["column:panel:ds1.sym->panel:ds1"]["type"] == "BELONGS_TO"
+        assert edges["column:panel:ds1.sym->panel:ds1"]["source"] \
+            == "column:panel:ds1.sym"
+        assert any(e["data"]["type"] == "DERIVES" for e in p["elements"]["edges"])
+        # 不带 --columns：资产图口径不变（无列节点/无列层边）
         p2 = build_payload(store)
         assert all(n["data"]["type"] != "column" for n in p2["elements"]["nodes"])
+        assert all(e["data"]["type"] == "DEPENDS"
+                   for e in p2["elements"]["edges"])
 
         cp = column_payload(store, "column:fieldset:fs1.x2")
         cids = {n["data"]["id"] for n in cp["elements"]["nodes"]}
         assert "column:panel:ds1.code" in cids   # 上游来源
         assert "column:sample:sp1.x2" in cids    # 下游派生
         assert "fieldset:fs1" in cids            # 所属资产上下文
+        cedges = {e["data"]["id"]: e["data"] for e in cp["elements"]["edges"]}
+        assert cedges["column:fieldset:fs1.x2->fieldset:fs1"]["type"] == "BELONGS_TO"
 
     def test_field_formula_multiple_refs(self, svc):
         """字段公式依赖多个列 → 每个引用列一条 DERIVES 边（fieldset 字段 + factor_col）。"""
@@ -1271,6 +1280,7 @@ class TestColumnLineage:
         stats = json.loads(dispatch("graph", "stats", [], data_dir=base)[0].data)
         assert stats["node_count"] == 8  # index/m1/panel/fieldset/sample/feature/factor/tester
         assert stats["column_count"] > 0 and stats["derives_count"] > 0
+        assert stats["belongs_count"] > 0  # 每列一条 BELONGS_TO 边
         p = json.loads(dispatch("graph", "lineage", ["--columns"],
                                 data_dir=base)[0].data)
         assert "column" in p["graph"]["types"]
@@ -1285,6 +1295,109 @@ class TestColumnLineage:
                                   data_dir=base)[0].data)
         assert cp2["graph"]["center"] == "column:fieldset:fs1.x2"
         assert cp2["elements"]["nodes"]
+
+
+class TestColumnBelongs:
+    """BELONGS_TO 边（列 → 所属资产）：把列级血缘与资产级血缘接成一张图。
+
+    - 每列恰好一条 BELONGS_TO 边，建列/对账/跨依赖引用（_ensure_column /
+      sync_columns / sync_derives）统一经 store.upsert_column 写入（幂等）；
+    - store.asset_of 列 → 资产；资产删除级联清理；
+    - column_consistency：跨资产 DERIVES 边 ↔ 资产级 DEPENDS 链互相印证。
+    """
+
+    def _chain(self, svc):
+        # 覆盖 index/data.parquet 加入测试必需列（多文件 scan 不 union schema）
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
+                      "code": [1, 2]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "data.parquet"))
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_check("fs1", "x2")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.feature_add("f1", "code * 2")
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.tester_add("tt1", "fac1")
+
+    def test_every_column_has_single_belongs_edge(self, svc):
+        """全链每列恰好一条 BELONGS_TO 边指向所属资产；asset_of 往返一致。"""
+        self._chain(svc)
+        st = svc.store
+        cols = [n for n in st.list_nodes("Column")]
+        assert cols, "应存在列节点"
+        for c in cols:
+            cid = c["id"]
+            belongs = st.deps_of(cid, rel_type="BELONGS_TO")
+            assert len(belongs) == 1, f"{cid} 应有且仅有一条 BELONGS_TO 边: {belongs}"
+            owner = st.asset_of(cid)
+            assert owner is not None and owner["id"] == belongs[0]["target"]
+            # 属性与边一致（asset 属性 = 边目标）
+            assert c["asset"] == owner["id"]
+        # 幂等：重复 upsert_column 不产生重复边
+        st.upsert_column("panel:ds1", "panel", "sym", {
+            "name": "sym", "asset": "panel:ds1", "asset_type": "panel"})
+        assert len(st.deps_of("column:panel:ds1.sym",
+                              rel_type="BELONGS_TO")) == 1
+
+    def test_cross_layer_traversal(self, svc):
+        """跨层遍历：列 → BELONGS_TO → 资产 → DEPENDS 上游 → 资产 → 其列（一张图）。"""
+        self._chain(svc)
+        st = svc.store
+        # factor 列 f1 → factor:fac1 → DEPENDS 上游 sample:sp1 → 其列 x2
+        owner = st.asset_of("column:factor:fac1.f1")
+        assert owner["id"] == "factor:fac1"
+        up = {d["id"] for d in st.upstream("factor:fac1")}
+        assert "sample:sp1" in up
+        up_cols = {c["name"] for c in st.columns_of("sample:sp1")}
+        assert "x2" in up_cols and "sym" in up_cols
+        # 反向：从源头 table 列经 BELONGS_TO 的资产，沿 DEPENDS 下游到 factor
+        assert st.asset_of("column:table:m1.price")["id"] == "table:m1"
+        down = {d["id"] for d in st.downstream("table:m1")}
+        assert "factor:fac1" in down
+
+    def test_delete_cascades_belongs_edge(self, svc):
+        """资产删除 → 列节点 + BELONGS_TO 边级联清理（belongs_count 同步）。"""
+        self._chain(svc)
+        st = svc.store
+        before = st.stats()["belongs_count"]
+        svc.fieldset_delete("fs1", force=True)  # force 递归删下游（sample/factor/tester）
+        assert st.columns_of("fieldset:fs1") == []
+        assert st.asset_of("column:fieldset:fs1.x2") is None
+        after = st.stats()["belongs_count"]
+        assert after < before  # 列节点连带 BELONGS_TO 边级联清理
+
+    def test_column_consistency_ok_and_broken(self, svc):
+        """一致性校验：标准链无报告；破坏资产级边（删 DEPENDS）→ 报告跨层不一致。"""
+        from stkoe.graph.analyze import column_consistency
+
+        self._chain(svc)
+        st = svc.store
+        # 标准链：fieldset 列 DERIVES → panel 列，fieldset DEPENDS panel —— 一致
+        assert column_consistency(st) == []
+        # 人为删除 fieldset → panel 的 DEPENDS 边 → fieldset 列 DERIVES 到 panel 列
+        # 失去资产级路径 → 报告（列级血缘比资产级血缘"多走了"）
+        st.delete_edge("fieldset:fs1", "panel:ds1", "DEPENDS")
+        bad = column_consistency(st)
+        assert bad, "破坏资产级血缘后应报告跨层不一致"
+        assert any(b["source_asset"] == "fieldset:fs1"
+                   and b["target_asset"] == "panel:ds1" for b in bad)
+        assert "->" in bad[0]["derives"]  # 形如 "column:… -> column:…"
+
+    def test_analyze_dispatch_consistency(self, svc):
+        """graph analyze 输出含 consistency（标准链 = 空清单）。"""
+        import json
+
+        from stkoe.grpc.dispatch import dispatch
+
+        self._chain(svc)
+        data = json.loads(dispatch("graph", "analyze", [],
+                                   data_dir=str(svc.data_dir))[0].data)
+        assert set(data) == {"page_rank", "degree", "components", "consistency"}
+        assert data["consistency"] == []
 
 
 class TestWindowScope:

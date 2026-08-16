@@ -1335,20 +1335,23 @@ def _graph_analyze(args: list[str], data_dir=None) -> list[Result]:
     PageRank / 度中心性 / 弱连通分量；默认全图资产节点（列节点不参与），
     --node 限定该资产上下游子图（含自身）；**逗号分隔多个 --node** 时取各自
     闭包的并集批量分析（如 ``--node panel:ds1,factor:fac1``）。
+    另含 **consistency**：列级血缘（DERIVES）↔ 资产级血缘（DEPENDS）跨层一致性
+    校验清单（空 = 两层血缘完全吻合）。
     """
-    from ..graph.analyze import analyze, asset_graph
+    from ..graph.analyze import analyze, asset_graph, column_consistency
 
     flags = parse_flags(args)
     store = _graph_store(data_dir)
     if store is None:
         return [Result.json("graph", {"page_rank": [], "degree": [],
-                                      "components": []})]
+                                      "components": [], "consistency": []})]
     try:
         raw = flags.get("node")
         centers = [c.strip() for c in str(raw).split(",") if c.strip()] \
             if raw else None
         node_ids, edges = asset_graph(store, centers)
         data = analyze(node_ids, edges)
+        data["consistency"] = column_consistency(store)
     finally:
         store.close()
     return [Result.json("graph", data)]

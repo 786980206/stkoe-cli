@@ -26,7 +26,7 @@ from typing import Any, Iterator, Optional
 import graphqlite
 
 from .errors import EdgeNotFoundError
-from .model import split_node_id
+from .model import column_node_id, split_node_id
 
 _PROP_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -281,7 +281,7 @@ class GraphStore:
         """全部 ``valid=false`` 的节点（待重算清单；列节点恒有效不参与）。"""
         return [n for n in self.list_nodes() if not n.get("valid", True)]
 
-    # ---------- 列节点（列级血缘：Column 节点 + DERIVES 边） ----------
+    # ---------- 列节点（列级血缘：Column 节点 + DERIVES/BELONGS_TO 边） ----------
 
     def columns_of(self, asset_id: str) -> list[dict]:
         """某资产的列节点清单（属性 dict，含归一 ``type``）。"""
@@ -293,8 +293,36 @@ class GraphStore:
                 out.append(node)
         return out
 
+    def upsert_column(self, asset_id: str, asset_type: str, col: str,
+                      props: dict[str, Any]) -> str:
+        """建/更新列节点并保证 **BELONGS_TO 边**（``(列) -[:BELONGS_TO]-> (资产)``）。
+
+        列创建/对账的**唯一入口**：``asset/asset_type`` 属性与 BELONGS_TO 边在同一处
+        写入（MERGE 幂等，重复调用不产生重复边）——不会出现「有属性没边 / 有边没
+        属性」的漂移。返回列节点 id。
+        """
+        cid = column_node_id(asset_id, col)
+        if self.has_node(cid):
+            self.patch_node(cid, **props)
+        else:
+            self.create_node(cid, "Column", props)
+        self.create_edge(cid, asset_id, "BELONGS_TO", {})
+        return cid
+
+    def asset_of(self, column_id: str) -> dict | None:
+        """列所属资产：``(列) -[:BELONGS_TO]-> (资产)`` 的目标节点（无 → None）。
+
+        把列级血缘与资产级血缘**接成一张图**的桥：从列出发可经 BELONGS_TO 走进
+        DEPENDS 资产层，反之经 ``columns_of`` 从资产走进 DERIVES 列层。
+        """
+        r = self._cypher(
+            "MATCH (c {id: $id})-[:BELONGS_TO]->(a) RETURN a", {"id": column_id})
+        if not r or "a" not in r[0]:
+            return None
+        return self._normalize(r[0].get("a"))
+
     def delete_columns_of(self, asset_id: str) -> None:
-        """删除某资产的全部列节点（连带 DERIVES 边）——资产删除时级联。"""
+        """删除某资产的全部列节点（连带 DERIVES/BELONGS_TO 边）——资产删除时级联。"""
         self._cypher("MATCH (c:Column {asset: $id}) DETACH DELETE c", {"id": asset_id})
 
     def delete_derives_from(self, column_id: str) -> None:
@@ -433,18 +461,21 @@ class GraphStore:
     # ---------- 统计 ----------
 
     def stats(self) -> dict:
-        """图统计：资产节点/DEPENDS 边（血缘图口径）+ 列节点/DERIVES 边。"""
+        """图统计：资产节点/DEPENDS 边（血缘图口径）+ 列节点/DERIVES 边（列级血缘
+        口径）+ BELONGS_TO 边（列所属关系口径）。"""
         total = self._cypher("MATCH (n) RETURN count(n) AS c")
         cols = self._cypher("MATCH (n:Column) RETURN count(n) AS c")
         edges = self._cypher("MATCH ()-[r]->() RETURN count(r) AS c")
         derives = self._cypher("MATCH ()-[r:DERIVES]->() RETURN count(r) AS c")
+        belongs = self._cypher("MATCH ()-[r:BELONGS_TO]->() RETURN count(r) AS c")
         return {
             "node_count": int(total[0]["c"] or 0) - int(cols[0]["c"] or 0)
             if total and cols else 0,
             "edge_count": int(edges[0]["c"] or 0) - int(derives[0]["c"] or 0)
-            if edges and derives else 0,
+            - int(belongs[0]["c"] or 0) if edges and derives and belongs else 0,
             "column_count": int(cols[0]["c"] or 0) if cols else 0,
             "derives_count": int(derives[0]["c"] or 0) if derives else 0,
+            "belongs_count": int(belongs[0]["c"] or 0) if belongs else 0,
         }
 
 

@@ -168,5 +168,33 @@ def column_impact(store, column_id: str, *, depth: int | None = None) -> dict:
     return {"columns": cols, "assets": assets}
 
 
+def column_consistency(store) -> list[dict]:
+    """**列级血缘 ↔ 资产级血缘一致性校验**（把两层子图互相印证）。
+
+    对每条**跨资产** DERIVES 边 ``(cx 属 A) -> (cy 属 B)``，校验 B 在 A 的
+    DEPENDS 上游（传递）链中——即「列之间有派生」必须对应「资产之间有依赖」
+    （如 tester 列 DERIVES 到 sample 列 ↔ tester 资产 DEPENDS 链含 sample）。
+    返回不一致清单（空 = 两层血缘完全吻合）；同资产内的 DERIVES 边跳过。
+    """
+    out: list[dict] = []
+    for n in store.list_nodes("Column"):
+        cid = n.get("id") or ""
+        src_asset = n.get("asset") or ""
+        for e in store.deps_of(cid, rel_type="DERIVES"):
+            tgt_asset = (store.get_node(e["target"]) or {}).get("asset") or ""
+            if not src_asset or not tgt_asset or src_asset == tgt_asset:
+                continue
+            if tgt_asset not in {d["id"] for d in store.upstream(src_asset)}:
+                out.append({
+                    "derives": f"{cid} -> {e['target']}",
+                    "source_asset": src_asset,
+                    "target_asset": tgt_asset,
+                    "message": f"{src_asset} 的列 DERIVES 到 {tgt_asset} 的列，"
+                               f"但资产级血缘缺 {src_asset} → … → {tgt_asset} 的 DEPENDS 路径",
+                })
+    return out
+
+
 __all__ = ["analyze", "asset_graph", "asset_impact", "column_impact",
-           "page_rank", "degree_centrality", "weak_components"]
+           "column_consistency", "page_rank", "degree_centrality",
+           "weak_components"]

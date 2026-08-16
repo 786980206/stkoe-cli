@@ -236,6 +236,36 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 feat(graph): BELONGS_TO 边——列级血缘与资产级血缘接成一张图（跨层一致性校验）
+
+- **背景**：列→资产此前只是列节点上的 `asset` **属性**（`MATCH (c:Column {asset: $id})`），
+  不是图边——资产层（DEPENDS）与列层（DERIVES）是**两张割裂的子图**：从资产出发的
+  遍历永远走不到列，从列也走不到资产
+- **边模型**：新增 `(column) -[:BELONGS_TO]-> (资产)`（列属于资产，方向与
+  DERIVES/DEPENDS 同向）；每列恰好一条，无属性。三条边类型各司其职：DEPENDS
+  （资产↔资产）/ DERIVES（列↔列）/ BELONGS_TO（列→资产），任意两层可连续遍历
+  （如「因子列 → 所属因子 → DEPENDS 链 → 源头表 → 其列」一条路径走通）
+- **零漂移挂接**：store 新增 `upsert_column(asset_id, asset_type, col, props)`——
+  建/改列节点（含 asset/asset_type 属性）与 BELONGS_TO 边**同点写入**（MERGE 幂等，
+  重复调用不产生重复边）；`controller._ensure_column`/`sync_columns` 全部改走它；
+  删除/清理由 DETACH 连带（`delete_columns_of`/`delete_node`/孤立列清理均自动覆盖）
+- **遍历 API**：`store.asset_of(column_id)`（列 → 所属资产节点）
+- **跨层一致性校验**（把两张子图互相印证）：`analyze.column_consistency(store)`——
+  对每条**跨资产** DERIVES 边 `(cx 属 A)→(cy 属 B)`，校验 B 在 A 的 DEPENDS 上游
+  （传递）链中；不一致返回清单（能抓「列级改了但资产级忘了建边」的漂移）。
+  `graph analyze` 输出新增 **`consistency`** 键（空 = 两层血缘完全吻合）；
+  tester 跨依赖 DERIVES（tester→factor→sample 有对应 DEPENDS 链）天然通过
+- **导出/统计**：export 边 data 新增 `type` 标注（DEPENDS/DERIVES/BELONGS_TO）；
+  `lineage --columns`/`--column` 边集带 BELONGS_TO（列所属资产并入节点集防悬空）；
+  `graph stats` 新增 **`belongs_count`**（edge_count 口径剔除 BELONGS_TO，
+  node/edge 数值口径不变）
+- 测试：TestColumnBelongs 5 例（每列恰好一条边 + asset_of 往返 + upsert 幂等 /
+  跨层连续遍历 / 删除级联 belongs_count 递减 / 一致性标准链空 + 删 DEPENDS 边后
+  报告 / dispatch analyze 含 consistency）+ 既有 stats/analyze/export 断言适配
+  （stats 键集合 + analyze 键集合 + edge type 标注）；全量 275 用例绿
+- 文档：README §2.2（Column 行 + 所属边）/§2.3（边模型 + 跨层遍历与一致性）/
+  §6.1（stats 键）/§6.13（lineage --columns 边集 + analyze consistency）、AGENTS.md
+
 ### 2026-08 docs: README 收敛为当前状态——移除 V2.0/V3.0 过渡期描述与设计对照章节
 
 - **头部重写**：删除「V2.0 基线 / V3.0 已落地 / catalog.db 废弃 / 原 api.md 等已并入」

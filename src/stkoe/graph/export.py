@@ -27,13 +27,14 @@ def _node_data(props: dict, with_meta: bool) -> dict:
     return data
 
 
-def _edge_data(src: str, tgt: str, edge: dict) -> dict:
-    """边属性 → Cytoscape edge data。"""
+def _edge_data(src: str, tgt: str, edge: dict, etype: str = "DEPENDS") -> dict:
+    """边属性 → Cytoscape edge data（``type`` 标注边类型：DEPENDS/DERIVES/BELONGS_TO）。"""
     detail = edge.get("detail") or {}
     return {
         "id": f"{src}->{tgt}",
         "source": src,
         "target": tgt,
+        "type": etype,
         "role": detail.get("role", ""),
         "join": detail.get("join"),
         "required_version": edge.get("required_version", 0),
@@ -102,7 +103,11 @@ def column_payload(store, column_id: str, depth: int | None = None,
         for e in store.deps_of(cid, rel_type="DERIVES"):
             if e["target"] in keep:
                 edges[cid + "->" + e["target"]] = \
-                    {"data": _edge_data(cid, e["target"], e)}
+                    {"data": _edge_data(cid, e["target"], e, "DERIVES")}
+        owner = (store.get_node(cid) or {}).get("asset", "")
+        if owner:
+            edges[f"{cid}->{owner}"] = \
+                {"data": _edge_data(cid, owner, {}, "BELONGS_TO")}
     types = sorted({n["data"]["type"] for n in nodes})
     return {
         "graph": {"exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -119,11 +124,15 @@ def _all(store, with_meta: bool, with_columns: bool = False) -> tuple[list, list
     for props in store.list_nodes():
         for e in store.deps_of(props["id"]):
             edges[e["source"] + "->" + e["target"]] = \
-                {"data": _edge_data(e["source"], e["target"], e)}
+                {"data": _edge_data(e["source"], e["target"], e, "DEPENDS")}
         if with_columns and props.get("type") == "column":
             for e in store.deps_of(props["id"], rel_type="DERIVES"):
                 edges[e["source"] + "->" + e["target"]] = \
-                    {"data": _edge_data(e["source"], e["target"], e)}
+                    {"data": _edge_data(e["source"], e["target"], e, "DERIVES")}
+            owner = props.get("asset", "")
+            if owner:
+                edges[f"{props['id']}->{owner}"] = \
+                    {"data": _edge_data(props["id"], owner, {}, "BELONGS_TO")}
     return nodes, list(edges.values())
 
 
@@ -149,6 +158,11 @@ def _subgraph(store, center: str, depth: int | None, with_meta: bool,
                         col_ids.add(e["target"])
                         nxt.append(e["target"])
             pending = nxt
+        # BELONGS_TO：列所属资产并入节点集（跨层接图——列层与资产层连成一张图）
+        for cid in col_ids:
+            owner = (store.get_node(cid) or {}).get("asset", "")
+            if owner:
+                keep.add(owner)
     nodes = []
     for nid in sorted(keep | col_ids):
         props = store.get_node(nid)
@@ -159,13 +173,17 @@ def _subgraph(store, center: str, depth: int | None, with_meta: bool,
         for e in store.deps_of(nid):
             if e["target"] in keep:
                 edges[e["source"] + "->" + e["target"]] = \
-                    {"data": _edge_data(e["source"], e["target"], e)}
+                    {"data": _edge_data(e["source"], e["target"], e, "DEPENDS")}
     if with_columns:
         for cid in col_ids:
             for e in store.deps_of(cid, rel_type="DERIVES"):
                 if e["target"] in col_ids:
                     edges[cid + "->" + e["target"]] = \
-                        {"data": _edge_data(cid, e["target"], e)}
+                        {"data": _edge_data(cid, e["target"], e, "DERIVES")}
+            owner = (store.get_node(cid) or {}).get("asset", "")
+            if owner and owner in keep:
+                edges[f"{cid}->{owner}"] = \
+                    {"data": _edge_data(cid, owner, {}, "BELONGS_TO")}
     return nodes, list(edges.values())
 
 

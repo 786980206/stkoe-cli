@@ -398,10 +398,10 @@ class GraphController:
         }
 
     def _ensure_column(self, asset_id: str, asset_type: str, col: str) -> str:
-        """确保列节点存在（缺失时以最小属性创建），返回列节点 id。"""
+        """确保列节点存在（缺失时以最小属性创建，同时建 BELONGS_TO 边），返回列节点 id。"""
         cid = column_node_id(asset_id, col)
         if not self._store.has_node(cid):
-            self._store.create_node(cid, "Column", {
+            self._store.upsert_column(asset_id, asset_type, col, {
                 "name": col, "asset": asset_id, "asset_type": asset_type,
             })
         return cid
@@ -410,18 +410,15 @@ class GraphController:
                      columns: list[dict] | None = None) -> int:
         """对账资产的列节点：按 ``columns``（ColumnMeta 形态 dict 列表）建/改/删。
 
+        建/改统一走 ``store.upsert_column``（属性 + BELONGS_TO 边同点写入）；
         删除只清**无 DERIVES 边**的孤立列节点（被下游/上游引用的列节点保留，
         避免删掉仍被引用的映射目标）；返回当前列节点数。
         """
         nid = node_id(asset_type, name)
         want = {c.get("name"): c for c in (columns or [])}
         for col, c in want.items():
-            cid = column_node_id(nid, col)
             props = self._column_props(nid, asset_type, c)
-            if self._store.has_node(cid):
-                self._store.patch_node(cid, **props)
-            else:
-                self._store.create_node(cid, "Column", props)
+            self._store.upsert_column(nid, asset_type, col, props)
         for old in self._store.columns_of(nid):
             col = old.get("name", "")
             if col not in want:

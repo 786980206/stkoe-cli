@@ -74,7 +74,7 @@ create_time / update_time / extra`。
 | `Tester` | TesterNode | `factor`（节点 id）、`returns/groupby/marketcap`、`spec`（quantiles/periods/…） |
 | `Model` | ModelNode | （预留） |
 | `Stat` | StatNode | `target_type`、`target_name`、`kind`、`partitions[]`、`files[{partition, rel_path, rows, size}]`（scan 后登记，见 §10） |
-| `Column` | 列节点（列级血缘） | `name`（列名）、`asset`（所属资产节点 id）、`asset_type`、`data_type/unit/formula/display_name/description/tags/as_index/source_table/source_field` |
+| `Column` | 列节点（列级血缘） | `name`（列名）、`asset`（所属资产节点 id）、`asset_type`、`data_type/unit/formula/display_name/description/tags/as_index/source_table/source_field`；另有 `(column)-[:BELONGS_TO]->(资产)` 边标注所属（见 §2.3） |
 
 ColumnMeta / FieldMeta：`name, display_name, description, data_type, unit, formula, tags,
 as_index, is_tool, source_table, source_field`。**列级血缘**：DEPENDS 边 `detail.columns`
@@ -83,7 +83,7 @@ as_index, is_tool, source_table, source_field`。**列级血缘**：DEPENDS 边 
 边（方向与 DEPENDS 一致：派生列 → 源列）；源头列（table/index）随登记/重扫对账，
 字段/公式变更（fieldset `add_field/set_field`）自动重派发。
 
-### 2.3 边模型（DEPENDS + DERIVES）
+### 2.3 边模型（DEPENDS + DERIVES + BELONGS_TO）
 
 - **DEPENDS 方向**：`(依赖方) -[:DEPENDS]-> (被依赖方)` —— 出边 = 我依赖谁（上游），入边 = 谁依赖我（下游）
 - **DEPENDS 边属性**：`required_version`（依赖方已消费的被依赖方版本，物化时对齐）、
@@ -93,6 +93,13 @@ as_index, is_tool, source_table, source_field`。**列级血缘**：DEPENDS 边 
 - **DERIVES 方向**：`(column:派生列) -[:DERIVES]-> (column:源列)`（与 DEPENDS 同向：
   派生列 → 其来源列）；列节点 label = `Column`，id = `column:<资产 id>.<列名>`
   （如 `column:fieldset:fs1.ma5`）；资产删除时其列节点级联删除（DETACH 连带 DERIVES 边）
+- **BELONGS_TO 方向**：`(column) -[:BELONGS_TO]-> (所属资产)` —— **列属于哪个资产**；
+  每列恰好一条（建列/对账/跨依赖引用统一经 `store.upsert_column`，属性 `asset` 与边
+  同点写入零漂移）。它把**列级血缘（DERIVES）与资产级血缘（DEPENDS）接成一张图**：
+  从列可经 BELONGS_TO 走进资产层，从资产可经 `columns_of` 走进列层——任意两层可
+  连续遍历（如「因子列 → 所属因子 → DEPENDS 链 → 源头表 → 其列」一条路径走通）；
+  `graph analyze` 的 **`consistency`** 用它对两层血缘做交叉校验：跨资产 DERIVES 边
+  的所属资产之间必须存在 DEPENDS 路径，不一致即报告（抓列级与资产级漂移）
 - **列级血缘映射来源**：
   - panel 列 → index/成员表列（同名透传；与 index 同名的成员列不重复映射）
   - fieldset keys → panel keys；字段列 → 公式引用的 panel 列（标识符 ∩ panel 视图列）
@@ -327,7 +334,7 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 | graph | `update` | — | `--node <type:name>` `--all` | JsonData（沿链级联更新报告，见 §6.13） |
 | graph | `analyze` | — | `--node <type:name>[,<type:name>...]` | JsonData（page_rank/degree/components，见 §6.13） |
 | graph | `impact` | — | `--node <type:name>` `--column <type:name.col>` `--depth N` | JsonData（下游影响，见 §6.13） |
-| graph | `stats` | — | — | JsonData `{"node_count","edge_count","column_count","derives_count"}` |
+| graph | `stats` | — | — | JsonData `{"node_count","edge_count","column_count","derives_count","belongs_count"}` |
 
 > `table update` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
@@ -515,9 +522,12 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
 ### 6.13 `graph` 血缘图（graphqlite 图数据，Execute + CLI；无任务版）
 
 - **数据来源**：`<data-dir>/catalog.db`（graphqlite 嵌入式图库，资产血缘 DEPENDS 边 +
-  列级血缘 Column 节点/DERIVES 边，见 §2 图设计）；库不存在时返回空图（`node_count=0`）
+  列级血缘 Column 节点/DERIVES 边 + BELONGS_TO 所属边，见 §2 图设计）；
+  库不存在时返回空图（`node_count=0`）
 - **`graph lineage`** 返回 Cytoscape.js elements payload（前端可直接渲染）；
-  **`--columns`** 叠加列级血缘（涉及资产的 Column 节点 + DERIVES 边）；
+  **`--columns`** 叠加列级血缘（涉及资产的 Column 节点 + DERIVES 边 +
+  `(column)-[:BELONGS_TO]->(资产)` 所属边，边 data 带 `type` 标注
+  `DEPENDS/DERIVES/BELONGS_TO`）；
   **`--column <type:name.col>`**（如 `fieldset:fs1.ma5`）以某列为中心返回列级血缘子图
   （上游来源列 + 下游派生列 + 所属资产上下文）：
 
@@ -543,7 +553,7 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
 - **`graph columns [--node <type:name>]`**：列节点清单（全部，或指定资产的列，
   含 data_type/formula/as_index 等属性）
 - **`graph stats`**：`node_count/edge_count`（资产/DEPENDS 口径）+ `column_count/derives_count`
-  （列级血缘口径）
+  （列级血缘口径）+ `belongs_count`（BELONGS_TO 列所属边口径）
 - **`graph update [--node <type:name>] [--all]`**：沿链级联 update——`--node` 更新该资产 +
   其**全部下游链**（BFS 闭包含自身），`--all` 按拓扑序更新图中全部资产节点；每个节点都走
   各自 `*_update`（内含上游传导就绪检查），**拓扑序保证任一节点更新时上游已就绪**；闭包外
@@ -557,7 +567,9 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
   `out_degree`=上游依赖数、`degree` 合计，降序）/ `components`（弱连通分量，
   按 size 降序）；默认全图资产节点（列节点不参与），`--node` 限定该资产
   上下游子图（含自身），**逗号分隔多个 `--node` 取各自闭包的并集批量分析**
-  （不存在的节点跳过不报错）
+  （不存在的节点跳过不报错）；另含 **`consistency`**——列级血缘（DERIVES）↔ 资产级
+  血缘（DEPENDS）跨层一致性校验清单：跨资产 DERIVES 边的所属资产之间必须存在
+  DEPENDS 路径，不一致即报告（空 = 两层血缘完全吻合，见 §2.3 BELONGS_TO）
 - **`graph impact --node <type:name> | --column <type:name.col> [--depth N]`**：
   下游影响分析——`--node` 返回该资产 DEPENDS 下游闭包（`assets`，带 depth）+
   其全部列的 DERIVES 下游列闭包（`columns`）；`--column` 返回以该列为中心的

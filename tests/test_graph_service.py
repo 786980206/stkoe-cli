@@ -620,6 +620,15 @@ class TestFactorGraph:
         m = svc.factor_meta("fac1")
         assert m["materialized"] is False
         assert {c["name"] for c in m["columns"]} >= {"sym", "date", "code", "price", "x2"}
+        # §10：factor meta columns 完整列元数据（panel 列继承 / fieldset 字段全键）
+        by_name = {c["name"]: c for c in m["columns"]}
+        assert set(by_name["code"]) >= {"name", "display_name", "description",
+                                        "data_type", "unit", "formula", "tags"}
+        assert by_name["x2"].get("formula") == "code * 2"  # fieldset 衍生字段公式
+        sm = svc.sample_meta("sp1")
+        assert sm["keys"] == ["sym", "date"] and sm["materialized"] is False
+        assert {c["name"] for c in sm["columns"]} >= {"sym", "date", "code", "price", "x2"}
+        assert next(c for c in sm["columns"] if c["name"] == "x2").get("validated") is True
 
         r = svc.factor_check("fac1")
         assert r["ok"] is True

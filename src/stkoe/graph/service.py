@@ -1047,8 +1047,26 @@ class GraphService:
                 "message": "" if ok else "过滤后缺少索引列或行数为 0"}
 
     def sample_meta(self, name: str) -> dict:
+        """sample 元数据（V2.0 形态 dict，§10）：含 keys/columns（完整列元数据）。"""
         node = self._require_node("sample", name)
-        return self.graph._meta(node)
+        return {
+            "name": name,
+            "version": node.get("version", 0),
+            "fieldset": node.get("fieldset", "").split(":", 1)[1]
+            if node.get("fieldset") else "",
+            "engine": node.get("engine", "polars"),
+            "formula": node.get("formula", ""),
+            "keys": self._sample_keys(node),
+            "valid": bool(node.get("valid")),
+            "materialized": False,  # sample 无物化，恒实时构造
+            "columns": self._sample_view_cols(name),
+            "display_name": node.get("display_name") or name,
+            "description": node.get("description", ""),
+            "tags": list(node.get("tags") or ()),
+            "source": node.get("source", "local"),
+            "created_at": node.get("create_time", ""),
+            "updated_at": node.get("update_time", ""),
+        }
 
     def sample_list(self) -> list:
         return [self.sample_meta(n["name"]) for n in self.graph.list("sample")]
@@ -1126,10 +1144,33 @@ class GraphService:
     # =====================================================================
 
     def _sample_view_cols(self, sample: str) -> list[dict]:
-        """sample 视图列（name + data_type），供 factor/test meta 引用。"""
+        """sample 视图列（**完整列元数据**，§10）：panel 列继承 ColumnMeta 全键，
+        fieldset 衍生字段继承 FieldMeta，未知列回退 name+data_type。"""
+        node = self._require_node("sample", sample)
         lf = self._sample_view_lf(sample)
-        return [{"name": c, "data_type": str(t)}
-                for c, t in zip(lf.collect_schema().names(), lf.collect_schema().dtypes())]
+        schema = lf.collect_schema()
+        fset = node.get("fieldset", "").split(":", 1)[1]
+        fnode = self._require_node("fieldset", fset)
+        panel = fnode.get("dataset", "").split(":", 1)[1]
+        panel_cols = {c["name"]: c for c in
+                      self._panel_columns(self._require_node("panel", panel))}
+        fs_fields = {f: FieldMeta.from_dict(fd)
+                     for f, fd in (fnode.get("fields") or {}).items()}
+        out = []
+        for c in schema.names():
+            if c in panel_cols:
+                out.append(panel_cols[c])
+            elif c in fs_fields:
+                fm = fs_fields[c]
+                out.append({
+                    "name": c, "display_name": fm.display_name or c,
+                    "description": fm.description, "data_type": str(schema[c]),
+                    "unit": fm.unit, "formula": fm.formula,
+                    "tags": list(fm.tags), "validated": fm.validated,
+                })
+            else:
+                out.append({"name": c, "data_type": str(schema[c])})
+        return out
 
     def _factor_keys(self, node: dict) -> list[str]:
         """factor 的 keys = 其 sample 的 keys（fieldset → panel）。"""

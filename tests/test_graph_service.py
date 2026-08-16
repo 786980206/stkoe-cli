@@ -1417,3 +1417,149 @@ class TestGraphAnalyzeImpact:
         assert data["column"] == "column:fieldset:fs1.x2"
         assert data["columns"]
         assert data["assets"]
+
+
+class TestSymbolScope:
+    """symbol_scope 提取：源头事件带标的集合，下游增量按「时间 × 标的」裁剪。"""
+
+    def _chain(self, svc, with_tester=True, gran="yearly"):
+        # 覆盖 index/data.parquet 加入测试必需列（tester 需要 r/ic/fv）
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
+                      "code": [1, 2]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "data.parquet"))
+        svc.table_add("m1")
+        svc.index_add("index", materialize_partition=gran)
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_check("fs1", "x2")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.feature_add("f1", "code * 2")
+        svc.factor_add("fac1", "f1", "sp1")
+        if with_tester:
+            svc.tester_add("t1", "fac1")
+        for t, n in [("panel", "ds1"), ("fieldset", "fs1"), ("sample", "sp1"),
+                     ("feature", "f1"), ("factor", "fac1")]:
+            getattr(svc, f"{t}_update")(n)
+        if with_tester:
+            svc.tester_update("t1")
+
+    @staticmethod
+    def _latest_event(node: dict) -> dict:
+        vl = node["version_list"]
+        return vl[str(max(int(k) for k in vl))]
+
+    def test_index_event_symbol_scope_from_file(self, svc):
+        """新增文件只含 sym=c → upsert 事件 symbol_scope=["c"]（读列 distinct）。"""
+        self._chain(svc, with_tester=False)
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "r": [0.03],
+                      "ic": ["G1"], "fv": [3.0], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        ev = self._latest_event(svc.store.get_node("index:index"))
+        assert ev["action"] == "upsert"
+        assert ev["symbol_scope"] == ["c"]
+        assert ev["datetime_scope"] == ["2024-01-02", "2024-01-02"]
+
+    def test_index_event_symbol_scope_union(self, svc):
+        """一次变化多个文件 → symbol 并集（去重）。"""
+        self._chain(svc, with_tester=False)
+        for f, syms, day in (("more1.parquet", ["c"], "2024-01-02"),
+                             ("more2.parquet", ["b", "c"], "2024-01-03")):
+            pl.DataFrame({"sym": syms, "date": [day] * len(syms),
+                          "r": [0.03] * len(syms), "ic": ["G1"] * len(syms),
+                          "fv": [3.0] * len(syms), "code": [3] * len(syms)}).write_parquet(
+                os.path.join(svc.data_dir, "index", "index", f))
+        svc.index_update("index")
+        ev = self._latest_event(svc.store.get_node("index:index"))
+        assert sorted(ev["symbol_scope"]) == ["b", "c"]
+        assert ev["datetime_scope"] == ["2024-01-02", "2024-01-03"]
+
+    def test_index_event_symbol_scope_from_partition(self, svc):
+        """symbol 为 hive 分区键 → 分区值提取（文件列同值，事件仍收敛到 ["c"]）。"""
+        self._chain(svc, with_tester=False)
+        d = os.path.join(svc.data_dir, "index", "index", "sym=c", "date=2024-01-02")
+        os.makedirs(d, exist_ok=True)
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "r": [0.03],
+                      "ic": ["G1"], "fv": [3.0], "code": [3]}).write_parquet(
+            os.path.join(d, "data.parquet"))
+        svc.index_update("index")
+        ev = self._latest_event(svc.store.get_node("index:index"))
+        assert ev["symbol_scope"] == ["c"]
+        assert ev["datetime_scope"] == ["2024-01-02", "2024-01-02"]
+
+    def test_table_event_without_symbol_col(self, svc):
+        """table（未登记 symbol_col）变化 → 事件 symbol_scope=None（全集）。"""
+        self._chain(svc, with_tester=False)
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"],
+                      "price": [3.5]}).write_parquet(
+            os.path.join(svc.data_dir, "table", "m1", "more.parquet"))
+        svc.table_update("m1")
+        ev = self._latest_event(svc.store.get_node("table:m1"))
+        assert ev["symbol_scope"] is None
+
+    def test_chain_incremental_carries_symbols(self, svc, monkeypatch):
+        """源头只变 c → 沿链增量：factor 只重算 c，a/b 旧行保留，事件带 symbol。"""
+        self._chain(svc)
+        calls: list = []
+        orig = GraphService._factor_compute
+
+        def spy(self, node, **kw):
+            calls.append((kw.get("dt_range"), kw.get("symbols")))
+            return orig(self, node, **kw)
+
+        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "r": [0.03],
+                      "ic": ["G1"], "fv": [3.0], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")
+        svc.sample_update("sp1")
+        svc.feature_update("f1")
+        svc.factor_update("fac1")
+        assert calls and calls[-1] == (("2024-01-02", "2024-01-02"), ["c"]), \
+            f"factor 增量应只重算变化标的: {calls}"
+        # 沿链事件带 symbol（供 tester 增量）
+        ev = self._latest_event(svc.store.get_node("factor:fac1"))
+        assert ev["symbol_scope"] == ["c"]
+        # 物化：a/b 旧行保留原值 + c 新增（分区桶重写，只动了 2024 桶）
+        df, total = svc.factor_get("fac1", count_total=True)
+        assert total == 3
+        rows = {r["sym"]: r for r in df.iter_rows(named=True)}
+        assert rows["c"]["f1"] == 6.0
+        assert rows["a"]["f1"] == 2.0 and rows["b"]["f1"] == 4.0
+        # tester 增量同样按 symbols 裁剪（不额外断言值，链路一致性已覆盖）
+        svc.tester_update("t1")
+
+    def test_flat_incremental_keeps_other_symbols(self, svc, monkeypatch):
+        """flat 物化（未知 materialize_partition）：keep 只删命中标的行。"""
+        self._chain(svc, with_tester=False, gran="none")
+        assert not any((svc.data_dir / "panel" / "ds1").glob("*=*"))  # flat 单文件
+        calls: list = []
+        orig = GraphService._factor_compute
+
+        def spy(self, node, **kw):
+            calls.append((kw.get("dt_range"), kw.get("symbols")))
+            return orig(self, node, **kw)
+
+        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "r": [0.03],
+                      "ic": ["G1"], "fv": [3.0], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        svc.panel_update("ds1")
+        pf, total = svc.panel_get("ds1", count_total=True)
+        assert total == 3
+        prows = {r["sym"]: r for r in pf.iter_rows(named=True)}
+        assert prows["c"]["code"] == 3 and prows["a"]["code"] == 1
+        svc.fieldset_update("fs1")
+        svc.sample_update("sp1")
+        svc.feature_update("f1")
+        svc.factor_update("fac1")
+        assert calls and calls[-1] == (("2024-01-02", "2024-01-02"), ["c"])
+        df, _ = svc.factor_get("fac1", count_total=True)
+        rows = {r["sym"]: r for r in df.iter_rows(named=True)}
+        assert rows["c"]["f1"] == 6.0
+        assert rows["a"]["f1"] == 2.0 and rows["b"]["f1"] == 4.0

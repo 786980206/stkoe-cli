@@ -236,6 +236,27 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 feat: symbol_scope 提取——源头事件带标的集合，增量按「时间 × 标的」裁剪
+
+- **背景**：P0 范围化事件只提取 datetime 区间，`symbol_scope` 恒 None（全集）——
+  源头只更新部分股票时，下游增量仍重算整个时间区间内的全部标的（多余计算）
+- **事件提取**（`_change_events`）：登记了 `symbol_col` 的资产（index）——
+  hive 分区键 `<symbol_col>=<v>` 直取分区值，否则读变化文件该列 **distinct**
+  （读数据页，P2 注释的原定代价）；removed 文件取不到分区值 → None（全集）；
+  未登记 symbol_col 的资产（table）恒 None；一次变化多文件 → 并集去重
+- **沿链透传**：`_upstream_scope` 返回 `([lo, hi], symbols)`；fieldset/factor/
+  tester 的 own_event 显式带 `symbol_scope`（controller 已有"own 未指定继承积累、
+  显式指定并集"逻辑）；窗口展开只作用于时间维度，symbol 原样透传
+- **增量裁剪**：4 个 update 的增量分支统一按「datetime 区间 × symbol 集合」
+  裁剪——flat 只删 `~(dt_expr & sym_expr)` 命中行（未变化标的不重算）、分区
+  `_rewrite_buckets` 加 `sym_expr` 参数（受影响桶判定与 keep 都收窄到命中行）；
+  `_factor_compute`/`_tester_build` 加 `symbols` 参数（sample 视图按标的过滤）
+- 测试：TestSymbolScope 6 例（单文件 distinct/多文件并集/分区路径提取/table 无
+  symbol_col 恒 None/沿链 factor 增量只算变化标的 + a/b 旧行保留 + 事件带 symbol/
+  flat 场景 keep 只删命中行）；相关文件 158 例绿
+- 文档：README §3 路线图勾选、§11.1 事件语义（symbol_scope 提取 + 裁剪）、
+  §14 E1 行更新、AGENTS.md
+
 ### 2026-08 feat(graph): 图算法 + 影响分析——graph analyze / graph impact
 
 - **新模块 `src/stkoe/graph/analyze.py`**（纯 Python，不依赖 graphqlite 内置

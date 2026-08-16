@@ -215,10 +215,12 @@ DataChangeEvent {
   按拓扑序一次更新整条依赖链（上游传导就绪检查的收口，见 §6.13）
 - ✅ **图算法 + 影响分析**：`graph analyze`（PageRank / 度中心性 / 弱连通分量，
   纯 Python）+ `graph impact`（资产 DEPENDS / 列 DERIVES 下游闭包，见 §6.13）
+- ✅ **symbol_scope 提取**：源头事件带变化标的集合，下游增量按「datetime 区间 ×
+  symbol 集合」裁剪（未变化标的不重算，见 §11.1）
 
 剩余规划：
-1. **可选 P2**：`symbol_scope` 提取（读数据页，datetime 区间已够用）；
-   stat 是否纳入图资产（G9 设计决策，当前保持不进图）；ModelNode 资产（G10 后续规划）
+1. **可选 P2**：stat 是否纳入图资产（G9 设计决策，当前保持不进图）；
+   ModelNode 资产（G10 后续规划）
 2. **测试**：图模块更多边界用例 + gRPC 全链路回归（持续）
 
 ## 4. 环境要求与安装
@@ -745,24 +747,30 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
    - 事件带 **datetime 区间 `[min, max]`**：hive 分区键 = datetime_col 时用分区值，
      否则读变化文件 footer 的 datetime 列 min/max（只读元数据、不读数据页）；
      取不到范围 → 全集（None）；
+   - 事件带 **symbol_scope（变化标的集合）**：登记了 `symbol_col` 的资产（index）——
+     hive 分区键 = symbol_col 时用分区值，否则读变化文件该列 distinct（读数据页）；
+     removed 文件取不到分区值 / 未登记 symbol_col 的资产（table）→ None（全集）；
    - `notify_change`：源头**铸版本 + 事件入 version_list + BFS 全链下游置脏**
      （valid=False，materialized=False）。
 2. **逐级 update 恢复**（必须按依赖顺序，先上游后下游；`assert_ready` 检查全链就绪）：
-   - `panel update`：join 视图重新物化落盘（**增量**——按积累事件 datetime 区间删受影响
-     时间桶并保留桶内区间外旧行合并写回，见 §6.5）；有积累事件 → 铸版本
-     （合并事件入 version_list）；出边 `required_version` 对齐被依赖方当前版本；
+   - `panel update`：join 视图重新物化落盘（**增量**——按积累事件「datetime 区间 ×
+     symbol 集合」删受影响时间桶/行并保留未变化标的行合并写回，见 §6.5）；
+     有积累事件 → 铸版本（合并事件入 version_list）；出边 `required_version` 对齐
+     被依赖方当前版本；
    - `fieldset update`：衍生字段重新物化（增量同上）+ 铸版本；
      **窗口展开**：字段带 `window_size`（滚动回看窗口 w）时，输入在 `[lo, hi]` 变化
      会让输出 `[lo, hi+w-1]` 都受影响——增量重算区间与自身事件 `datetime_scope`
      都按最大窗口向前展开（fieldset 字段 / feature 公式的 `window_size` 同理：
      factor 增量重算与自身事件按 feature 窗口展开；test 的 `d{no}` 是前向收益
-     窗口，按 `max(periods)-1` 向后展开 lo）；
+     窗口，按 `max(periods)-1` 向后展开 lo）；窗口只影响时间维度，symbol 集合
+     沿链原样透传（自身事件带 symbol_scope）；
    - `sample update` / `feature update`：只铸版本（无物化）；
    - `factor update`：**增量**——从全部源头（table/index）收集
-     `version > consumed` 的积累事件，得 datetime 区间；已有物化且区间明确 →
-     读旧物化删区间（受影响桶）+ **仅重算区间内行**合并写回；无区间 / 首次 / `--resync` →
-     全量重算；成功后记录各源头水位（`extra.consumed_versions`）；
-   - `tester update`：同 factor（在 sample 视图上按区间构造）。
+     `version > consumed` 的积累事件，得 datetime 区间 + symbol 集合；已有物化且
+     区间明确 → 读旧物化删「区间 × 标的」命中行（受影响桶）+ **仅重算命中行**
+     合并写回；无区间 / 首次 / `--resync` → 全量重算；成功后记录各源头水位
+     （`extra.consumed_versions`）；
+   - `tester update`：同 factor（在 sample 视图上按区间 × 标的构造）。
 3. **幂等**：update 时节点 valid 且依赖签名一致 → 直接返回 `changed=False` 跳过重建；
    上游变化已把 valid 置 False，因此再次 update 必然重建（保证不数据过期）。
 4. **读取**：`get` 时物化且 curated 读物化；curated 失效（签名变化）自动回退实时，
@@ -911,7 +919,7 @@ gclient> t:<task_id>
 
 | # | 定义（初始设计） | 当前实现 | 状态 |
 |---|---|---|---|
-| E1 | 事件必须带 `symbol_scope`/`datetime_scope`/`field_scope`/`action` | `service._change_events` 从文件 diff 提取范围：hive 分区路径含 `<datetime_col>=<v>` 时用分区值，其余读变化文件 footer 的 datetime 列 min/max（只读元数据）；`datetime_scope` 统一为 **[min, max] 区间**；added/changed → upsert，removed → delete | ✅ 已修；剩余 `symbol_scope` 仍为 None（P2 可选，见 §3） |
+| E1 | 事件必须带 `symbol_scope`/`datetime_scope`/`field_scope`/`action` | `service._change_events` 从文件 diff 提取范围：hive 分区路径含 `<datetime_col>=<v>` 时用分区值，其余读变化文件 footer 的 datetime 列 min/max（只读元数据）；`datetime_scope` 统一为 **[min, max] 区间**；added/changed → upsert，removed → delete；`symbol_scope`：登记了 `symbol_col` 的资产（index）从分区键/变化文件该列 distinct 提取（removed 文件回退全集），未登记资产恒 None | ✅ 已修 |
 | E2 | 物理删除 → delete 事件 → 下游按范围删 | removed 文件 → `action="delete"`（范围来自 catalog 指纹 `partition_path` 分区值；flat 无分区则 None 全集）；一次 scan 有增删时**记两个版本事件** | ✅ 已修 |
 | E3 | update 按积累事件范围增量 upsert/delete 进物化 | **沿链增量物化（全部物化资产）**：`_upstream_scope` 沿链收集直接依赖未消费事件 → datetime 区间；已有物化且区间明确 → 分区删受影响桶重算 / flat 删区间+合并写回；`--resync`/首次/无区间 → 全量；**get 三态**（已物化且 curated 读物化；本应物化未物化报错提示 update；sample/feature 恒实时） | ✅ 已修 |
 | E4 | materialize 成功后边水位对齐 + 节点有效 | `graph.resolve` 支持 `mark_materialized`/`extra`；panel/sample/feature update 统一走 resolve——有事件铸版本入 version_list、出边水位对齐、无事件不空 bump（幂等）；事件水位链在中间节点不再断档 | ✅ 已修 |

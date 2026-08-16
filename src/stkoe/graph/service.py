@@ -339,31 +339,36 @@ class GraphService:
 
     def _change_events(self, asset_type: str, name: str, diffs: list,
                        cat: dict[str, dict]) -> list[DataChangeEvent]:
-        """物理变化 → 范围化事件（V3.0 设计语义，P0-1）。
+        """物理变化 → 范围化事件（V3.0 设计语义，P0-1 + symbol_scope）。
 
         - added/changed 文件 → ``action="upsert"``；removed 文件 → ``action="delete"``；
         - ``datetime_scope``：hive 分区路径含 ``<datetime_col>=<v>`` 时直接用分区值；
           其余从变化文件 footer 的 datetime 列 min/max 提取（只读元数据不读数据页）；
           removed 文件已不在磁盘，用 catalog 指纹的 ``partition_path`` 提取分区值，
           取不到则范围 None（全集，保守）；
-        - ``symbol_scope``/``field_scope``：None（时间范围内的全部标的/文件全部列）。
+        - ``symbol_scope``：资产登记了 ``symbol_col``（index）时提取——hive 分区键
+          ``<symbol_col>=<v>`` 直取分区值；否则读变化文件该列的 distinct 值
+          （读数据页，P2）；removed 文件取不到分区值回退 None（全集）；未登记
+          symbol_col 的资产（table 等）恒 None；
+        - ``field_scope``：None（文件全部列）。
         """
         node = self.store.get_node(node_id(asset_type, name)) or {}
         datetime_col = node.get("datetime_col", "date")
+        symbol_col = node.get("symbol_col") or ""
         root = self._asset_root(asset_type, name)
 
-        def partition_values(rel: str, part_path: str) -> list[str]:
+        def partition_values(rel: str, part_path: str, key: str) -> list[str]:
             vals = []
             for seg in (part_path or T.partition_of(rel)).split("/"):
                 if not seg:
                     continue
                 k, _, v = seg.partition("=")
-                if k == datetime_col and v:
+                if k == key and v:
                     vals.append(v)
             return vals
 
         def scope_for(rel: str, part_path: str) -> list[str] | None:
-            scope = partition_values(rel, part_path)
+            scope = partition_values(rel, part_path, datetime_col)
             if (root / rel).exists():  # added/changed：footer min/max
                 try:
                     st = T.footer(root / rel)["stats"].get(datetime_col)
@@ -375,17 +380,41 @@ class GraphService:
                     pass
             return list(dict.fromkeys(s for s in scope if s is not None)) or None
 
+        def symbols_for(rel: str, part_path: str) -> list[str] | None:
+            """变化文件的标的集合：symbol 分区键直取；否则读该列 distinct（数据页）。"""
+            if not symbol_col:
+                return None
+            vals = partition_values(rel, part_path, symbol_col)
+            f = root / rel
+            if f.exists():
+                try:
+                    lf = pl.scan_parquet(f)
+                    if symbol_col in lf.collect_schema().names():
+                        vals.extend(lf.select(
+                            pl.col(symbol_col).cast(pl.String).unique())
+                            .collect().to_series().to_list())
+                except Exception:
+                    pass
+            return list(dict.fromkeys(v for v in vals if v is not None)) or None
+
         upsert_scope: list[str] = []
         delete_scope: list[str] = []
+        upsert_symbols: list[str] = []
+        delete_symbols: list[str] = []
         for d in diffs:
             part = (cat.get(d.rel_path) or {}).get("partition_path") or ""
             sc = scope_for(d.rel_path, part)
-            if sc is None:
-                continue
+            syms = symbols_for(d.rel_path, part)
             if d.kind == "removed":
-                delete_scope.extend(sc)
+                if sc is not None:
+                    delete_scope.extend(sc)
+                if syms is not None:
+                    delete_symbols.extend(syms)
             else:
-                upsert_scope.extend(sc)
+                if sc is not None:
+                    upsert_scope.extend(sc)
+                if syms is not None:
+                    upsert_symbols.extend(syms)
         upsert_scope = list(dict.fromkeys(upsert_scope))
         delete_scope = list(dict.fromkeys(delete_scope))
         had_upsert = any(d.kind != "removed" for d in diffs)
@@ -397,15 +426,18 @@ class GraphService:
 
         events = []
         # 有增改文件 → 至少一个 upsert 事件（范围取不到时为全集 None，保证下游置脏）；
-        # datetime_scope 统一为 [min, max] 区间（字符串/ISO 字典序可比），供增量物化过滤
+        # datetime_scope 统一为 [min, max] 区间（字符串/ISO 字典序可比），
+        # symbol_scope 为变化标的并集（None=全集不裁剪），供增量物化过滤
         if upsert_scope or had_upsert:
-            events.append(DataChangeEvent(action="upsert", symbol_scope=None,
-                                          datetime_scope=interval(upsert_scope),
-                                          field_scope=None))
+            events.append(DataChangeEvent(
+                action="upsert",
+                symbol_scope=list(dict.fromkeys(upsert_symbols)) or None,
+                datetime_scope=interval(upsert_scope), field_scope=None))
         if delete_scope or had_delete:
-            events.append(DataChangeEvent(action="delete", symbol_scope=None,
-                                          datetime_scope=interval(delete_scope),
-                                          field_scope=None))
+            events.append(DataChangeEvent(
+                action="delete",
+                symbol_scope=list(dict.fromkeys(delete_symbols)) or None,
+                datetime_scope=interval(delete_scope), field_scope=None))
         return events
 
     def _ensure_fresh(self, asset_type: str, name: str) -> None:
@@ -786,17 +818,21 @@ class GraphService:
         out_path = out_dir / ("data.parquet" if not pkeys else "")
         scope = self._upstream_scope(node)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
-            lo, hi = scope
+            (lo, hi), syms = scope
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
-            inc, _ = self._panel_lazy(name, where=dt_expr, live=True)
+            sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
+            where = dt_expr & sym_expr if sym_expr is not None else dt_expr
+            inc, _ = self._panel_lazy(name, where=where, live=True)
             df_inc = inc.collect()
             if pkeys:
                 # 分区级增量：删区间涉及的桶并保留桶内区间外旧行 → 合并写回
                 old = pl.read_parquet(out_dir, hive_partitioning=True)
-                self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt)
+                self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt,
+                                      sym_expr=sym_expr)
             else:
                 old = pl.read_parquet(out_path)
-                keep = old.filter(~dt_expr)
+                keep = old.filter(~(dt_expr & sym_expr)) if sym_expr is not None \
+                    else old.filter(~dt_expr)
                 df = pl.concat([keep, df_inc], how="vertical_relaxed"
                                ).unique(subset=keys, keep="last").sort(keys)
                 df.write_parquet(out_path)
@@ -1117,18 +1153,23 @@ class GraphService:
         # [lo, hi+w-1]，增量重算区间与自身事件范围都按最大回看宽度向前展开
         win = max((f.window_size for f in fields), default=0)
         if scope and win > 1:
-            scope = _expand_scope(scope, forward=win - 1)
+            (lo, hi), syms = scope
+            scope = (_expand_scope([lo, hi], forward=win - 1), syms)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
-            lo, hi = scope
+            (lo, hi), syms = scope
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
-            base, _ = self._panel_lazy(panel, where=dt_expr)
+            sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
+            where = dt_expr & sym_expr if sym_expr is not None else dt_expr
+            base, _ = self._panel_lazy(panel, where=where)
             df_inc = engine.scan(base, keys, fields).collect()
             if pkeys:
                 old = pl.read_parquet(out_dir, hive_partitioning=True)
-                self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt)
+                self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt,
+                                      sym_expr=sym_expr)
             else:
                 old = pl.read_parquet(out_path)
-                keep = old.filter(~dt_expr)
+                keep = old.filter(~(dt_expr & sym_expr)) if sym_expr is not None \
+                    else old.filter(~dt_expr)
                 df = pl.concat([keep, df_inc], how="vertical_relaxed"
                                ).unique(subset=keys, keep="last").sort(keys)
                 df.write_parquet(out_path)
@@ -1144,7 +1185,8 @@ class GraphService:
         }, own_event=DataChangeEvent(
             action="upsert",
             field_scope=[f.name for f in fields],  # 记录自身重算的字段，而非上游列
-            datetime_scope=scope if scope else None,  # 窗口展开后的范围，供下游增量
+            datetime_scope=scope[0] if scope else None,  # 窗口展开后的范围，供下游增量
+            symbol_scope=scope[1] if scope else None,    # 变化标的集合，供下游增量
         ))
         return {"name": name, "materialized": True, "valid": True, "rows": rows,
                 "fields_count": len(fields), "version": m["version"]}
@@ -1460,21 +1502,25 @@ class GraphService:
 
     def _rewrite_buckets(self, old: pl.DataFrame, df_inc: pl.DataFrame,
                          dt_expr: pl.Expr, pkeys: list[str], out_dir: Path,
-                         gran: str, dt_col: str) -> pl.DataFrame:
+                         gran: str, dt_col: str,
+                         *, sym_expr: pl.Expr | None = None) -> pl.DataFrame:
         """分区级增量写回：删受影响桶后，把**桶内区间外旧行**与增量行合并写回。
 
         时间桶粒度（yearly/monthly/daily）粗于增量区间（天级）——直接删桶会丢掉
         桶内未变化的行；且增量新日期可能与旧数据**同桶**（affected 取两边的并集）。
-        故：受影响桶 = 旧数据命中区间行的桶 ∪ 增量数据所在桶；保留受影响桶内
-        ``~dt_expr`` 旧行，与增量合并后整体重写这些桶。
+        故：受影响桶 = 旧数据命中「区间（×标的）」行的桶 ∪ 增量数据所在桶；保留
+        受影响桶内 ``~(dt_expr [& sym_expr])`` 旧行，与增量合并后整体重写这些桶。
+        ``sym_expr`` 给出时（事件带 symbol_scope）命中判定收窄到变化标的，
+        未变化的标的行不重算。
         """
         key = pkeys[0]
         cut = {"yearly": 4, "monthly": 7, "daily": 10}.get(gran, 4)
         part_expr = pl.col(dt_col).cast(pl.String).str.slice(0, cut).alias(key)
         inc_parts = df_inc.with_columns(part_expr)[key].unique().to_list()
-        affected = sorted(set(old.filter(dt_expr)[key].unique().to_list())
+        hit = dt_expr & sym_expr if sym_expr is not None else dt_expr
+        affected = sorted(set(old.filter(hit)[key].unique().to_list())
                           | set(inc_parts))
-        keep = old.filter(~dt_expr).filter(pl.col(key).is_in(affected)) \
+        keep = old.filter(~hit).filter(pl.col(key).is_in(affected)) \
             if affected else None
         for v in affected:
             shutil.rmtree(out_dir / f"{key}={v}", ignore_errors=True)
@@ -1511,20 +1557,29 @@ class GraphService:
             sub.mkdir(parents=True, exist_ok=True)
             df.filter(pl.col(key) == pl.lit(val)).write_parquet(sub / "data.parquet")
 
-    def _upstream_scope(self, node: dict) -> list[str] | None:
-        """最近上游（**直接依赖**）积累事件的 datetime 区间 [min, max]。
+    def _upstream_scope(self, node: dict) -> tuple[list[str], list[str] | None] | None:
+        """最近上游（**直接依赖**）积累事件的范围：``([lo, hi], symbols)``。
 
-        沿链收集（不找最上游 table/index）：上游 update 时已把消费的合并事件写入
-        自身 version_list（resolve 语义），``_accumulated`` 按出边 required_version
-        水位取未消费事件；无事件 / 无明确范围 → None（全量重算）。
+        datetime 取 [min, max] 区间（增量过滤用）；symbols 为未消费事件变化标的的
+        并集（None=全集不裁剪）。沿链收集（不找最上游 table/index）：上游 update
+        时已把消费的合并事件写入自身 version_list（resolve 语义），``_accumulated``
+        按出边 required_version 水位取未消费事件；无事件 / 无明确范围 → None
+        （全量重算）。
         """
         acc = self.graph._accumulated(node)
         scope: list[str] = []
+        symbols: list[str] = []
         for ev in (acc.get("upsert"), acc.get("delete")):
-            if ev and ev.datetime_scope:
-                scope.extend(ev.datetime_scope)
+            if ev:
+                if ev.datetime_scope:
+                    scope.extend(ev.datetime_scope)
+                if ev.symbol_scope:
+                    symbols.extend(ev.symbol_scope)
         scope = [s for s in scope if s is not None]
-        return [min(scope), max(scope)] if scope else None
+        if not scope:
+            return None
+        symbols = list(dict.fromkeys(symbols))
+        return [min(scope), max(scope)], (symbols or None)
 
     def _factor_hash(self, node: dict) -> str:
         """物化一致性签名 = 上游 feature/sample 版本 + engine/pipeline/factor_col。"""
@@ -1540,10 +1595,12 @@ class GraphService:
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
     def _factor_compute(self, node: dict, *, partition: str | None = None,
-                        dt_range: tuple[str, str] | None = None) -> pl.DataFrame:
+                        dt_range: tuple[str, str] | None = None,
+                        symbols: list[str] | None = None) -> pl.DataFrame:
         """实时计算最终因子：sample 视图求 feature 公式 → 拼索引+因子列 → 算子链。
 
-        ``dt_range=(lo, hi)`` 时只计算该时间区间内的行（增量物化用，字符串/ISO 可比）。
+        ``dt_range=(lo, hi)`` / ``symbols`` 给出时只计算「时间区间 × 标的集合」
+        内的行（增量物化用，字符串/ISO 可比）。
         """
         feature = node.get("feature", "").split(":", 1)[1]
         sample = node.get("sample", "").split(":", 1)[1]
@@ -1554,6 +1611,8 @@ class GraphService:
             dt = keys[-1]
             lo, hi = dt_range
             lf = lf.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
+        if symbols:
+            lf = lf.filter(pl.col(keys[0]).is_in(symbols))
         engine = get_factor_engine(node.get("engine") or "polars")
         field = engine.field(lf, fnode.get("formula") or "")
         src_rows = lf.select(pl.len()).collect().item()
@@ -1689,17 +1748,21 @@ class GraphService:
         scope = None if resync else self._upstream_scope(node)
         fwin = int(fnode.get("window_size") or 0)
         if scope and fwin > 1:
-            scope = _expand_scope(scope, forward=fwin - 1)
+            (lo, hi), syms = scope
+            scope = (_expand_scope([lo, hi], forward=fwin - 1), syms)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
-            lo, hi = scope
+            (lo, hi), syms = scope
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
-            inc = self._factor_compute(node, dt_range=(lo, hi))
+            sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
+            inc = self._factor_compute(node, dt_range=(lo, hi), symbols=syms)
             if pkeys:
                 old = pl.read_parquet(out_dir, hive_partitioning=True)
-                df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt)
+                df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt,
+                                           sym_expr=sym_expr)
             else:
                 old = pl.read_parquet(out_path)
-                keep = old.filter(~dt_expr)
+                keep = old.filter(~(dt_expr & sym_expr)) if sym_expr is not None \
+                    else old.filter(~dt_expr)
                 df = pl.concat([keep, inc], how="vertical_relaxed"
                                ).unique(subset=keys, keep="last").sort(keys)
                 df.write_parquet(out_path)
@@ -1719,7 +1782,8 @@ class GraphService:
         }, own_event=DataChangeEvent(
             action="upsert",
             field_scope=[node.get("factor_col") or feature],
-            datetime_scope=scope if scope else None,
+            datetime_scope=scope[0] if scope else None,
+            symbol_scope=scope[1] if scope else None,
         ))
         version_after = m["version"]
         return {"name": name, "version_before": version_before,
@@ -1778,10 +1842,12 @@ class GraphService:
         ]
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
-    def _tester_build(self, node: dict, *, dt_range: tuple[str, str] | None = None) -> pl.DataFrame:
+    def _tester_build(self, node: dict, *, dt_range: tuple[str, str] | None = None,
+                      symbols: list[str] | None = None) -> pl.DataFrame:
         """测试数据集：sample 视图（含测试必需列）+ factor 列 → prepare_factor_data。
 
-        ``dt_range=(lo, hi)`` 时只构造该时间区间内的行（增量物化用）。
+        ``dt_range=(lo, hi)`` / ``symbols`` 给出时只构造「时间区间 × 标的集合」
+        内的行（增量物化用）。
         """
         factor = node.get("factor", "").split(":", 1)[1]
         fnode = self._require_node("factor", factor)
@@ -1793,6 +1859,8 @@ class GraphService:
             dt = keys[-1]
             lo, hi = dt_range
             view = view.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
+        if symbols:
+            view = view.filter(pl.col(keys[0]).is_in(symbols))
         view = view.collect()
         returns = node.get("returns", "r")
         groupby = node.get("groupby", "ic")
@@ -1802,7 +1870,7 @@ class GraphService:
         if missing:
             raise ValueError(f"sample 缺少测试必需列: {missing}（需要 date/sym 与 "
                              f"returns/groupby/marketcap）")
-        fdf = self._factor_compute(fnode, dt_range=dt_range)
+        fdf = self._factor_compute(fnode, dt_range=dt_range, symbols=symbols)
         base = (
             view.select(*[pl.col(c) for c in need])
             .with_columns(pl.lit(1, dtype=pl.Int32).alias("sample"))
@@ -1950,17 +2018,21 @@ class GraphService:
         # [lo, hi] 变化 → 输出受影响 [hi-no+1, hi]，重算区间按最大 period 向后展开
         max_no = max(spec.periods, default=0)
         if scope and max_no > 1:
-            scope = _expand_scope(scope, back=max_no - 1)
+            (lo, hi), syms = scope
+            scope = (_expand_scope([lo, hi], back=max_no - 1), syms)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
-            lo, hi = scope
+            (lo, hi), syms = scope
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
-            inc = self._tester_build(node, dt_range=(lo, hi))
+            sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
+            inc = self._tester_build(node, dt_range=(lo, hi), symbols=syms)
             if pkeys:
                 old = pl.read_parquet(out_dir, hive_partitioning=True)
-                df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt)
+                df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt,
+                                           sym_expr=sym_expr)
             else:
                 old = pl.read_parquet(out_path)
-                keep = old.filter(~dt_expr)
+                keep = old.filter(~(dt_expr & sym_expr)) if sym_expr is not None \
+                    else old.filter(~dt_expr)
                 df = pl.concat([keep, inc], how="vertical_relaxed"
                                ).unique(subset=keys, keep="last").sort(keys)
                 df.write_parquet(out_path)

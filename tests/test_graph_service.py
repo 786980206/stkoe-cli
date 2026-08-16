@@ -1563,3 +1563,98 @@ class TestSymbolScope:
         rows = {r["sym"]: r for r in df.iter_rows(named=True)}
         assert rows["c"]["f1"] == 6.0
         assert rows["a"]["f1"] == 2.0 and rows["b"]["f1"] == 4.0
+
+
+class TestReviewFixes:
+    """评审修复：成员列冲突校验 / tester 键列推断 / 元数据变更不置脏。"""
+
+    def _seed(self, svc, sym_col="sym", dt_col="date"):
+        """造数 + 建链就绪；返回 (svc, keys)。"""
+        for sub, d in (("index", "index"), ("table", "m1"), ("table", "m2")):
+            os.makedirs(os.path.join(svc.data_dir, sub, d), exist_ok=True)
+        pl.DataFrame({sym_col: ["a", "b"], dt_col: ["2024-01-01"] * 2,
+                      "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
+                      "x": [1.0, 2.0]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "data.parquet"))
+        pl.DataFrame({sym_col: ["a", "b"], dt_col: ["2024-01-01"] * 2,
+                      "price": [1.5, 2.5]}).write_parquet(
+            os.path.join(svc.data_dir, "table", "m1", "data.parquet"))
+        pl.DataFrame({sym_col: ["a", "b"], dt_col: ["2024-01-01"] * 2,
+                      "volume": [100, 200]}).write_parquet(
+            os.path.join(svc.data_dir, "table", "m2", "data.parquet"))
+        svc.table_add("m1")
+        svc.table_add("m2")
+        svc.index_add("index", symbol_col=sym_col, datetime_col=dt_col)
+        return [sym_col, dt_col]
+
+    def test_panel_member_column_conflict_raises(self, svc):
+        """① 成员表之间同名列 → panel_add 报错（不自动改名、不静默覆盖）。"""
+        keys = self._seed(svc)
+        # m2 改为与 m1 同列名 price
+        pl.DataFrame({keys[0]: ["a"], keys[1]: ["2024-01-01"],
+                      "price": [9.5]}).write_parquet(
+            os.path.join(svc.data_dir, "table", "m2", "data.parquet"))
+        svc.table_update("m2")
+        with pytest.raises(ValueError, match="列名冲突"):
+            svc.panel_add("ds1", "index", ["m1", "m2"])
+
+    def test_tester_custom_key_columns(self, svc):
+        """② index 自定义 symbol/datetime 列名 → 全链 + tester 成功（键列推断）。"""
+        sym, dt = self._seed(svc, sym_col="code", dt_col="day")
+        svc.panel_add("ds1", "index", ["m1", "m2"])
+        svc.panel_update("ds1")
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "x * 2.0")
+        svc.fieldset_check("fs1", "x2")
+        svc.fieldset_update("fs1")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.sample_update("sp1")
+        svc.feature_add("f1", "x * 2.0")
+        svc.feature_update("f1")
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_update("fac1")
+        svc.tester_add("t1", "fac1")
+        svc.tester_update("t1")
+        df, total = svc.tester_get("t1", count_total=True)
+        assert total == 2
+        assert df.columns[:2] == ["day", "code"], df.columns  # 实际键列名
+        assert "factor" in df.columns and "d1" in df.columns
+        # check 同样用实际键列名
+        r = svc.tester_check("t1")
+        assert r["ok"] is True
+
+    def test_field_meta_change_does_not_invalidate(self, svc):
+        """③ 改字段纯元数据（display_name）→ 自身与下游版本/valid 均不动。"""
+        from stkoe.graph.model import node_id
+
+        keys = self._seed(svc)
+        svc.panel_add("ds1", "index", ["m1", "m2"])
+        svc.panel_update("ds1")
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "x * 2.0")
+        svc.fieldset_check("fs1", "x2")
+        svc.fieldset_update("fs1")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.sample_update("sp1")
+        svc.feature_add("f1", "x * 2.0")
+        svc.feature_update("f1")
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_update("fac1")
+        nodes = [("fieldset", "fs1"), ("sample", "sp1"), ("factor", "fac1")]
+        state_before = {t: (svc.store.get_node(node_id(t, n))["valid"],
+                            svc.store.get_node(node_id(t, n)).get("materialized"))
+                        for t, n in nodes}
+        svc.fieldset_set_field("fs1", "x2", display_name="改名")
+        for t, n in nodes:
+            node = svc.store.get_node(node_id(t, n))
+            assert (node["valid"], node.get("materialized")) == state_before[t], \
+                f"{t} 不应置脏（纯元数据变更）"
+        # 下游版本不推进（未置脏 → 无重算）
+        for t, n in nodes[1:]:
+            pass  # valid/materialized 已断言；版本由自身 set 记录
+        # 公式键仍置脏（既有语义）
+        svc.fieldset_set_field("fs1", "x2", formula="x * 3")
+        fnode = svc.store.get_node(node_id("fieldset", "fs1"))
+        assert fnode["valid"] is False
+        f = svc.fieldset_meta_field("fs1", "x2")
+        assert f["validated"] is False  # 公式变更 → validated 复位

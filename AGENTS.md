@@ -252,6 +252,34 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
   （tempfile.mkdtemp），残留目录不再复用
 - 文档：AGENTS.md
 
+### 2026-08 评审修复批次 1：成员列冲突校验 / tester 键列推断 / 元数据不置脏 / 增量惰性流式 / 物化排序时间优先
+
+- **① panel 成员列冲突校验**（`panel_add`）：成员表之间同名列 → 报错
+  （`成员表列名冲突: x 同时存在于 m1 与 m2`）——不再静默覆盖（曾静默丢数据），
+  不自动重命名；与 index 同名成员列仍跳过（index 优先，既有语义）
+- **② tester 键列从上游推断**：`tester_add`/`_tester_build`/`tester_check` 不再
+  硬编码 `date/sym`——从 factor/sample keys 推断（keys[0]=symbol、keys[-1]=
+  datetime）；`prepare_factor_data`/`_fwd_return_exprs` 参数化键列名（over/排序/
+  date_range 过滤用实际列名），index 自定义 symbol_col/datetime_col 时 tester
+  全链路可用
+- **③ 字段纯元数据变更不置脏**：`controller.set` 新增 `propagate` 参数（控制
+  下游置脏，`self_invalidate` 控制自身）；`FieldsetHandler.set_field` 区分公式键
+  （formula/window_size → 置脏自身+下游，既有语义）与纯元数据键
+  （display_name/description/unit/tags → 只更新不置脏）；`required_fields` 写回
+  同步加 `propagate=False`——改显示名/单位不再触发全链重算（版本事件仍记录，审计语义）
+- **④ 增量物化惰性过滤 + 流式写盘**：4 个 update 增量分支 `read_parquet` 全量
+  读入 → `scan_parquet().filter().collect()`（keep 行级裁剪、受影响桶判定只读
+  part 列）；`_rewrite_buckets` 接受 LazyFrame；`_write_partitioned` 接受
+  LazyFrame 用 `sink_parquet` **流式落盘**（全量物化不整表入内存）
+- **⑤ 物化存储排序时间优先**：panel/fieldset/factor/tester 物化（全量与 flat
+  增量）按 `(datetime, symbol)` 排序（先时间后标的；分区桶内同序）——
+  index 是用户本地表无法控制排序，衍生资产存储统一时间主序，时间窗口读取
+  局部性好
+- 测试：TestReviewFixes 3 例（成员冲突报错/自定义键列名 tester 全链/元数据不
+  置脏+公式键仍置脏）；全量 253 用例绿；200 万行冒烟：全量链 10.5s、增量
+  小文件全链 2.7s（无回退）
+- 文档：AGENTS.md
+
 ### 2026-08 perf: 列级性能基准与优化——宽 panel（206 列）全链 ~5.4s、增量小文件 panel 2.2x
 
 - **基准场景**：50 万行（1000×500）× 多成员表合成 panel——窄表 8 列（index+m1）

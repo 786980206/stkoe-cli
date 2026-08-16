@@ -27,15 +27,16 @@ def ts_cret(returns: pl.Expr, d: int) -> pl.Expr:
     return (cum.shift(-d).over("sym") - cum).exp() - 1
 
 
-def _fwd_return_exprs(periods: list[int]) -> list[tuple[str, pl.Expr]]:
-    """多个 d 共享一次 ``cum_sum().over("sym")`` 的前向收益表达式（性能优化）。
+def _fwd_return_exprs(periods: list[int], sym_col: str = "sym") -> list[tuple[str, pl.Expr]]:
+    """多个 d 共享一次 ``cum_sum().over(sym_col)`` 的前向收益表达式（性能优化）。
 
     ``ts_cret`` 每个 period 都会重算 ``cum_sum`` 窗口（大表上开销明显）；
     这里把累计对数收益物化到 ``_cum`` 列（先一步 with_columns），各 d 的
     shift 表达式共享它（polars with_columns 同批内不能引用新列，故分两步）。
+    ``sym_col`` 为实际标的列名（index symbol_col 可自定义）。
     """
     return [(f"d{d}",
-             (pl.col("_cum").shift(-d).over("sym") - pl.col("_cum")).exp() - 1)
+             (pl.col("_cum").shift(-d).over(sym_col) - pl.col("_cum")).exp() - 1)
             for d in periods]
 
 
@@ -46,22 +47,27 @@ def _quantile_expr(factor: pl.Expr, keys: list[str], quantiles: int) -> pl.Expr:
     return (rank.truediv(cnt) * quantiles).ceil().cast(pl.Int32).clip(1, quantiles)
 
 
-def prepare_factor_data(frame: pl.DataFrame, spec: FactorTesterSpec) -> pl.DataFrame:
+def prepare_factor_data(frame: pl.DataFrame, spec: FactorTesterSpec,
+                        keys: list[str] | None = None) -> pl.DataFrame:
     """把 (date/sym/sample/returns/group/marketcap/factor) 底表加工成测试数据集
 
     - 前向收益 ``d{no} = ts_cret(returns, -no)``（sym 内按 date 升序；多个 period
       共享一次 cum_sum 窗口计算）
     - 样本重整：sample=1(观测)/0(非观测)/-1(因子为空被剔除)；因子为空则剔除因子
     - 因子分位 ``factor_quantile``：按 date（by_group 时 +group）截面分位
-    - 过滤 date_range，按 date/sym 排序
+    - 过滤 date_range，按**时间优先**（datetime, symbol）排序
+    - ``keys``：键列名 ``[symbol, datetime]``（默认 ``["sym", "date"]``）——index
+      的 symbol/datetime 列名可自定义，tester 按实际键列名构造
     """
-    df = frame.sort(["sym", "date"])
+    sym_col = keys[0] if keys else "sym"
+    dt_col = keys[-1] if keys else "date"
+    df = frame.sort([sym_col, dt_col])
     out = (
         df.with_columns(
-            (1 + pl.col("returns")).log().cum_sum().over("sym").alias("_cum")
+            (1 + pl.col("returns")).log().cum_sum().over(sym_col).alias("_cum")
         )
         .with_columns(
-            *[e.alias(name) for name, e in _fwd_return_exprs(spec.periods)]
+            *[e.alias(name) for name, e in _fwd_return_exprs(spec.periods, sym_col)]
         )
         .drop("_cum")
         .with_columns(
@@ -78,14 +84,14 @@ def prepare_factor_data(frame: pl.DataFrame, spec: FactorTesterSpec) -> pl.DataF
             .alias("factor")
         )
     )
-    keys = ["date", "group"] if spec.by_group else ["date"]
+    quant_keys = [dt_col, "group"] if spec.by_group else [dt_col]
     out = out.with_columns(
-        _quantile_expr(pl.col("factor"), keys, spec.quantiles).alias("factor_quantile")
+        _quantile_expr(pl.col("factor"), quant_keys, spec.quantiles).alias("factor_quantile")
     )
     out = out.filter(
-        (pl.col("date") >= pl.lit(spec.date_range[0]))
-        & (pl.col("date") <= pl.lit(spec.date_range[1]))
-    ).sort(["date", "sym"])
+        (pl.col(dt_col) >= pl.lit(spec.date_range[0]))
+        & (pl.col(dt_col) <= pl.lit(spec.date_range[1]))
+    ).sort([dt_col, sym_col])
     return out.with_columns(pl.col("factor_quantile").cast(pl.Int32))
 
 

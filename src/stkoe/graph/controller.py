@@ -202,12 +202,14 @@ class GraphController:
         return [self._meta(p) for p in self._store.list_nodes(label)]
 
     def set(self, asset_type: str, name: str, *, definition: bool = False,
-            self_invalidate: bool = True, **kwargs: Any) -> dict:
+            self_invalidate: bool = True, propagate: bool = True,
+            **kwargs: Any) -> dict:
         """更新节点属性。
 
         - 定义键（见 DEFINITION_KEYS）变更 → 自身失效（valid/materialized=False，
           ``self_invalidate=False`` 可跳过，如 check 写回 validated 属状态更新）
-          + 下游置脏（valid=False）；
+          + 下游置脏（``propagate=False`` 可跳过，如字段**纯元数据**变更
+          display_name/unit/tags——不涉及公式/定义，下游无需重算）；
         - 未识别键一律进 extra；每次 set 版本递增并记事件。
         """
         props = self._require(asset_type, name)
@@ -253,7 +255,8 @@ class GraphController:
             if definition or (data_keys & def_keys):
                 if self_invalidate:
                     self._mark_stale(nid)
-                self._propagate_stale(nid)
+                if propagate:
+                    self._propagate_stale(nid)
         return self._meta(self._store.get_node(nid))
 
     def _fieldset_columns(self, props: dict, fields: dict) -> list[dict]:

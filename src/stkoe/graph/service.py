@@ -736,8 +736,20 @@ class GraphService:
         kw.pop("keys", None)  # 忽略旧 --keys 参数，以 index 推断为准
         col_maps = {"index": {c["name"]: c["name"]
                               for c in (idx_node.get("columns") or [])}}
+        # 成员表列名冲突校验：与 index 同名成员列跳过（index 优先，既有语义）；
+        # **成员表之间同名列报错**——不自动重命名、不静默覆盖（曾静默丢数据）
+        member_src: dict[str, str] = {}
         for t in self._table_names(tables):
             tnode = self._require_node("table", t)
+            for c in (tnode.get("columns") or []):
+                if c["name"] in col_maps["index"]:
+                    continue
+                if c["name"] in member_src and member_src[c["name"]] != t:
+                    raise ValueError(
+                        f"成员表列名冲突: {c['name']} 同时存在于 "
+                        f"{member_src[c['name']]} 与 {t}——panel 列名必须唯一"
+                        f"（不自动改名；请修改列名或不要同时挂载这两个成员表）")
+                member_src.setdefault(c["name"], t)
             col_maps[t] = {c["name"]: c["name"] for c in (tnode.get("columns") or [])
                            if c["name"] not in col_maps["index"]}
         return PanelHandler.add(self.graph, name, index,
@@ -839,21 +851,28 @@ class GraphService:
             df_inc = inc.collect()
             if pkeys:
                 # 分区级增量：删区间涉及的桶并保留桶内区间外旧行 → 合并写回
-                old = pl.read_parquet(out_dir, hive_partitioning=True)
+                # （惰性过滤：受影响桶判定只读 key 列，keep 行级裁剪后 collect）
+                old = pl.scan_parquet(out_dir, hive_partitioning=True)
                 self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt,
-                                      sym_expr=sym_expr)
+                                      sym_expr=sym_expr,
+                                      sort_cols=[dt, keys[0]] if dt else None)
             else:
-                old = pl.read_parquet(out_path)
-                keep = old.filter(~(dt_expr & sym_expr)) if sym_expr is not None \
-                    else old.filter(~dt_expr)
+                # flat：惰性过滤只读 keep 行（未命中标的/区间外的旧行）
+                keep = pl.scan_parquet(out_path).filter(
+                    ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
+                ).collect()
                 df = pl.concat([keep, df_inc], how="vertical_relaxed"
-                               ).unique(subset=keys, keep="last").sort(keys)
+                               ).unique(subset=keys, keep="last")
+                if dt:
+                    df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
                 df.write_parquet(out_path)
             rows = df_inc.height
         else:
             joined, _ = self._panel_lazy(name, live=True)
             rows = joined.select(pl.len()).collect().item()
-            self._write_partitioned(joined.collect(), out_dir, pkeys, gran=gran, dt_col=dt)
+            if dt:
+                joined = joined.sort([dt, keys[0]])  # 物化存储时间优先
+            self._write_partitioned(joined, out_dir, pkeys, gran=gran, dt_col=dt)
         m = self.graph.resolve("panel", name, extra={
             "dependency_hash": self._panel_hash(node),
             "materialized_at": _now_iso(),
@@ -1095,7 +1114,7 @@ class GraphService:
             # required_fields 是 formula 的派生信息（与 validated 同属状态更新）：
             # add_field/set_field 已按定义变化置脏过自身与下游，此处不重复置脏
             self.graph.set("fieldset", name, definition=True, fields=fields,
-                           self_invalidate=False)
+                           self_invalidate=False, propagate=False)
         return refs
 
     def fieldset_meta_field(self, name: str, field: str) -> dict:
@@ -1184,22 +1203,27 @@ class GraphService:
             base, _ = self._panel_lazy(panel, where=where)
             df_inc = engine.scan(base, keys, fields).collect()
             if pkeys:
-                old = pl.read_parquet(out_dir, hive_partitioning=True)
+                old = pl.scan_parquet(out_dir, hive_partitioning=True)
                 self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt,
-                                      sym_expr=sym_expr)
+                                      sym_expr=sym_expr,
+                                      sort_cols=[dt, keys[0]] if dt else None)
             else:
-                old = pl.read_parquet(out_path)
-                keep = old.filter(~(dt_expr & sym_expr)) if sym_expr is not None \
-                    else old.filter(~dt_expr)
+                keep = pl.scan_parquet(out_path).filter(
+                    ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
+                ).collect()
                 df = pl.concat([keep, df_inc], how="vertical_relaxed"
-                               ).unique(subset=keys, keep="last").sort(keys)
+                               ).unique(subset=keys, keep="last")
+                if dt:
+                    df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
                 df.write_parquet(out_path)
             rows = df_inc.height
         else:
             base, _ = self._panel_lazy(panel)
             out = engine.scan(base, keys, fields)
             rows = out.select(pl.len()).collect().item()
-            self._write_partitioned(out.collect(), out_dir, pkeys, gran=gran, dt_col=dt)
+            if dt:
+                out = out.sort([dt, keys[0]])  # 物化存储时间优先
+            self._write_partitioned(out, out_dir, pkeys, gran=gran, dt_col=dt)
         m = self.graph.resolve("fieldset", name, extra={
             "dependency_hash": self._fieldset_hash(node),
             "materialized_at": _now_iso(),
@@ -1521,10 +1545,11 @@ class GraphService:
             lf = lf.filter(pl.col("part").cast(pl.String).str.starts_with(partition))
         return lf.select(pl.all().exclude("part"))
 
-    def _rewrite_buckets(self, old: pl.DataFrame, df_inc: pl.DataFrame,
+    def _rewrite_buckets(self, old: pl.LazyFrame | pl.DataFrame, df_inc: pl.DataFrame,
                          dt_expr: pl.Expr, pkeys: list[str], out_dir: Path,
                          gran: str, dt_col: str,
-                         *, sym_expr: pl.Expr | None = None) -> pl.DataFrame:
+                         *, sym_expr: pl.Expr | None = None,
+                         sort_cols: list[str] | None = None) -> pl.DataFrame:
         """分区级增量写回：删受影响桶后，把**桶内区间外旧行**与增量行合并写回。
 
         时间桶粒度（yearly/monthly/daily）粗于增量区间（天级）——直接删桶会丢掉
@@ -1532,16 +1557,20 @@ class GraphService:
         故：受影响桶 = 旧数据命中「区间（×标的）」行的桶 ∪ 增量数据所在桶；保留
         受影响桶内 ``~(dt_expr [& sym_expr])`` 旧行，与增量合并后整体重写这些桶。
         ``sym_expr`` 给出时（事件带 symbol_scope）命中判定收窄到变化标的，
-        未变化的标的行不重算。
+        未变化的标的行不重算。**惰性过滤**：受影响桶判定只读 part 列、keep 行级
+        裁剪后才 collect（大表增量避免全量读入内存）；``sort_cols`` 给出时合并
+        结果按时间优先排序写盘。
         """
         key = pkeys[0]
         cut = {"yearly": 4, "monthly": 7, "daily": 10}.get(gran, 4)
         part_expr = pl.col(dt_col).cast(pl.String).str.slice(0, cut).alias(key)
         inc_parts = df_inc.with_columns(part_expr)[key].unique().to_list()
         hit = dt_expr & sym_expr if sym_expr is not None else dt_expr
-        affected = sorted(set(old.filter(hit)[key].unique().to_list())
-                          | set(inc_parts))
-        keep = old.filter(~hit).filter(pl.col(key).is_in(affected)) \
+        lf = old.lazy() if isinstance(old, pl.DataFrame) else old
+        affected = sorted(set(
+            lf.filter(hit).select(key).unique().collect()[key].to_list())
+            | set(inc_parts))
+        keep = lf.filter(~hit).filter(pl.col(key).is_in(affected)).collect() \
             if affected else None
         for v in affected:
             shutil.rmtree(out_dir / f"{key}={v}", ignore_errors=True)
@@ -1551,11 +1580,14 @@ class GraphService:
                 [keep, df_inc.with_columns(part_expr)], how="vertical_relaxed")
         else:
             merged = df_inc
+        if sort_cols:
+            merged = merged.sort(sort_cols)
         self._write_partitioned(merged, out_dir, pkeys, gran=gran, dt_col=dt_col)
         return merged
 
     @staticmethod
-    def _write_partitioned(df: pl.DataFrame, out_dir: Path, partition_keys: list[str],
+    def _write_partitioned(df_or_lf: pl.DataFrame | pl.LazyFrame, out_dir: Path,
+                           partition_keys: list[str],
                            gran: str = "", dt_col: str = "") -> None:
         """物化落盘：按分区键写 hive 目录 ``key=value/``；无分区键 → 单文件。
 
@@ -1563,20 +1595,22 @@ class GraphService:
         ``dt_col`` 提取桶值（yearly→YYYY、monthly→YYYY-MM、daily→YYYY-MM-DD，
         String/ISO 前缀切片）生成 ``part`` 列后写 ``part=<v>/data.parquet``。
         分区文件内**保留分区列**（读取 hive_partitioning=True 时用文件列，类型/列序不变）。
+        接受 LazyFrame 时用 ``sink_parquet`` **流式落盘**（全量物化不整表入内存）。
         """
+        lf = df_or_lf.lazy() if isinstance(df_or_lf, pl.DataFrame) else df_or_lf
         out_dir.mkdir(parents=True, exist_ok=True)
         if not partition_keys:
-            df.write_parquet(out_dir / "data.parquet")
+            lf.sink_parquet(out_dir / "data.parquet")
             return
         key = partition_keys[0]
         if key == "part":
             cut = {"yearly": 4, "monthly": 7, "daily": 10}.get(gran, 4)
-            df = df.with_columns(
+            lf = lf.with_columns(
                 pl.col(dt_col).cast(pl.String).str.slice(0, cut).alias("part"))
-        for val in df[key].unique().to_list():
+        for val in lf.select(key).unique().collect()[key].to_list():
             sub = out_dir / f"{key}={val}"
             sub.mkdir(parents=True, exist_ok=True)
-            df.filter(pl.col(key) == pl.lit(val)).write_parquet(sub / "data.parquet")
+            lf.filter(pl.col(key) == pl.lit(val)).sink_parquet(sub / "data.parquet")
 
     def _upstream_scope(self, node: dict) -> tuple[list[str], list[str] | None] | None:
         """最近上游（**直接依赖**）积累事件的范围：``([lo, hi], symbols)``。
@@ -1786,18 +1820,23 @@ class GraphService:
             sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
             inc = self._factor_compute(node, dt_range=(lo, hi), symbols=syms)
             if pkeys:
-                old = pl.read_parquet(out_dir, hive_partitioning=True)
+                old = pl.scan_parquet(out_dir, hive_partitioning=True)
                 df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt,
-                                           sym_expr=sym_expr)
+                                           sym_expr=sym_expr,
+                                           sort_cols=[dt, keys[0]] if dt else None)
             else:
-                old = pl.read_parquet(out_path)
-                keep = old.filter(~(dt_expr & sym_expr)) if sym_expr is not None \
-                    else old.filter(~dt_expr)
+                keep = pl.scan_parquet(out_path).filter(
+                    ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
+                ).collect()
                 df = pl.concat([keep, inc], how="vertical_relaxed"
-                               ).unique(subset=keys, keep="last").sort(keys)
+                               ).unique(subset=keys, keep="last")
+                if dt:
+                    df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
                 df.write_parquet(out_path)
         else:
             df = self._factor_compute(node)
+            if dt:
+                df = df.sort([dt, keys[0]])  # 物化存储时间优先
             self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
         # 物化成功 → resolve 收口：铸版本并记录**消费的合并事件**（own_event 带
         # 窗口展开后的 datetime_scope，供下游 test 沿链增量）+ 出边水位对齐
@@ -1896,7 +1935,10 @@ class GraphService:
         returns = node.get("returns", "r")
         groupby = node.get("groupby", "ic")
         marketcap = node.get("marketcap", "fv")
-        need = ["date", "sym", returns, groupby, marketcap]
+        # 键列跟随 factor keys（index 的 symbol/datetime 列名可自定义）
+        sym_col = keys[0] if keys else "sym"
+        dt_col = keys[-1] if keys else "date"
+        need = [dt_col, sym_col, returns, groupby, marketcap]
         view_cols = set(view.collect_schema().names())
         feat_name = fm.get("feature") or fnode.get("feature", "").split(":", 1)[1]
         formula = self._require_node("feature", feat_name).get("formula") or ""
@@ -1917,7 +1959,7 @@ class GraphService:
             .rename({fm["factor_col"]: "factor", returns: "returns",
                      groupby: "group", marketcap: "marketcap"})
         )
-        return prepare_factor_data(base, self._tester_spec(node))
+        return prepare_factor_data(base, self._tester_spec(node), keys=keys)
 
     def _tester_view_lf(self, name: str, *, where=None) -> pl.LazyFrame:
         """读测试数据集（lazy，第 1/3 态）：已物化（curated）→ 读物化 parquet；
@@ -1948,9 +1990,14 @@ class GraphService:
         fnode = self._require_node("factor", factor)
         fm = self._factor_meta_dict(factor)
         sample = fm["sample"]
+        keys = list(fm["keys"])
+        # 键列从 factor/sample keys 推断（不硬编码 date/sym）：index 的
+        # symbol_col/datetime_col 可自定义，tester 必须跟随实际键列名
+        sym_col = keys[0] if keys else "sym"
+        dt_col = keys[-1] if keys else "date"
         # 校验 sample 视图含测试必需列
         view_cols = {c["name"] for c in self._sample_view_cols(sample)}
-        need = ["date", "sym", returns, groupby, marketcap]
+        need = [dt_col, sym_col, returns, groupby, marketcap]
         missing = [c for c in need if c not in view_cols]
         if missing:
             raise ValueError(f"sample 缺少测试必需列 {missing}，不能创建测试数据集（需要 {need}）")
@@ -2004,8 +2051,10 @@ class GraphService:
         except Exception as e:
             return {"tester": name, "ok": False, "rows": 0, "columns": list(keys),
                     "message": f"测试数据集构造失败: {e}"}
-        need = ["date", "sym", "sample", "returns", "group", "marketcap",
-                "factor", "factor_quantile"]
+        # 输出列 = 实际键列名（index symbol/datetime 可自定义）+ 固定测试列
+        need = ([keys[-1], keys[0]] if keys else ["date", "sym"]) \
+            + ["sample", "returns", "group", "marketcap",
+               "factor", "factor_quantile"]
         missing = [c for c in need if c not in df.columns]
         if missing:
             return {"tester": name, "ok": False, "rows": df.height,
@@ -2065,18 +2114,23 @@ class GraphService:
             sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
             inc = self._tester_build(node, dt_range=(lo, hi), symbols=syms)
             if pkeys:
-                old = pl.read_parquet(out_dir, hive_partitioning=True)
+                old = pl.scan_parquet(out_dir, hive_partitioning=True)
                 df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt,
-                                           sym_expr=sym_expr)
+                                           sym_expr=sym_expr,
+                                           sort_cols=[dt, keys[0]] if dt else None)
             else:
-                old = pl.read_parquet(out_path)
-                keep = old.filter(~(dt_expr & sym_expr)) if sym_expr is not None \
-                    else old.filter(~dt_expr)
+                keep = pl.scan_parquet(out_path).filter(
+                    ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
+                ).collect()
                 df = pl.concat([keep, inc], how="vertical_relaxed"
-                               ).unique(subset=keys, keep="last").sort(keys)
+                               ).unique(subset=keys, keep="last")
+                if dt:
+                    df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
                 df.write_parquet(out_path)
         else:
             df = self._tester_build(node)
+            if dt:
+                df = df.sort([dt, keys[0]])  # 物化存储时间优先
             self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
         cols = [{"name": c, "display_name": c, "data_type": str(t)}
                 for c, t in zip(df.columns, df.dtypes)]

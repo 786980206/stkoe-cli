@@ -287,7 +287,14 @@ class FieldsetHandler:
         # 公式变更 → validated 复位
         if "formula" in kw and kw["formula"] != old.get("formula"):
             fields[field_name]["validated"] = False
-        return ctrl.set("fieldset", name, definition=True, fields=fields)
+        # 纯元数据键（display_name/description/unit/tags）不涉及定义：
+        # 不置脏自身也不置脏下游（改显示名/单位无需重算物化）；
+        # 公式键（formula/window_size）变更 → 置脏自身 + 下游（既有语义）
+        formula_keys = {"formula", "window_size"}
+        invalidate = bool(set(kw) & formula_keys)
+        return ctrl.set("fieldset", name, definition=invalidate,
+                        self_invalidate=invalidate, propagate=invalidate,
+                        fields=fields)
 
     @classmethod
     def meta(cls, ctrl: GraphController, name: str) -> dict:

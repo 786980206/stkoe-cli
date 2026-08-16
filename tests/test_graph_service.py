@@ -15,7 +15,12 @@ import shutil
 import polars as pl
 import pytest
 
+from stkoe.factor import ops as factor_ops
+from stkoe.factor_tester import ops as tester_ops
+from stkoe.graph import materialize as mat_ops
 from stkoe.graph.service import GraphService
+from stkoe.panel import ops as panel_ops
+from stkoe.sample import ops as sample_ops
 
 
 @pytest.fixture()
@@ -453,13 +458,13 @@ class TestPanelGraph:
         assert svc.panel_get("ds1").height == 2
 
         calls: list = []
-        orig = GraphService._panel_lazy
+        orig = panel_ops._panel_lazy
 
-        def spy(self, name, **kw):
+        def spy(svc, name, **kw):
             calls.append(kw.get("where"))
-            return orig(self, name, **kw)
+            return orig(svc, name, **kw)
 
-        monkeypatch.setattr(GraphService, "_panel_lazy", spy)
+        monkeypatch.setattr(panel_ops, "_panel_lazy", spy)
         pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3]}).write_parquet(
             os.path.join(svc.data_dir, "index", "index", "more.parquet"))
         svc.index_update("index")
@@ -566,11 +571,11 @@ class TestPanelGraph:
         df = pl.DataFrame({"sym": [], "date": [], "code": []},
                           schema={"sym": pl.String, "date": pl.String,
                                   "code": pl.Int64})
-        GraphService._write_partitioned(df, out_dir, ["part"], gran="yearly",
-                                        dt_col="date", clean=True)
+        mat_ops.write_partitioned(df, out_dir, ["part"], gran="yearly",
+                                  dt_col="date", clean=True)
         assert not any(out_dir.glob("part=*")), "空物化不应残留桶目录"
         assert (out_dir / "data.parquet").exists()
-        lf = GraphService._scan_materialized(out_dir)
+        lf = mat_ops.scan_materialized(out_dir)
         assert lf.collect().columns == ["sym", "date", "code"]
         assert lf.select(pl.len()).collect().item() == 0
 
@@ -848,13 +853,13 @@ class TestFactorGraph:
         assert svc.factor_get("fac1").height == 2
 
         calls: list = []
-        orig = GraphService._factor_compute
+        orig = factor_ops._factor_compute
 
-        def spy(self, node, **kw):
+        def spy(svc, node, **kw):
             calls.append(kw.get("dt_range"))
-            return orig(self, node, **kw)
+            return orig(svc, node, **kw)
 
-        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+        monkeypatch.setattr(factor_ops, "_factor_compute", spy)
 
         # 源头追加新日期文件 → upsert 事件 [01-02, 01-02] → 链置脏 → 依次 update
         # （dtype 与现有文件一致，避免多文件 scan 不 union schema）
@@ -882,13 +887,13 @@ class TestFactorGraph:
         svc.factor_add("fac1", "f1", "sp1")
         svc.factor_update("fac1")
         calls: list = []
-        orig = GraphService._factor_compute
+        orig = factor_ops._factor_compute
 
-        def spy(self, node, **kw):
+        def spy(svc, node, **kw):
             calls.append(kw.get("dt_range"))
-            return orig(self, node, **kw)
+            return orig(svc, node, **kw)
 
-        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+        monkeypatch.setattr(factor_ops, "_factor_compute", spy)
         svc.factor_update("fac1", resync=True)
         assert calls == [None]  # 全量：无 dt_range
 
@@ -919,13 +924,13 @@ class TestFactorBatch:
 
     def _view_spy(self, monkeypatch):
         calls: list = []
-        orig = GraphService._sample_view_lf
+        orig = sample_ops._sample_view_lf
 
-        def spy(self, sample, **kw):
+        def spy(svc, sample, **kw):
             calls.append(sample)
-            return orig(self, sample, **kw)
+            return orig(svc, sample, **kw)
 
-        monkeypatch.setattr(GraphService, "_sample_view_lf", spy)
+        monkeypatch.setattr(sample_ops, "_sample_view_lf", spy)
         return calls
 
     def test_factor_update_all_shared_view(self, svc, monkeypatch):
@@ -1114,13 +1119,13 @@ class TestTesterGraph:
         assert svc.tester_data("t1").height == 2
 
         calls: list = []
-        orig = GraphService._tester_build
+        orig = tester_ops._tester_build
 
-        def spy(self, node, **kw):
+        def spy(svc, node, **kw):
             calls.append(kw.get("dt_range"))
-            return orig(self, node, **kw)
+            return orig(svc, node, **kw)
 
-        monkeypatch.setattr(GraphService, "_tester_build", spy)
+        monkeypatch.setattr(tester_ops, "_tester_build", spy)
 
         # 源头追加新日期（含测试必需列；dtype 与现有文件一致）→ 链置脏 → 依次 update
         pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3],
@@ -1521,13 +1526,13 @@ class TestWindowScope:
         self._chain(svc, feat_win=5)
         self._seed(svc)
         calls: list = []
-        orig = GraphService._factor_compute
+        orig = factor_ops._factor_compute
 
-        def spy(self, node, **kw):
+        def spy(svc, node, **kw):
             calls.append(kw.get("dt_range"))
-            return orig(self, node, **kw)
+            return orig(svc, node, **kw)
 
-        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+        monkeypatch.setattr(factor_ops, "_factor_compute", spy)
         self._append_new_day(svc)
         svc.factor_update("fac1")
         assert calls and calls[-1] == ("2024-01-02", "2024-01-06"), \
@@ -1544,13 +1549,13 @@ class TestWindowScope:
         svc.tester_add("t1", "fac1")
         svc.tester_update("t1")  # 首次全量
         calls: list = []
-        orig = GraphService._tester_build
+        orig = tester_ops._tester_build
 
-        def spy(self, node, **kw):
+        def spy(svc, node, **kw):
             calls.append(kw.get("dt_range"))
-            return orig(self, node, **kw)
+            return orig(svc, node, **kw)
 
-        monkeypatch.setattr(GraphService, "_tester_build", spy)
+        monkeypatch.setattr(tester_ops, "_tester_build", spy)
         self._append_new_day(svc)
         svc.factor_update("fac1")
         svc.tester_update("t1")
@@ -1886,13 +1891,13 @@ class TestSymbolScope:
         """源头只变 c → 沿链增量：factor 只重算 c，a/b 旧行保留，事件带 symbol。"""
         self._chain(svc)
         calls: list = []
-        orig = GraphService._factor_compute
+        orig = factor_ops._factor_compute
 
-        def spy(self, node, **kw):
+        def spy(svc, node, **kw):
             calls.append((kw.get("dt_range"), kw.get("symbols")))
-            return orig(self, node, **kw)
+            return orig(svc, node, **kw)
 
-        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+        monkeypatch.setattr(factor_ops, "_factor_compute", spy)
         pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "r": [0.03],
                       "ic": ["G1"], "fv": [3.0], "code": [3]}).write_parquet(
             os.path.join(svc.data_dir, "index", "index", "more.parquet"))
@@ -1921,13 +1926,13 @@ class TestSymbolScope:
         self._chain(svc, with_tester=False, gran="none")
         assert not any((svc.data_dir / "panel" / "ds1").glob("*=*"))  # flat 单文件
         calls: list = []
-        orig = GraphService._factor_compute
+        orig = factor_ops._factor_compute
 
-        def spy(self, node, **kw):
+        def spy(svc, node, **kw):
             calls.append((kw.get("dt_range"), kw.get("symbols")))
-            return orig(self, node, **kw)
+            return orig(svc, node, **kw)
 
-        monkeypatch.setattr(GraphService, "_factor_compute", spy)
+        monkeypatch.setattr(factor_ops, "_factor_compute", spy)
         pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "r": [0.03],
                       "ic": ["G1"], "fv": [3.0], "code": [3]}).write_parquet(
             os.path.join(svc.data_dir, "index", "index", "more.parquet"))

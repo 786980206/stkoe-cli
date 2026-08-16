@@ -1,48 +1,41 @@
-"""GraphService：V3.0 资产统一服务（登记/依赖/版本走 graph，物理数据走 graph.db 指纹 + polars）。
+"""GraphService：V3.0 资产图服务（登记/依赖/版本/事件走 graph，物理指纹 graph.db 普通表）。
 
-替代 V2.0 table/dataset 等 controller 的 SQLite catalog 登记层：
-- **登记/元数据/依赖/版本** → graph 节点/边（graphqlite，graph.db）
-- **物理指纹**（stkoe_data_files / stkoe_file_stats）→ graph.db 普通表（同文件同事务）
-- **物理数据**（parquet 扫描/读取/prune）→ 复用 table/util.py / table/query.py 纯函数
-
-assets：``table`` / ``index``（独立主体）／``panel``。
+**分层**：本类只承载**图交互与共享基础设施**——
+- 图能力：节点/边/版本/事件（``_scan_disk``/``_change_events``/``_resolve_col_meta``/
+  ``_upstream_scope``/``update_cascade`` …）与通用读取（``_read_lazy``/``_get_data``/
+  ``_collect_page``）；
+- 对外 API：table/index/panel/fieldset/sample/feature/factor/tester 各资产的公共
+  方法**仅薄委托**到对应资产模块的 ``ops.py``（业务实现全部在资产模块内，如
+  ``table/ops.py`` / ``panel/ops.py``；示例：``panel_add`` 实现见 ``panel/ops.py``），
+  保持 Execute/CLI/测试既有调用不变；跨模块共享的视图/计算能力（``_panel_lazy`` 等）
+  也经本类的薄委托调用，便于统一入口与测试 monkeypatch。
 """
 from __future__ import annotations
 
-import hashlib
-import re
-import shutil
-import time
-from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
-from ..factor.engine import get_engine as get_factor_engine
-from ..factor.engine import parse_pipeline
-from ..factor_tester.spec import FactorTesterSpec
-from ..factor_tester.tester import prepare_factor_data
 from ..jsonutil import dumps_str, loads
 from ..settings import load_config
-from ..table.errors import DEFAULT_IGNORE_COLS, TableExistsError
+from ..table.errors import DEFAULT_IGNORE_COLS
 from ..table import util as T
 from ..table.query import prune_files, to_expr
 from .controller import GraphController
 from .errors import AssetNotFoundError, CycleError
 from .events import DataChangeEvent
-from .handlers import (
-    FactorHandler,
-    FeatureHandler,
-    FieldsetHandler,
-    IndexHandler,
-    PanelHandler,
-    SampleHandler,
-    TableHandler,
-    TesterHandler,
-)
-from .model import ColumnMeta, FieldMeta, column_node_id, node_id, split_node_id
+from .model import ColumnMeta, column_node_id, node_id, split_node_id
 from .store import GraphStore
+from .version import now_iso
+from ..table import ops as table_ops
+from ..index import ops as index_ops
+from ..panel import ops as panel_ops
+from ..fieldset import ops as fieldset_ops
+from ..sample import ops as sample_ops
+from ..feature import ops as feature_ops
+from ..factor import ops as factor_ops
+from ..factor_tester import ops as tester_ops
 
 
 _ASSET_TYPES = ("table", "index", "panel", "fieldset", "sample", "feature",
@@ -54,82 +47,8 @@ _ASSET_TYPES = ("table", "index", "panel", "fieldset", "sample", "feature",
 _SYMBOL_SCAN_LIMIT = 500_000
 
 
-def _now_iso() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
-
-
-_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
-
-def _formula_refs(formula: str, candidates: set[str]) -> list[str]:
-    """公式引用列：提取公式中的标识符，与候选列名（panel/sample 视图列）求交。
-
-    只保留候选集合内的名字，避免把函数名/字面量误当列引用；保序去重。
-    """
-    return list(dict.fromkeys(m for m in _IDENT_RE.findall(formula or "")
-                              if m in candidates))
-
-
-def _expand_scope(scope, back: int = 0, forward: int = 0):
-    """按窗口展开 datetime 区间：``[lo, hi] → [lo-back, hi+forward]``。
-
-    滚动窗口语义（回看 w）：t 时刻输出用到 [t-w+1, t] 的输入 → 输入在 [lo, hi]
-    变化时输出受影响范围是 **[lo, hi+w-1]**（向前延伸）；前向收益类窗口（如
-    test 的 d{no}）则相反向后延伸 lo。非 ISO 日期/解析失败 → 原样返回。
-    """
-    if not scope or (not back and not forward):
-        return scope
-    try:
-        lo = (date.fromisoformat(scope[0]) - timedelta(days=back)).isoformat()
-        hi = (date.fromisoformat(scope[1]) + timedelta(days=forward)).isoformat()
-    except (ValueError, TypeError):
-        return scope
-    return [lo, hi]
-
-
-def _partition_hint(span: tuple[str, str] | None, gran: str) -> str:
-    """物化粒度引导：默认 yearly 时间桶下 index 数据跨多年 → 提示细化粒度。
-
-    增量重写按桶整桶替换——yearly 桶粒度粗，跨年数据的大范围/频繁增量会反复
-    重写整个年份桶；monthly/daily 桶可细分（见 ``_write_partitioned``）。
-    ``span`` 为 ``(datetime 最小, 最大)``（字符串/ISO 字典序），解析失败返回空。
-    """
-    if gran != "yearly" or not span or len(span) != 2:
-        return ""
-    lo, hi = str(span[0]), str(span[1])
-    if lo and hi and lo[:4] != hi[:4]:
-        return (f"index 数据跨 {lo[:4]}-{hi[:4]} 年：yearly 时间桶下增量重写会重写"
-                f"整个年份桶，数据量大或增量频繁建议 materialize_partition=monthly/"
-                f"daily（index set 调整，下游物化继承）")
-    return ""
-
-
-def _asof_join(left: pl.LazyFrame, right: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
-    """asof join：等值键 ``keys[:-1]``（by）+ 时间键 ``keys[-1]``（on，backward 就近匹配）。
-
-    on 键为 String 日期形态（如 "2024-01-01"）时 cast 成 Date 做 asof，
-    结果列 cast 回 String 保持输出类型（panel 下游公式依赖字符串日期比较）。
-    两侧已显式 ``sort(on)``，故 ``check_sortedness=False`` 跳过重复校验
-    （by 分组场景 polars 无法校验，会触发 UserWarning）。
-    """
-    on = keys[-1]
-    by = [k for k in keys if k != on]
-    schema = left.collect_schema()
-    is_str = on in schema and schema[on] == pl.String
-    if is_str:
-        l = left.with_columns(pl.col(on).str.to_date().alias(on)).sort(on)
-        r = right.with_columns(pl.col(on).str.to_date().alias(on)).sort(on)
-        out = l.join_asof(r, on=on, by=by, strategy="backward",
-                          check_sortedness=False)
-        return out.with_columns(pl.col(on).dt.strftime("%Y-%m-%d").alias(on))
-    l = left.sort(on)
-    r = right.sort(on)
-    return l.join_asof(r, on=on, by=by, strategy="backward",
-                       check_sortedness=False)
-
-
 class GraphService:
-    """统一资产服务：table / index / panel。"""
+    """统一资产服务：图交互 + 各资产公共 API 薄委托（业务实现见各资产模块 ops.py）。"""
 
     def __init__(self, data_dir: Path | str | None = None):
         if data_dir is None:
@@ -334,7 +253,7 @@ class GraphService:
                          "partition_by": pkeys,
                          "columns": new_cols,
                          "signature": T.signature(disk),
-                         "update_time": _now_iso()}
+                         "update_time": now_iso()}
                 self.store.patch_node(nid, **patch)
                 # 列节点图对账：源头列（table/index）随登记/重扫同步
                 self.graph.sync_columns(asset_type, name, new_cols)
@@ -515,10 +434,6 @@ class GraphService:
         df = lf.collect()
         return df, (total if total is not None else df.height)
 
-    # =====================================================================
-    # table
-    # =====================================================================
-
     def _manifest_meta(self, name: str) -> tuple[dict, dict]:
         """dbt manifest 元数据：返回 (资产级 meta, 列级 col_meta)。
 
@@ -535,279 +450,127 @@ class GraphService:
             return {}, {}
         return asset_meta(node), column_meta(node)
 
-    def table_add(self, name: str, *, all: bool = False, meta: dict | None = None):
-        """注册表（发现资产）：目录必须存在；已注册报 TableExistsError。
+    # =====================================================================
+    # table（业务实现见 table/ops.py——本层仅薄委托，保持 Execute/CLI/测试 API）
+    # =====================================================================
 
-        配置了 ``dbt-manifest-file`` 时先应用 manifest 元数据（description/列说明等），
-        参数显式指定的值（``--display_name/--description/...``）覆盖 manifest。
-        """
-        if all:
-            if not self.tables_root.exists():
-                return []
-            out = []
-            for d in sorted(x for x in self.tables_root.iterdir() if x.is_dir()):
-                if self.store.get_node(node_id("table", d.name)) is None \
-                        and any(d.rglob("*.parquet")):
-                    m, cols = self._manifest_meta(d.name)
-                    out.append(self._scan_disk(
-                        "table", d.name, meta={**m, **(meta or {})}, col_meta=cols))
-            return out
-        if not name:
-            raise ValueError("add 需要表名（或 --all 批量发现）")
-        root = self._root(name)
-        if not root.exists():
-            raise AssetNotFoundError(f"table dir not found: {root}")
-        if self.store.get_node(node_id("table", name)) is not None:
-            raise TableExistsError(f"table already registered: {name} (use scan to refresh)")
-        m, cols = self._manifest_meta(name)
-        return self._scan_disk("table", name, meta={**m, **(meta or {})}, col_meta=cols)
+    def table_add(self, name: str, *, all: bool = False, meta: dict | None = None):
+        return table_ops.table_add(self, name, all=all, meta=meta)
 
     def table_get(self, name: str, *, columns=None, where=None, partition=None,
                   exclude_tool: bool = False, limit=None, offset=None,
                   count_total: bool = False):
-        df, total = self._get_data("table", name, columns=columns, where=where,
+        return table_ops.table_get(self, name, columns=columns, where=where,
                                    partition=partition, exclude_tool=exclude_tool,
                                    limit=limit, offset=offset, count_total=count_total)
-        return (df, total) if count_total else df
 
     def table_lazy(self, name: str, *, where=None, exclude_tool: bool = False) -> pl.LazyFrame:
         """table 读取 lazy 视图（stat 等下游消费）。"""
-        return self._read_lazy("table", name, where=where, exclude_tool=exclude_tool)
+        return table_ops.table_lazy(self, name, where=where, exclude_tool=exclude_tool)
 
     def table_meta(self, name: str) -> dict:
-        return self._meta_dict("table", name)
+        return table_ops.table_meta(self, name)
 
     def table_list(self, *, candidate: bool = False) -> list:
-        if candidate:
-            if not self.tables_root.exists():
-                return []
-            out = []
-            for d in sorted(x for x in self.tables_root.iterdir() if x.is_dir()):
-                if self.store.get_node(node_id("table", d.name)) is None \
-                        and any(d.rglob("*.parquet")):
-                    out.append(d.name)
-            return out
-        return [self._meta_dict("table", n["name"]) for n in self.graph.list("table")]
+        return table_ops.table_list(self, candidate=candidate)
 
     def table_set(self, name: str, **kw) -> dict:
-        self._require_node("table", name)
-        return self.graph.set("table", name, **kw)
+        return table_ops.table_set(self, name, **kw)
 
     def table_col(self, name: str, column: str, **kw) -> dict:
-        return self.graph.col("table", name, column, **self._norm_col_kw(kw))
+        return table_ops.table_col(self, name, column, **kw)
 
     def table_delete(self, name: str, *, force: bool = False) -> dict:
-        self._require_node("table", name)
-        self.graph.delete("table", name, force=force)
-        self.store.fingerprint_clear(node_id("table", name))
-        return {"deleted": name}
+        return table_ops.table_delete(self, name, force=force)
 
     def table_update(self, name: str, *, all: bool = False) -> dict | list:
-        """源头表更新：重扫对账（物理变化 → 版本递增 + 下游置脏）。
-
-        源头（table/index）无上游，天然就绪；`--all` 批量重扫全部已登记表。
-        """
-        if all:
-            return [self._scan_disk("table", n["name"]) for n in self.graph.list("table")]
-        return self._scan_disk("table", name)
+        return table_ops.table_update(self, name, all=all)
 
     def table_data_key(self, name: str) -> str:
-        """当前数据标识：快检后返回签名（未登记则 ''）。"""
-        root = self._root(name)
-        if not root.exists():
-            return ""
-        self._ensure_fresh("table", name)
-        node = self.store.get_node(node_id("table", name))
-        return node.get("signature", "") if node else T.signature(T.disk_files(root))
+        return table_ops.table_data_key(self, name)
 
     # =====================================================================
-    # index（独立主体：物理与 table 同，节点为 Index + symbol/datetime 列）
+    # index（业务实现见 index/ops.py——本层仅薄委托）
     # =====================================================================
-
-    def _check_index_unique(self, name: str, *, symbol_col: str | None = None,
-                            datetime_col: str | None = None) -> tuple[str, str] | None:
-        """校验 index 物理数据的 ``(symbol_col, datetime_col)`` 组合唯一（V3.0 设计
-        ``IndexHandler.add``：index 是时间×标的的索引，不允许重复键）。
-
-        返回 ``(datetime 最小, 最大)``（登记时一次扫描顺带取到，供物化粒度引导
-        ``_partition_hint``）；无时间列/无数据 → None。
-        """
-        node = self.store.get_node(node_id("index", name)) or {}
-        sym = symbol_col or node.get("symbol_col") or "sym"
-        dt = datetime_col or node.get("datetime_col") or "date"
-        lf = pl.scan_parquet(self._index_root(name), hive_partitioning=True)
-        if dt not in lf.collect_schema().names():
-            return None
-        df = lf.select(sym, dt).collect()
-        total = df.height
-        uniq = df.unique().height
-        if uniq != total:
-            raise ValueError(
-                f"index {name} 的 ({sym}, {dt}) 组合不唯一: {total} 行 / {uniq} 组唯一"
-                f"（index 要求 symbol+datetime 键唯一）")
-        vals = df[dt].drop_nulls()
-        if vals.len() == 0:
-            return None
-        return str(vals.min()), str(vals.max())
 
     def index_add(self, name: str, *, all: bool = False, symbol_col: str = "sym",
                   datetime_col: str = "date", materialize_partition: str = "yearly",
                   meta: dict | None = None) -> dict | list:
-        """注册 index（发现资产）：目录必须存在；已注册报 TableExistsError。
-
-        ``--all`` 批量发现：扫描 ``index/`` 下未登记且含 parquet 的目录（同 table add --all）。
-        单表登记前校验 ``(symbol, datetime)`` 组合唯一（V3.0 设计）。
-        配置了 ``dbt-manifest-file`` 时先应用 manifest 元数据（参数显式指定覆盖）。
-        """
-        if all:
-            if not self.indexs_root.exists():
-                return []
-            out = []
-            for d in sorted(x for x in self.indexs_root.iterdir() if x.is_dir()):
-                if self.store.get_node(node_id("index", d.name)) is None \
-                        and any(d.rglob("*.parquet")):
-                    m, cols = self._manifest_meta(d.name)
-                    r = self._scan_disk(
-                        "index", d.name, meta={**m, **(meta or {})}, col_meta=cols,
-                        extra_data={"symbol_col": symbol_col, "datetime_col": datetime_col,
-                                    "materialize_partition": materialize_partition})
-                    hint = _partition_hint(
-                        self._check_index_unique(d.name, symbol_col=symbol_col,
-                                                 datetime_col=datetime_col),
-                        materialize_partition)
-                    if hint:
-                        r["partition_hint"] = hint
-                    out.append(r)
-            return out
-        if not name:
-            raise ValueError("add 需要 index 名（或 --all 批量发现）")
-        root = self._index_root(name)
-        if not root.exists():
-            raise AssetNotFoundError(f"index dir not found: {root}")
-        if self.store.get_node(node_id("index", name)) is not None:
-            raise TableExistsError(f"index already registered: {name}")
-        span = self._check_index_unique(name, symbol_col=symbol_col,
-                                        datetime_col=datetime_col)
-        m, cols = self._manifest_meta(name)
-        r = self._scan_disk(
-            "index", name, meta={**m, **(meta or {})}, col_meta=cols,
-            extra_data={"symbol_col": symbol_col, "datetime_col": datetime_col,
-                        "materialize_partition": materialize_partition})
-        # 物化粒度引导：yearly 默认粒度下数据跨多年 → 报告带 partition_hint
-        hint = _partition_hint(span, materialize_partition)
-        if hint:
-            r["partition_hint"] = hint
-        return r
+        return index_ops.index_add(self, name, all=all, symbol_col=symbol_col,
+                                   datetime_col=datetime_col,
+                                   materialize_partition=materialize_partition,
+                                   meta=meta)
 
     def index_get(self, name: str, *, columns=None, where=None, partition=None,
                   exclude_tool: bool = False, limit=None, offset=None,
                   count_total: bool = False):
-        df, total = self._get_data("index", name, columns=columns, where=where,
+        return index_ops.index_get(self, name, columns=columns, where=where,
                                    partition=partition, exclude_tool=exclude_tool,
                                    limit=limit, offset=offset, count_total=count_total)
-        return (df, total) if count_total else df
 
     def index_meta(self, name: str) -> dict:
-        return self._meta_dict("index", name)
+        return index_ops.index_meta(self, name)
 
     def index_list(self, *, candidate: bool = False) -> list:
-        """index 清单；candidate=True 返回未登记为 index 但含 parquet 的表目录。"""
-        if candidate:
-            if not self.indexs_root.exists():
-                return []
-            out = []
-            for d in sorted(x for x in self.indexs_root.iterdir() if x.is_dir()):
-                if self.store.get_node(node_id("index", d.name)) is None \
-                        and any(d.rglob("*.parquet")):
-                    out.append(d.name)
-            return out
-        return [self._meta_dict("index", n["name"]) for n in self.graph.list("index")]
+        return index_ops.index_list(self, candidate=candidate)
 
     def index_set(self, name: str, **kw) -> dict:
-        self._require_node("index", name)
-        return self.graph.set("index", name, **kw)
+        return index_ops.index_set(self, name, **kw)
 
     def index_col(self, name: str, column: str, **kw) -> dict:
-        return self.graph.col("index", name, column, **self._norm_col_kw(kw))
+        return index_ops.index_col(self, name, column, **kw)
 
     def index_delete(self, name: str, *, force: bool = False) -> dict:
-        self._require_node("index", name)
-        self.graph.delete("index", name, force=force)
-        self.store.fingerprint_clear(node_id("index", name))
-        return {"deleted": name}
+        return index_ops.index_delete(self, name, force=force)
 
     def index_update(self, name: str, *, all: bool = False) -> dict | list:
-        """源头 index 更新：重扫对账（物理变化 → 版本递增 + 下游置脏）。
-
-        （symbol, datetime）唯一性校验只在 ``index_add`` 登记时执行；update 是
-        重扫对账语义（信任磁盘现状），跳过全表 unique 校验——大表下每次 update
-        全表扫描代价高（2000 万行 ~6s），且对账本身不改变数据。
-        """
-        if all:
-            return [self._scan_disk("index", n["name"])
-                    for n in self.graph.list("index")]
-        return self._scan_disk("index", name)
+        return index_ops.index_update(self, name, all=all)
 
     def index_data_key(self, name: str) -> str:
-        root = self._index_root(name)
-        if not root.exists():
-            return ""
-        self._ensure_fresh("index", name)
-        node = self.store.get_node(node_id("index", name))
-        return node.get("signature", "") if node else T.signature(T.disk_files(root))
+        return index_ops.index_data_key(self, name)
 
     # =====================================================================
-    # panel（graph 节点 + DEPENDS 边；get 实时 join）
+    # panel（业务实现见 panel/ops.py——本层仅薄委托；_panel_lazy 等视图/计算
+    # 能力也在 panel/ops.py，fieldset/sample/factor/tester 模块经 svc 委托调用）
     # =====================================================================
 
     def panel_add(self, name: str, index: str,
                   tables: dict[str, str] | list | tuple | None = None, **kw) -> dict:
-        """panel add：index 为已注册 Index 节点，tables 为已注册 table 节点。
+        return panel_ops.panel_add(self, name, index, tables=tables, **kw)
 
-        keys 由 index 推断（symbol_col + datetime_col，去空去重；兜底 sym/date），
-        不再接受显式 ``--keys``（旧参数被忽略）。
-        tables 支持 {表名: join}、[(表名, join)]、["表名:join" | "表名"] 混合；
-        join 缺省 asof（可选 left），见 PanelHandler.add。
-        列级血缘：panel 列 DERIVES → index/成员表列（DEPENDS 边 detail.columns）。
-        """
-        idx_node = self._require_node("index", index)
-        keys = [c for c in (idx_node.get("symbol_col"), idx_node.get("datetime_col"))
-                if c]
-        keys = list(dict.fromkeys(keys)) or ["sym", "date"]
-        kw.pop("keys", None)  # 忽略旧 --keys 参数，以 index 推断为准
-        col_maps = {"index": {c["name"]: c["name"]
-                              for c in (idx_node.get("columns") or [])}}
-        # 成员表列名冲突校验：与 index 同名成员列跳过（index 优先，既有语义）；
-        # **成员表之间同名列报错**——不自动重命名、不静默覆盖（曾静默丢数据）
-        member_src: dict[str, str] = {}
-        for t in self._table_names(tables):
-            tnode = self._require_node("table", t)
-            for c in (tnode.get("columns") or []):
-                if c["name"] in col_maps["index"]:
-                    continue
-                if c["name"] in member_src and member_src[c["name"]] != t:
-                    raise ValueError(
-                        f"成员表列名冲突: {c['name']} 同时存在于 "
-                        f"{member_src[c['name']]} 与 {t}——panel 列名必须唯一"
-                        f"（不自动改名；请修改列名或不要同时挂载这两个成员表）")
-                member_src.setdefault(c["name"], t)
-            col_maps[t] = {c["name"]: c["name"] for c in (tnode.get("columns") or [])
-                           if c["name"] not in col_maps["index"]}
-        return PanelHandler.add(self.graph, name, index,
-                                tables=tables, keys=keys, column_maps=col_maps, **kw)
+    def panel_meta(self, name: str) -> dict:
+        return panel_ops.panel_meta(self, name)
 
-    @staticmethod
-    def _table_names(tables) -> list[str]:
-        """归一化 panel add 的成员表名清单（与 PanelHandler.add 的解析一致）。"""
-        if isinstance(tables, dict):
-            return list(tables)
-        out = []
-        for item in tables or ():
-            if isinstance(item, (list, tuple)) and len(item) >= 1:
-                out.append(item[0])
-            elif isinstance(item, str):
-                out.append(item.partition(":")[0])
-        return out
+    def panel_list(self) -> list:
+        return panel_ops.panel_list(self)
+
+    def panel_set(self, name: str, **kw) -> dict:
+        return panel_ops.panel_set(self, name, **kw)
+
+    def panel_update(self, name: str) -> dict:
+        return panel_ops.panel_update(self, name)
+
+    def panel_delete(self, name: str, *, force: bool = False) -> dict:
+        return panel_ops.panel_delete(self, name, force=force)
+
+    def panel_get(self, name: str, *, columns: list[str] | None = None,
+                  where: pl.Expr | str | None = None, partition=None,
+                  exclude_tool: bool = False, limit=None, offset=None,
+                  count_total: bool = False):
+        return panel_ops.panel_get(self, name, columns=columns, where=where,
+                                   partition=partition, exclude_tool=exclude_tool,
+                                   limit=limit, offset=offset, count_total=count_total)
+
+    def panel_lazy(self, name: str, *, where=None) -> pl.LazyFrame:
+        """panel 实时 join 视图（lazy，stat 等下游消费）。"""
+        return panel_ops.panel_lazy(self, name, where=where)
+
+    # ---- 跨模块共享视图/计算能力（fieldset/sample/factor/tester 经 svc 调用）----
+
+    def _panel_lazy(self, name: str, where: pl.Expr | str | None = None,
+                    live: bool = False) -> tuple[pl.LazyFrame, list[str]]:
+        """panel 视图（lazy）：物化且 curated 读物化，否则实时 join（实现见 panel/ops.py）。"""
+        return panel_ops._panel_lazy(self, name, where=where, live=live)
 
     def _resolve_col_meta(self, asset_id: str, col: str) -> dict:
         """列元数据**引用解析**：沿 DERIVES 递归到定义点列节点，返回其完整 meta。
@@ -867,178 +630,6 @@ class GraphService:
             (int(p.get("window_size") or 0) for p in path), default=0)
         return ColumnMeta.from_dict(meta).to_dict()
 
-    def _panel_columns(self, node: dict) -> list[dict]:
-        """派生列清单：index 列优先（keys 标 as_index），member 表列同名跳过。
-
-        列顺序 = index 列 + 成员表列（去重）；**列元数据经列节点图引用解析**
-        （``_resolve_col_meta``）——完整元数据只在源头（table/index）定义点保存，
-        下游不重复存储，改源头列说明全链自动反映。
-        """
-        keys = set(node.get("keys") or [])
-        names: list[str] = []
-        index = node.get("index", "").split(":", 1)[1]
-        idx = self._require_node("index", index)
-        for c in idx.get("columns") or []:
-            names.append(c["name"])
-        for t in (node.get("tables") or {}):
-            tnode = self._require_node("table", t)
-            for c in tnode.get("columns") or []:
-                if c["name"] not in names:
-                    names.append(c["name"])
-        nid = node_id("panel", node.get("name", ""))
-        cols = [self._resolve_col_meta(nid, cname) for cname in names]
-        return self._norm_cols(cols)
-
-    def _panel_hash(self, node: dict) -> str:
-        """panel 物化签名 = 上游 index/table 版本 + tables(join) + keys。"""
-        index = node.get("index", "").split(":", 1)[1]
-        parts = [f"index:{index}:{self._require_node('index', index).get('version', 0)}"]
-        for t, j in (node.get("tables") or {}).items():
-            parts.append(f"table:{t}:{self._require_node('table', t).get('version', 0)}:{j}")
-        parts.append(f"keys:{','.join(node.get('keys') or ())}")
-        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
-
-    def panel_meta(self, name: str) -> dict:
-        node = self._require_node("panel", name)
-        meta = self.graph._meta(node)
-        extra = dict(meta.get("extra") or {})
-        materialized = bool(node.get("materialized") or extra.get("materialized"))
-        dep_hash = extra.get("dependency_hash") or ""
-        meta["columns"] = self._panel_columns(node)
-        meta["keys"] = list(node.get("keys") or ())
-        meta["materialized"] = materialized
-        meta["materialized_at"] = extra.get("materialized_at")
-        meta["curated"] = materialized and dep_hash == self._panel_hash(node)
-        keys = list(node.get("keys") or ())
-        meta["partition_by"], meta["partition_gran"] = self._partition_plan(
-            node, dt_col=keys[-1] if keys else "")
-        meta["extra"] = extra
-        return meta
-
-    def panel_list(self) -> list:
-        return [self.panel_meta(n["name"]) for n in self.graph.list("panel")]
-
-    def panel_set(self, name: str, **kw) -> dict:
-        self._require_node("panel", name)
-        return self.graph.set("panel", name, **kw)
-
-    def panel_update(self, name: str) -> dict:
-        """panel 更新：传导检查上游（index/成员表）就绪 → join 视图物化落盘
-        ``panel/<name>/``（分区布局**镜像 index**：分区 index → hive 目录，flat → 单文件）
-        + 铸版本（积累事件）+ 边水位对齐。
-
-        增量：源头积累事件有明确 datetime 区间且已有物化 → 只重算该区间（分区场景只
-        替换受影响分区文件，flat 场景删区间+合并）；首次 / 无区间 → 全量物化。
-        """
-        self.graph.assert_ready("panel", name)
-        node = self._require_node("panel", name)
-        out_dir = self.data_dir / "panel" / name
-        keys = list(node.get("keys") or ())
-        dt = keys[-1] if keys else ""
-        pkeys, gran = self._partition_plan(node, dt_col=dt)
-        out_path = out_dir / ("data.parquet" if not pkeys else "")
-        scope = self._upstream_scope(node)
-        if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
-            (lo, hi), syms = scope
-            dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
-            sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
-            where = dt_expr & sym_expr if sym_expr is not None else dt_expr
-            inc, _ = self._panel_lazy(name, where=where, live=True)
-            df_inc = inc.collect()
-            if pkeys:
-                # 分区级增量：删区间涉及的桶并保留桶内区间外旧行 → 合并写回
-                # （惰性过滤：受影响桶判定只读 key 列，keep 行级裁剪后 collect）
-                old = pl.scan_parquet(out_dir, hive_partitioning=True)
-                self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt,
-                                      sym_expr=sym_expr,
-                                      sort_cols=[dt, keys[0]] if dt else None)
-            else:
-                # flat：惰性过滤只读 keep 行（未命中标的/区间外的旧行）
-                keep = pl.scan_parquet(out_path).filter(
-                    ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
-                ).collect()
-                df = pl.concat([keep, df_inc], how="vertical_relaxed"
-                               ).unique(subset=keys, keep="last")
-                if dt:
-                    df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
-                df.write_parquet(out_path)
-            rows = df_inc.height
-        else:
-            joined, _ = self._panel_lazy(name, live=True)
-            if dt:
-                joined = joined.sort([dt, keys[0]])  # 物化存储时间优先
-            df = joined.collect()  # 一次物化（rows 计数与分桶写盘共用，不重复 join）
-            rows = df.height
-            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt,
-                                    clean=True)
-        m = self.graph.resolve("panel", name, extra={
-            "dependency_hash": self._panel_hash(node),
-            "materialized_at": _now_iso(),
-        })
-        return {"name": name, "valid": True, "materialized": True, "rows": rows,
-                "version": m["version"]}
-
-    def panel_delete(self, name: str, *, force: bool = False) -> dict:
-        self._require_node("panel", name)
-        self.graph.delete("panel", name, force=force)
-        shutil.rmtree(self.data_dir / "panel" / name, ignore_errors=True)
-        return {"deleted": name}
-
-    def _panel_lazy(self, name: str, where: pl.Expr | str | None = None,
-                    live: bool = False) -> tuple[pl.LazyFrame, list[str]]:
-        """panel 视图（lazy）：**物化且 curated 读物化 parquet**（下游沿链取上游物化），
-        否则实时 join（index 为左表，member 表按各自 join 类型 on keys）。
-
-        ``live=True``：强制实时 join（panel 自身重建时不能用旧物化）。
-        """
-        node = self._require_node("panel", name)
-        keys = list(node.get("keys") or ())
-        if not live:
-            fm = self.panel_meta(name)
-            root = self.data_dir / "panel" / name
-            if fm["curated"] and (root / "data.parquet").exists() \
-                    or (fm["curated"] and any(root.glob("*=*"))):
-                lf = self._scan_materialized(root)
-                if where is not None:
-                    lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
-                return lf, keys
-        index = node.get("index", "").split(":", 1)[1]
-        table_map = dict(node.get("tables") or {})  # {表名: join 类型}
-        tables = list(table_map.keys())
-        cols = self._panel_columns(node)
-        by_src: dict[str, list[dict]] = {}
-        for c in cols:
-            by_src.setdefault(c["source_table"], []).append(c)
-
-        def frame(t: str, asset_type: str) -> pl.LazyFrame:
-            lf = self._read_lazy(asset_type, t)
-            used = {c["source_field"] for c in by_src.get(t, [])}
-            exprs = [pl.col(c["source_field"]).alias(c["name"]) for c in by_src.get(t, [])]
-            exprs += [pl.col(k).alias(k) for k in keys if k not in used]
-            return lf.select(*exprs)
-
-        frames = [frame(index, "index")]
-        frames += [frame(t, "table") for t in tables]
-        joined = frames[0]
-        # where 只引用左表（index）列时下推到 join 前——增量物化按「时间×标的」
-        # 裁剪时避免全表 join 只为取增量行（宽表 panel 收益明显）；引用右表列或
-        # 字符串谓词保持 join 后过滤（语义不变）
-        left_push = False
-        if where is not None and isinstance(where, pl.Expr) \
-                and set(where.meta.root_names()) <= set(frames[0].collect_schema().names()):
-            joined = joined.filter(where)
-            left_push = True
-        for i, t in enumerate(tables):
-            f = frames[i + 1]
-            if (table_map.get(t) or "asof_join") == "left_join":
-                joined = joined.join(f, on=keys, how="left")
-            else:
-                joined = _asof_join(joined, f, keys)
-        joined = joined.select(*[c["name"] for c in cols])
-        if where is not None and not left_push:
-            joined = joined.filter(to_expr(where) if isinstance(where, str) else where)
-        return joined, keys
-
     def _require_materialized(self, asset_type: str, name: str, meta: dict) -> Path:
         """物化型资产 get 门控（第 3 态）：本应物化但未物化（或已过期）→ 报错提示先 update。
 
@@ -1067,558 +658,143 @@ class GraphService:
             return df, (total if total is not None else df.height)
         return df
 
-    def panel_get(self, name: str, *, columns: list[str] | None = None,
-                  where: pl.Expr | str | None = None, partition=None,
-                  exclude_tool: bool = False, limit=None, offset=None,
-                  count_total: bool = False):
-        """panel 读取（第 1/3 态）：**已物化（curated）→ 读物化 parquet；
-        未物化 → 报错提示先 update**（不再静默回退实时 join）。"""
-        meta = self.panel_meta(name)
-        root = self._require_materialized("panel", name, meta)
-        lf = self._scan_materialized(root)
-        if where is not None:
-            lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
-        return self._collect_page(lf, columns=columns, exclude_tool=exclude_tool,
-                                  limit=limit, offset=offset, count_total=count_total)
-
-    def panel_lazy(self, name: str, *, where=None) -> pl.LazyFrame:
-        """panel 实时 join 视图（lazy，stat 等下游消费）。"""
-        return self._panel_lazy(name, where)[0]
-
     # =====================================================================
-    # fieldset（衍生指标集：graph 登记；check/update 用 panel 视图 + 公式引擎）
+    # fieldset（业务实现见 fieldset/ops.py——本层仅薄委托）
     # =====================================================================
-
-    def _fieldset_hash(self, node: dict) -> str:
-        """fieldset 物化签名 = panel 版本 + 已校验字段公式/窗口 + engine。"""
-        panel = node.get("panel", "").split(":", 1)[1]
-        parts = [f"panel:{panel}:{self._require_node('panel', panel).get('version', 0)}"]
-        for fname, f in (node.get("fields") or {}).items():
-            if f.get("validated"):
-                parts.append(f"{fname}:{f.get('formula', '')}:{f.get('window_size', 0)}")
-        parts.append(f"engine:{node.get('engine', 'polars')}")
-        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
-
-    def _fieldset_meta_node(self, name: str) -> dict:
-        node = self._require_node("fieldset", name)
-        meta = self.graph._meta(node)
-        extra = dict(meta.get("extra") or {})
-        keys = self._panel_keys(node.get("panel", "").split(":", 1)[1])
-        materialized = bool(node.get("materialized") or extra.get("materialized"))
-        dep_hash = extra.get("dependency_hash") or ""
-        meta["keys"] = keys
-        meta["materialized"] = materialized
-        meta["materialized_at"] = extra.get("materialized_at")
-        meta["curated"] = materialized and dep_hash == self._fieldset_hash(node)
-        meta["extra"] = extra
-        return meta
-
-    def _panel_keys(self, panel: str) -> list[str]:
-        pnode = self._require_node("panel", panel)
-        return list(pnode.get("keys") or ())
-
-    def _fieldset_view_lf(self, name: str, *, fields_only: bool = False,
-                          where: pl.Expr | str | None = None) -> tuple[pl.LazyFrame, list[str]]:
-        """fieldset 视图：panel 全列 + 已校验衍生字段（fields_only 时仅 keys+字段）。
-
-        物化且 curated → 衍生字段读物化 parquet（fields_only 直接返回；
-        否则与 panel 视图 join）。
-        """
-        node = self._require_node("fieldset", name)
-        panel = node.get("panel", "").split(":", 1)[1]
-        keys = self._panel_keys(panel)
-        fm = self._fieldset_meta_node(name)
-        root = self.data_dir / "fieldset" / name
-        if fm["curated"] and (root / "data.parquet").exists() \
-                or (fm["curated"] and any(root.glob("*=*"))):
-            lf = self._scan_materialized(root)
-            if where is not None:
-                lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
-            if fields_only:
-                return lf, keys
-            base, _ = self._panel_lazy(panel)
-            return base.join(lf, on=keys, how="left"), keys
-        base, _ = self._panel_lazy(panel, where)
-        fields = [FieldMeta.from_dict(f) for f in (node.get("fields") or {}).values()
-                  if f.get("validated")]
-        engine = get_fieldset_engine(node.get("engine") or "polars")
-        if fields_only:
-            return engine.scan(base, keys, fields), keys
-        derived = engine.scan(base, keys, fields)
-        if derived.select(pl.len()).collect().item():
-            base = base.join(derived, on=keys, how="left")
-        return base, keys
 
     def fieldset_add(self, name: str, panel: str, *, engine: str = "polars", **kw) -> dict:
-        """fieldset add：面板 keys 透传列级血缘（fieldset keys DERIVES → panel keys）。"""
-        pnode = self._require_node("panel", panel)
-        keys = list(pnode.get("keys") or ())
-        col_maps = {"panel": {k: k for k in keys}}
-        return FieldsetHandler.add(self.graph, name, panel, engine=engine,
-                                   column_maps=col_maps, **kw)
+        return fieldset_ops.fieldset_add(self, name, panel, engine=engine, **kw)
 
     def fieldset_add_field(self, name: str, field: str, formula: str, **kw) -> dict:
-        if not formula:
-            raise ValueError("fieldset add_field 需要 formula")
-        r = FieldsetHandler.add_field(self.graph, name, field, formula, **kw)
-        # 列级血缘：字段列 DERIVES → 公式引用的 panel 列（或同集字段）
-        self._sync_fieldset_field_derives(name, field, formula)
-        return r
+        return fieldset_ops.fieldset_add_field(self, name, field, formula, **kw)
 
     def fieldset_set_field(self, name: str, field: str, **kw) -> dict:
-        node = self._require_node("fieldset", name)
-        old_formula = ((node.get("fields") or {}).get(field) or {}).get("formula")
-        r = FieldsetHandler.set_field(self.graph, name, field, **kw)
-        if "formula" in kw and kw["formula"] != old_formula:
-            self.graph.clear_derives("fieldset", name, field)
-            self._sync_fieldset_field_derives(name, field, kw["formula"])
-        return r
+        return fieldset_ops.fieldset_set_field(self, name, field, **kw)
 
     def fieldset_delete_field(self, name: str, field: str) -> dict:
-        # 字段列节点由 set(fields=...) 对账清理（无 DERIVES 引用的孤立节点删除）
-        return FieldsetHandler.delete_field(self.graph, name, field)
-
-    def _fieldset_ref_cols(self, name: str) -> tuple[set[str], set[str]]:
-        """fieldset 公式可引用列：panel 视图列 ∪ 本 fieldset 已定义字段名。"""
-        node = self._require_node("fieldset", name)
-        panel = node.get("panel", "").split(":", 1)[-1]
-        pnode = self._require_node("panel", panel)
-        pcols = {c["name"] for c in self._panel_columns(pnode)}
-        ffields = set((node.get("fields") or {}).keys())
-        return pcols, ffields
-
-    def _sync_fieldset_field_derives(self, name: str, field: str,
-                                     formula: str) -> list[str]:
-        """字段列级血缘：字段列 DERIVES → 公式引用的 panel 列 / 同集字段列。
-
-        同时把引用列写回字段 meta 的 ``required_fields``（派生信息，不额外置脏）。
-        """
-        node = self._require_node("fieldset", name)
-        panel = node.get("panel", "").split(":", 1)[-1]
-        pcols, ffields = self._fieldset_ref_cols(name)
-        refs = _formula_refs(formula, pcols | ffields)
-        to_panel = [r for r in refs if r in pcols]
-        if to_panel:
-            self.graph.sync_derives("fieldset", name, "panel", panel,
-                                    {field: to_panel})
-        to_fields = [r for r in refs if r in ffields]
-        if to_fields:
-            self.graph.sync_derives("fieldset", name, "fieldset", name,
-                                    {field: to_fields})
-        fields = dict(node.get("fields") or {})
-        cur = fields.get(field)
-        if cur is not None and list(cur.get("required_fields") or ()) != refs:
-            fields[field] = {**cur, "required_fields": refs}
-            # required_fields 是 formula 的派生信息（与 validated 同属状态更新）：
-            # add_field/set_field 已按定义变化置脏过自身与下游，此处不重复置脏
-            self.graph.set("fieldset", name, definition=True, fields=fields,
-                           self_invalidate=False, propagate=False)
-        return refs
-
-    def _sync_fieldset_derives_all(self, name: str) -> None:
-        """对账字段列级血缘（历史字段自愈）：按当前公式重算 required_fields 与 DERIVES。
-
-        字段 DERIVES 只在 ``add_field``/``set_field`` 时派发——旧库/升级前登记的
-        字段可能缺边或缺 ``required_fields``（血缘图上字段与 panel 源字段之间
-        没有关系）。``fieldset update`` 时全量对账：引用集合与已登记不一致 →
-        清旧边重派发 + 写回 required_fields（幂等，无变化不动作；不置脏）。
-        """
-        node = self._require_node("fieldset", name)
-        pcols, ffields = self._fieldset_ref_cols(name)
-        for field, fd in (node.get("fields") or {}).items():
-            formula = (fd or {}).get("formula") or ""
-            refs = _formula_refs(formula, pcols | ffields)
-            cur = list((fd or {}).get("required_fields") or ())
-            if cur != refs:
-                self.graph.clear_derives("fieldset", name, field)
-                self._sync_fieldset_field_derives(name, field, formula)
+        return fieldset_ops.fieldset_delete_field(self, name, field)
 
     def fieldset_meta_field(self, name: str, field: str) -> dict:
-        return FieldsetHandler.meta_field(self.graph, name, field)
+        return fieldset_ops.fieldset_meta_field(self, name, field)
 
     def fieldset_meta(self, name: str) -> dict:
-        return self._fieldset_meta_node(name)
+        return fieldset_ops.fieldset_meta(self, name)
 
     def fieldset_list(self) -> list:
-        return [self._fieldset_meta_node(n["name"]) for n in self.graph.list("fieldset")]
+        return fieldset_ops.fieldset_list(self)
 
     def fieldset_set(self, name: str, **kw) -> dict:
-        self._require_node("fieldset", name)
-        return self.graph.set("fieldset", name, **kw)
+        return fieldset_ops.fieldset_set(self, name, **kw)
 
     def fieldset_delete(self, name: str, *, force: bool = False) -> dict:
-        self._require_node("fieldset", name)
-        self.graph.delete("fieldset", name, force=force)
-        return {"deleted": name}
+        return fieldset_ops.fieldset_delete(self, name, force=force)
 
     def fieldset_check(self, name: str, field: str) -> dict:
-        """校验单个指标；通过后写回 validated=True（视图/物化只取已校验字段）。"""
-        node = self._require_node("fieldset", name)
-        fields = node.get("fields") or {}
-        if field not in fields:
-            raise AssetNotFoundError(f"field not found: {field}")
-        base, keys = self._panel_lazy(node.get("panel", "").split(":", 1)[1])
-        engine = get_fieldset_engine(node.get("engine") or "polars")
-        ok, message = engine.check(base, FieldMeta.from_dict(fields[field]))
-        if ok and not fields[field].get("validated"):
-            new_fields = dict(fields)
-            new_fields[field] = {**fields[field], "validated": True}
-            # validated 写回是状态更新（非定义变化）→ 不使自身失效
-            self.graph.set("fieldset", name, definition=True,
-                           fields=new_fields, self_invalidate=False)
-        return {"fieldset": name, "field": field, "ok": ok, "message": message}
+        return fieldset_ops.fieldset_check(self, name, field)
 
     def fieldset_get(self, name: str, *, fields_only: bool = False,
                      columns: list[str] | None = None, where=None,
                      limit=None, offset=None, count_total: bool = False):
-        """fieldset 读取（第 1/3 态）：已物化 → 物化字段（+ panel 合并）；未物化 → 报错。"""
-        node = self._require_node("fieldset", name)
-        meta = self.fieldset_meta(name)
-        root = self._require_materialized("fieldset", name, meta)
-        lf = self._scan_materialized(root)
-        if where is not None:
-            lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
-        if not fields_only:
-            panel = node.get("panel", "").split(":", 1)[1]
-            keys = self._panel_keys(panel)
-            base, _ = self._panel_lazy(panel)  # 上游 panel 物化或实时（内部视图）
-            lf = base.join(lf, on=keys, how="left")
-        return self._collect_page(lf, columns=columns, limit=limit, offset=offset,
-                                  count_total=count_total)
+        return fieldset_ops.fieldset_get(self, name, fields_only=fields_only,
+                                         columns=columns, where=where,
+                                         limit=limit, offset=offset,
+                                         count_total=count_total)
 
     def fieldset_update(self, name: str, *, resync: bool = False) -> dict:
-        """fieldset 更新：传导检查上游（panel 链）就绪 → 衍生字段物化落盘
-        ``fieldset/<name>/data.parquet``（keys + 已校验字段）+ 铸版本 + 水位对齐。
-
-        增量：源头积累事件有明确 datetime 区间且已有物化 → 只重算该区间字段并合并写回；
-        首次 / 无区间 / ``--resync`` → 全量。
-        """
-        self.graph.assert_ready("fieldset", name)
-        node = self._require_node("fieldset", name)
-        self._sync_fieldset_derives_all(name)  # 血缘对账：历史字段缺边/引用变化自愈
-        panel = node.get("panel", "").split(":", 1)[1]
-        keys = self._panel_keys(panel)
-        fields = [FieldMeta.from_dict(f) for f in (node.get("fields") or {}).values()
-                  if f.get("validated")]
-        engine = get_fieldset_engine(node.get("engine") or "polars")
-        out_dir = self.data_dir / "fieldset" / name
-        dt = keys[-1] if keys else ""
-        pkeys, gran = self._partition_plan(node, dt_col=dt)
-        out_path = out_dir / ("data.parquet" if not pkeys else "")
-        scope = None if resync else self._upstream_scope(node)
-        # 滚动窗口（fieldset 字段 window_size）：输入 [lo, hi] 变化 → 输出受影响
-        # [lo, hi+w-1]，增量重算区间与自身事件范围都按最大回看宽度向前展开
-        win = max((f.window_size for f in fields), default=0)
-        if scope and win > 1:
-            (lo, hi), syms = scope
-            scope = (_expand_scope([lo, hi], forward=win - 1), syms)
-        if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
-            (lo, hi), syms = scope
-            dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
-            sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
-            where = dt_expr & sym_expr if sym_expr is not None else dt_expr
-            base, _ = self._panel_lazy(panel, where=where)
-            df_inc = engine.scan(base, keys, fields).collect()
-            if pkeys:
-                old = pl.scan_parquet(out_dir, hive_partitioning=True)
-                self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt,
-                                      sym_expr=sym_expr,
-                                      sort_cols=[dt, keys[0]] if dt else None)
-            else:
-                keep = pl.scan_parquet(out_path).filter(
-                    ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
-                ).collect()
-                df = pl.concat([keep, df_inc], how="vertical_relaxed"
-                               ).unique(subset=keys, keep="last")
-                if dt:
-                    df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
-                df.write_parquet(out_path)
-            rows = df_inc.height
-        else:
-            base, _ = self._panel_lazy(panel)
-            out = engine.scan(base, keys, fields)
-            if dt:
-                out = out.sort([dt, keys[0]])  # 物化存储时间优先
-            df = out.collect()  # 一次物化（rows 计数与分桶写盘共用，不重复求值）
-            rows = df.height
-            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt,
-                                    clean=True)
-        m = self.graph.resolve("fieldset", name, extra={
-            "dependency_hash": self._fieldset_hash(node),
-            "materialized_at": _now_iso(),
-        }, own_event=DataChangeEvent(
-            action="upsert",
-            field_scope=[f.name for f in fields],  # 记录自身重算的字段，而非上游列
-            datetime_scope=scope[0] if scope else None,  # 窗口展开后的范围，供下游增量
-            symbol_scope=scope[1] if scope else None,    # 变化标的集合，供下游增量
-        ))
-        return {"name": name, "materialized": True, "valid": True, "rows": rows,
-                "fields_count": len(fields), "version": m["version"]}
+        return fieldset_ops.fieldset_update(self, name, resync=resync)
 
     def fieldset_test(self, name: str, formula: str):
-        node = self._require_node("fieldset", name)
-        base, _ = self._panel_lazy(node.get("panel", "").split(":", 1)[1])
-        engine = get_fieldset_engine(node.get("engine") or "polars")
-        df = engine.test(base, formula)
-        return {"ok": True, "rows": df.height, "columns": list(df.columns)}, df
+        return fieldset_ops.fieldset_test(self, name, formula)
 
-    # =====================================================================
-    # sample（样本池：graph 登记，依赖 fieldset + index；get/check 实时过滤）
-    # =====================================================================
+    # ---- 跨模块共享视图能力（sample/factor 经 svc 调用）----
 
-    def _sample_index_keys(self, node: dict) -> tuple[str, str]:
-        """sample 的筛选 index 键：symbol_col + datetime_col（缺省 sym/date）。"""
-        idx = node.get("index", "").split(":", 1)[-1]
-        inode = self._require_node("index", idx)
-        return (inode.get("symbol_col") or "sym",
-                inode.get("datetime_col") or "date")
+    def _panel_keys(self, panel: str) -> list[str]:
+        return fieldset_ops._panel_keys(self, panel)
 
-    def _sample_view_lf(self, name: str, *, where=None) -> pl.LazyFrame:
-        """sample 视图：fieldset 视图 ∩ 指定 index 的键集合（semi join）。
-
-        只保留 (symbol, datetime) 键存在于该 index 数据中的行；index 键列名与
-        视图 keys 不同名时按位置映射（symbol → keys[0]，datetime → keys[-1]）。
-        """
-        node = self._require_node("sample", name)
-        fset = node.get("fieldset", "").split(":", 1)[-1]
-        lf, keys = self._fieldset_view_lf(fset, where=where)
-        sym, dt = self._sample_index_keys(node)
-        key_sym = sym if sym in keys else (keys[0] if keys else sym)
-        key_dt = dt if dt in keys else (keys[-1] if len(keys) > 1 else dt)
-        idx_lf = pl.scan_parquet(self._index_root(node.get("index", "").split(":", 1)[-1]),
-                                 hive_partitioning=True)
-        idx_lf = idx_lf.select([sym, dt]).unique()
-        if sym != key_sym or dt != key_dt:
-            idx_lf = idx_lf.rename({sym: key_sym, dt: key_dt})
-        return lf.join(idx_lf, on=[key_sym, key_dt], how="semi")
-
-    def sample_add(self, name: str, fieldset: str, index: str, **kw) -> dict:
-        """sample add：列级血缘——视图列透传（sample 列 DERIVES → fieldset 列）
-        + 筛选 index 键映射（sample keys DERIVES → index symbol/datetime 列）。"""
-        col_maps = {"fieldset": {c: c for c in self._fieldset_view_col_names(fieldset)}}
-        idx_node = self._require_node("index", index)
-        sym = idx_node.get("symbol_col") or "sym"
-        dt = idx_node.get("datetime_col") or "date"
-        # 视图 keys（panel keys）与 index 键列按位置映射（symbol → keys[0]、datetime → keys[-1]）
-        fnode = self._require_node("fieldset", fieldset)
-        keys = self._panel_keys(fnode.get("panel", "").split(":", 1)[-1])
-        key_map: dict[str, str] = {}
-        if keys:
-            key_map[keys[0]] = sym
-        if len(keys) > 1:
-            key_map[keys[-1]] = dt
-        if key_map:
-            col_maps["index"] = key_map
-        return SampleHandler.add(self.graph, name, fieldset, index,
-                                 column_maps=col_maps, **kw)
+    def _fieldset_view_lf(self, name: str, *, fields_only: bool = False,
+                          where: pl.Expr | str | None = None) -> tuple[pl.LazyFrame, list[str]]:
+        """fieldset 视图（实现见 fieldset/ops.py）。"""
+        return fieldset_ops._fieldset_view_lf(self, name, fields_only=fields_only,
+                                              where=where)
 
     def _fieldset_view_col_names(self, fieldset: str) -> list[str]:
-        """fieldset 视图列名：其 panel 全列 + 已校验字段（仅元数据，不读数据）。"""
-        fnode = self._require_node("fieldset", fieldset)
-        pnode = self._require_node("panel", fnode.get("panel", "").split(":", 1)[-1])
-        names = [c["name"] for c in self._panel_columns(pnode)]
-        names += [f for f, fd in (fnode.get("fields") or {}).items()
-                  if fd.get("validated")]
-        return names
+        """fieldset 视图列名（实现见 fieldset/ops.py）。"""
+        return fieldset_ops._fieldset_view_col_names(self, fieldset)
+
+    # =====================================================================
+    # sample（业务实现见 sample/ops.py——本层仅薄委托）
+    # =====================================================================
+
+    def sample_add(self, name: str, fieldset: str, index: str, **kw) -> dict:
+        return sample_ops.sample_add(self, name, fieldset, index, **kw)
 
     def sample_get(self, name: str, *, columns=None, where=None, limit=None,
                    offset=None, count_total: bool = False):
-        lf = self._sample_view_lf(name, where=where)
-        return self._collect_page(lf, columns=columns, limit=limit, offset=offset,
-                                  count_total=count_total)
-
-    def _sample_keys(self, node: dict) -> list[str]:
-        """sample 的索引列 = 其 fieldset 底层 panel 的 keys。"""
-        fset = node.get("fieldset", "").split(":", 1)[-1]
-        fnode = self._require_node("fieldset", fset)
-        return self._panel_keys(fnode.get("panel", "").split(":", 1)[-1])
+        return sample_ops.sample_get(self, name, columns=columns, where=where,
+                                     limit=limit, offset=offset, count_total=count_total)
 
     def sample_check(self, name: str) -> dict:
-        node = self._require_node("sample", name)
-        keys = self._sample_keys(node)
-        try:
-            lf = self._sample_view_lf(name)
-            df = lf.collect()
-        except Exception as e:
-            return {"sample": name, "ok": False, "rows": 0, "columns": [], "message": str(e)}
-        cols = set(df.columns)
-        ok = all(k in cols for k in keys) and df.height > 0
-        return {"sample": name, "ok": ok, "rows": df.height,
-                "columns": list(df.columns),
-                "message": "" if ok else "过滤后缺少索引列或行数为 0"}
+        return sample_ops.sample_check(self, name)
 
     def sample_meta(self, name: str) -> dict:
-        """sample 元数据（V2.0 形态 dict，§10）：含 keys/columns（完整列元数据）。"""
-        node = self._require_node("sample", name)
-        return {
-            "name": name,
-            "version": node.get("version", 0),
-            "fieldset": node.get("fieldset", "").split(":", 1)[-1]
-            if node.get("fieldset") else "",
-            "index": node.get("index", "").split(":", 1)[-1]
-            if node.get("index") else "",
-            "keys": self._sample_keys(node),
-            "valid": bool(node.get("valid")),
-            "materialized": False,  # sample 无物化，恒实时构造
-            "columns": self._sample_view_cols(name),
-            "display_name": node.get("display_name") or name,
-            "description": node.get("description", ""),
-            "tags": list(node.get("tags") or ()),
-            "source": node.get("source", "local"),
-            "created_at": node.get("create_time", ""),
-            "updated_at": node.get("update_time", ""),
-        }
+        return sample_ops.sample_meta(self, name)
 
     def sample_list(self) -> list:
-        return [self.sample_meta(n["name"]) for n in self.graph.list("sample")]
+        return sample_ops.sample_list(self)
 
     def sample_set(self, name: str, **kw) -> dict:
-        self._require_node("sample", name)
-        # 定义键规范化：set --index/--fieldset 存 node_id 形态（与 add 一致）
-        if "index" in kw:
-            kw["index"] = node_id("index", kw["index"])
-        if "fieldset" in kw:
-            kw["fieldset"] = node_id("fieldset", kw["fieldset"])
-        return self.graph.set("sample", name, **kw)
+        return sample_ops.sample_set(self, name, **kw)
 
     def sample_update(self, name: str) -> dict:
-        """sample 更新：传导检查上游（fieldset 链 + 筛选 index）就绪 → 视图可构造 → 铸版本。
-
-        sample 无物化；update = 确认上游就绪并铸版本（消费的积累事件入 version_list，
-        无新事件不空 bump），出边水位对齐。
-        """
-        self.graph.assert_ready("sample", name)
-        self._sample_view_lf(name).select(pl.len()).collect()
-        m = self.graph.resolve("sample", name, mark_materialized=False)
-        return {"name": name, "valid": True,
-                "version": m["version"]}
+        return sample_ops.sample_update(self, name)
 
     def sample_delete(self, name: str, *, force: bool = False) -> dict:
-        self._require_node("sample", name)
-        self.graph.delete("sample", name, force=force)
-        return {"deleted": name}
+        return sample_ops.sample_delete(self, name, force=force)
+
+    # ---- 跨模块共享视图能力（factor/tester 经 svc 调用）----
+
+    def _sample_view_lf(self, name: str, *, where=None) -> pl.LazyFrame:
+        """sample 视图（实现见 sample/ops.py）。"""
+        return sample_ops._sample_view_lf(self, name, where=where)
+
+    def _sample_view_cols(self, sample: str) -> list[dict]:
+        """sample 视图列元数据（实现见 sample/ops.py）。"""
+        return sample_ops._sample_view_cols(self, sample)
+
+    def _sample_keys(self, node: dict) -> list[str]:
+        """sample 的索引列（实现见 sample/ops.py）。"""
+        return sample_ops._sample_keys(self, node)
 
     # =====================================================================
-    # feature（因子定义库：纯定义，graph 登记；test 在 sample 视图上求值）
+    # feature（业务实现见 feature/ops.py——本层仅薄委托）
     # =====================================================================
 
     def feature_add(self, name: str, formula: str, *, engine: str = "polars",
                     unit: str | None = None, **kw) -> dict:
-        return FeatureHandler.add(self.graph, name, formula, engine=engine,
-                                  unit=unit, **kw)
+        return feature_ops.feature_add(self, name, formula, engine=engine,
+                                       unit=unit, **kw)
 
     def feature_meta(self, name: str) -> dict:
-        return self.graph.meta("feature", name)
+        return feature_ops.feature_meta(self, name)
 
     def feature_list(self) -> list:
-        return self.graph.list("feature")
+        return feature_ops.feature_list(self)
 
     def feature_set(self, name: str, **kw) -> dict:
-        self._require_node("feature", name)
-        if "window_size" in kw:
-            kw["window_size"] = int(kw["window_size"] or 0)
-        return self.graph.set("feature", name, **kw)
+        return feature_ops.feature_set(self, name, **kw)
 
     def feature_update(self, name: str) -> dict:
-        """feature 更新：纯定义资产（无上游），标记有效并铸版本（无事件不空 bump）。"""
-        self.graph.assert_ready("feature", name)
-        m = self.graph.resolve("feature", name, mark_materialized=False)
-        return {"name": name, "valid": True,
-                "version": m["version"]}
+        return feature_ops.feature_update(self, name)
 
     def feature_delete(self, name: str, *, force: bool = False) -> dict:
-        self._require_node("feature", name)
-        self.graph.delete("feature", name, force=force)
-        return {"deleted": name}
+        return feature_ops.feature_delete(self, name, force=force)
 
     def feature_test(self, name: str, sample: str):
-        node = self._require_node("feature", name)
-        lf = self._sample_view_lf(sample)
-        engine = get_feature_engine(node.get("engine") or "polars")
-        try:
-            df = engine.test(lf, node.get("formula") or "")
-            total = lf.select(pl.len()).collect().item()
-            valid = df.height == total
-            return ({"feature": name, "sample": sample, "ok": True, "valid": valid,
-                     "rows": df.height, "columns": list(df.columns),
-                     "message": "" if valid else f"结果行数 {df.height} != 样本行数 {total}"},
-                    df if df.height else None)
-        except Exception as e:
-            return ({"feature": name, "sample": sample, "ok": False, "valid": False,
-                     "rows": 0, "columns": [], "message": f"公式执行失败: {e}"}, None)
+        return feature_ops.feature_test(self, name, sample)
 
     # =====================================================================
-    # factor（最终因子：feature 公式 + sample 视图 + pipeline 算子链；物化落盘）
+    # 共享图能力（沿链找 index / 积累事件范围，各资产 update 与 meta 复用）
     # =====================================================================
-
-    def _sample_view_cols(self, sample: str) -> list[dict]:
-        """sample 视图列（**完整列元数据**，§10）：panel 列继承 ColumnMeta 全键，
-        fieldset 衍生字段继承 FieldMeta，未知列回退 name+data_type。"""
-        node = self._require_node("sample", sample)
-        lf = self._sample_view_lf(sample)
-        schema = lf.collect_schema()
-        fset = node.get("fieldset", "").split(":", 1)[-1]
-        fnode = self._require_node("fieldset", fset)
-        panel = fnode.get("panel", "").split(":", 1)[-1]
-        panel_cols = {c["name"]: c for c in
-                      self._panel_columns(self._require_node("panel", panel))}
-        fs_fields = {f: FieldMeta.from_dict(fd)
-                     for f, fd in (fnode.get("fields") or {}).items()}
-        out = []
-        for c in schema.names():
-            if c in panel_cols:
-                out.append(panel_cols[c])
-            elif c in fs_fields:
-                fm = fs_fields[c]
-                out.append({
-                    "name": c, "display_name": fm.display_name or c,
-                    "description": fm.description, "data_type": str(schema[c]),
-                    "unit": fm.unit, "formula": fm.formula,
-                    "tags": list(fm.tags), "validated": fm.validated,
-                })
-            else:
-                out.append({"name": c, "data_type": str(schema[c])})
-        return out
-
-    def _factor_keys(self, node: dict) -> list[str]:
-        """factor 的 keys = 其 sample 的 keys（fieldset → panel）。"""
-        sample = node.get("sample", "").split(":", 1)[1]
-        snode = self._require_node("sample", sample)
-        return self._sample_keys(snode)
-
-    def _factor_meta_dict(self, name: str) -> dict:
-        """V2.0 FactorMeta 形态 dict（含 keys/columns/materialized/curated/field）。"""
-        node = self._require_node("factor", name)
-        meta = self.graph._meta(node)
-        extra = dict(meta.get("extra") or {})
-        keys = self._factor_keys(node)
-        sample = node.get("sample", "").split(":", 1)[1]
-        materialized = bool(node.get("materialized") or extra.get("materialized"))
-        dep_hash = extra.get("dependency_hash") or ""
-        return {
-            "name": name,
-            "version": node.get("version", 0),
-            "feature": node.get("feature", "").split(":", 1)[1] if node.get("feature") else "",
-            "sample": sample,
-            "pipeline": node.get("pipeline", ""),
-            "engine": node.get("engine", "polars"),
-            "factor_col": node.get("factor_col", ""),
-            "keys": keys,
-            "partition_by": list(extra.get("partition_by") or ()),
-            "partition_gran": extra.get("partition_gran", ""),
-            "materialized": materialized,
-            "materialized_at": extra.get("materialized_at"),
-            "curated": materialized and dep_hash == self._factor_hash(node),
-            "columns": self._sample_view_cols(sample),
-            "field": extra.get("field"),
-            "extra": extra,
-            "display_name": node.get("display_name") or name,
-            "description": node.get("description", ""),
-            "tags": list(node.get("tags") or ()),
-            "source": node.get("source", "local"),
-            "created_at": node.get("create_time", ""),
-            "updated_at": node.get("update_time", ""),
-        }
 
     def _index_node(self, node: dict) -> dict | None:
         """沿血缘链找该资产依赖的 index 节点（Cypher 变长上游遍历，一次拿全链；
@@ -1632,123 +808,6 @@ class GraphService:
     def _index_name(self, node: dict) -> str:
         idx = self._index_node(node)
         return idx.get("name", "") if idx else ""
-
-    def _index_partition_keys(self, node: dict) -> list[str]:
-        """下游物化的分区键 = 其 index 的实际分区键（镜像，最上游依赖 index）。"""
-        idx = self._index_node(node)
-        return list(idx.get("partition_by") or ()) if idx else []
-
-    def _partition_plan(self, node: dict, dt_col: str = "") -> tuple[list[str], str]:
-        """下游物化分区方案 = 继承 index 的 ``materialize_partition`` 时间桶。
-
-        - yearly/monthly/daily（默认 yearly）：**无论 index 物理是否分区**，下游都按
-          时间粒度分桶落盘（``part=<YYYY>[/<YYYY-MM>[/<YYYY-MM-DD>]]``，见
-          ``_write_partitioned``）；``dt_col`` 为时间键（keys 末列）；
-        - gran 未知 / 无 index / 无时间键 → 单文件（``([], "")``）。
-        """
-        idx = self._index_node(node)
-        if idx is None or not dt_col:
-            return [], ""
-        gran = (idx.get("materialize_partition") or "yearly").strip().lower()
-        if gran in ("yearly", "monthly", "daily"):
-            return ["part"], gran
-        return [], ""
-
-    @staticmethod
-    def _scan_materialized(root: Path, partition: str | None = None) -> pl.LazyFrame:
-        """读物化 parquet（hive 分区还原），**剔除内部分区桶列 part**——
-        保持对外列集合与实时视图一致（part 仅供物化增量删桶，不对外暴露）。
-        ``partition`` 按 part 桶前缀过滤（如 ``--partition 2024`` 取 2024 年桶）。"""
-        lf = pl.scan_parquet(root, hive_partitioning=True)
-        if partition is not None:
-            lf = lf.filter(pl.col("part").cast(pl.String).str.starts_with(partition))
-        return lf.select(pl.all().exclude("part"))
-
-    def _rewrite_buckets(self, old: pl.LazyFrame | pl.DataFrame, df_inc: pl.DataFrame,
-                         dt_expr: pl.Expr, pkeys: list[str], out_dir: Path,
-                         gran: str, dt_col: str,
-                         *, sym_expr: pl.Expr | None = None,
-                         sort_cols: list[str] | None = None) -> pl.DataFrame:
-        """分区级增量写回：删受影响桶后，把**桶内区间外旧行**与增量行合并写回。
-
-        时间桶粒度（yearly/monthly/daily）粗于增量区间（天级）——直接删桶会丢掉
-        桶内未变化的行；且增量新日期可能与旧数据**同桶**（affected 取两边的并集）。
-        故：受影响桶 = 旧数据命中「区间（×标的）」行的桶 ∪ 增量数据所在桶；保留
-        受影响桶内 ``~(dt_expr [& sym_expr])`` 旧行，与增量合并后整体重写这些桶。
-        ``sym_expr`` 给出时（事件带 symbol_scope）命中判定收窄到变化标的，
-        未变化的标的行不重算。**惰性过滤**：受影响桶判定只读 part 列、keep 行级
-        裁剪后才 collect（大表增量避免全量读入内存）；``sort_cols`` 给出时合并
-        结果按时间优先排序写盘。
-        """
-        key = pkeys[0]
-        cut = {"yearly": 4, "monthly": 7, "daily": 10}.get(gran, 4)
-        part_expr = pl.col(dt_col).cast(pl.String).str.slice(0, cut).alias(key)
-        inc_parts = df_inc.with_columns(part_expr)[key].unique().to_list()
-        hit = dt_expr & sym_expr if sym_expr is not None else dt_expr
-        lf = old.lazy() if isinstance(old, pl.DataFrame) else old
-        affected = sorted(set(
-            lf.filter(hit).select(key).unique().collect()[key].to_list())
-            | set(inc_parts))
-        keep = lf.filter(~hit).filter(pl.col(key).is_in(affected)).collect() \
-            if affected else None
-        for v in affected:
-            shutil.rmtree(out_dir / f"{key}={v}", ignore_errors=True)
-        if keep is not None:
-            # 增量行补同款 part 列（与 keep 列数对齐；_write_partitioned 会再覆盖同值）
-            merged = pl.concat(
-                [keep, df_inc.with_columns(part_expr)], how="vertical_relaxed")
-        else:
-            merged = df_inc
-        if sort_cols:
-            merged = merged.sort(sort_cols)
-        self._write_partitioned(merged, out_dir, pkeys, gran=gran, dt_col=dt_col)
-        return merged
-
-    @staticmethod
-    def _write_partitioned(df_or_lf: pl.DataFrame | pl.LazyFrame, out_dir: Path,
-                           partition_keys: list[str],
-                           gran: str = "", dt_col: str = "",
-                           *, clean: bool = False) -> None:
-        """物化落盘：按分区键写 hive 目录 ``key=value/``；无分区键 → 单文件。
-
-        ``partition_keys=["part"]``（时间桶）：按 ``materialize_partition`` 粒度从
-        ``dt_col`` 提取桶值（yearly→YYYY、monthly→YYYY-MM、daily→YYYY-MM-DD，
-        String/ISO 前缀切片）生成 ``part`` 列后写 ``part=<v>/`` 目录。
-
-        **原生 Hive 分区写出**（polars ≥1.43 的 ``pl.PartitionBy``）：一次流式求值
-        即按桶落盘——不整表入内存、不逐桶重算上游 lazy 计划（对 LazyFrame 逐桶
-        ``filter(...).sink_parquet()`` 会让每桶重新执行整条 join 链，粗桶 × 大表时
-        成本随桶数线性放大，曾致 1852 万行 × yearly 37 桶的 panel 全量物化卡死）。
-        ``include_key=True``：**文件内保留 part 列**（String，由 with_columns 生成）
-        ——hive_partitioning 读取时文件列优先，part 恒为 String；若 include_key=False，
-        目录值会被推断为 Int64（如 ``part=2024``），与增量数据（String）类型不一致，
-        增量合并/``is_in`` 过滤会失败。
-
-        ``clean=True``（**全量物化**）：写前清空 ``out_dir``——``PartitionBy`` 只写
-        数据里存在的桶、**不删除新数据中已消失的旧桶目录**（整年数据被删后全量
-        重写会残留陈旧桶的 phantom 行；旧逐桶写同样如此）；数据为空时落一个保留
-        schema 的空 ``data.parquet``（hive 桶目录不存在，读路径不因"无 parquet
-        文件"报错）。增量合并（``_rewrite_buckets``）不传 clean——已按受影响桶
-        精确删除，不能动未受影响桶。
-        """
-        empty = isinstance(df_or_lf, pl.DataFrame) and df_or_lf.height == 0
-        if clean:
-            shutil.rmtree(out_dir, ignore_errors=True)
-        lf = df_or_lf.lazy() if isinstance(df_or_lf, pl.DataFrame) else df_or_lf
-        out_dir.mkdir(parents=True, exist_ok=True)
-        if not partition_keys:
-            lf.sink_parquet(out_dir / "data.parquet")
-            return
-        key = partition_keys[0]
-        if key == "part":
-            cut = {"yearly": 4, "monthly": 7, "daily": 10}.get(gran, 4)
-            lf = lf.with_columns(
-                pl.col(dt_col).cast(pl.String).str.slice(0, cut).alias("part"))
-        if empty:
-            lf.sink_parquet(out_dir / "data.parquet")
-            return
-        lf.sink_parquet(pl.PartitionBy(out_dir, key=key, include_key=True),
-                        mkdir=True)
 
     def _upstream_scope(self, node: dict) -> tuple[list[str], list[str] | None] | None:
         """最近上游（**直接依赖**）积累事件的范围：``([lo, hi], symbols)``。
@@ -1774,650 +833,98 @@ class GraphService:
         symbols = list(dict.fromkeys(symbols))
         return [min(scope), max(scope)], (symbols or None)
 
+    # =====================================================================
+    # factor（业务实现见 factor/ops.py——本层仅薄委托）
+    # =====================================================================
+
+    def factor_add(self, name: str, feature: str, sample: str, *,
+                   engine: str = "polars", pipeline: str = "nothing()",
+                   factor_col: str | None = None, **kw) -> dict:
+        return factor_ops.factor_add(self, name, feature, sample, engine=engine,
+                                     pipeline=pipeline, factor_col=factor_col, **kw)
+
+    def factor_get(self, name: str, *, where=None, partition: str | None = None,
+                   limit=None, offset=None, count_total: bool = False):
+        return factor_ops.factor_get(self, name, where=where, partition=partition,
+                                     limit=limit, offset=offset, count_total=count_total)
+
+    def factor_meta(self, name: str) -> dict:
+        return factor_ops.factor_meta(self, name)
+
+    def factor_list(self) -> list:
+        return factor_ops.factor_list(self)
+
+    def factor_set(self, name: str, **kw) -> dict:
+        return factor_ops.factor_set(self, name, **kw)
+
+    def factor_delete(self, name: str, *, force: bool = False) -> dict:
+        return factor_ops.factor_delete(self, name, force=force)
+
+    def factor_check(self, name: str) -> dict:
+        return factor_ops.factor_check(self, name)
+
+    def factor_update(self, name: str | None = None, *, all: bool = False,
+                      resync: bool = False) -> dict | list[dict]:
+        return factor_ops.factor_update(self, name, all=all, resync=resync)
+
+    # ---- 跨模块共享能力（tester 经 svc 调用）----
+
+    def _factor_meta_dict(self, name: str) -> dict:
+        """factor 元数据（实现见 factor/ops.py）。"""
+        return factor_ops._factor_meta_dict(self, name)
+
     def _factor_hash(self, node: dict) -> str:
-        """物化一致性签名 = 上游 feature/sample 版本 + engine/pipeline/factor_col。"""
-        feature = node.get("feature", "").split(":", 1)[1] if node.get("feature") else ""
-        sample = node.get("sample", "").split(":", 1)[1] if node.get("sample") else ""
-        parts = [
-            f"feature:{feature}:{self._require_node('feature', feature).get('version', 0)}",
-            f"sample:{sample}:{self._require_node('sample', sample).get('version', 0)}",
-            f"engine:{node.get('engine', 'polars')}",
-            f"pipeline:{node.get('pipeline', '')}",
-            f"factor_col:{node.get('factor_col', '')}",
-        ]
-        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+        """factor 物化签名（实现见 factor/ops.py）。"""
+        return factor_ops._factor_hash(self, node)
 
     def _factor_compute(self, node: dict, *, partition: str | None = None,
                         dt_range: tuple[str, str] | None = None,
                         symbols: list[str] | None = None,
                         view_df: pl.DataFrame | None = None) -> pl.DataFrame:
-        """实时计算最终因子：sample 视图求 feature 公式 → 拼索引+因子列 → 算子链。
-
-        ``dt_range=(lo, hi)`` / ``symbols`` 给出时只计算「时间区间 × 标的集合」
-        内的行（增量物化用，字符串/ISO 可比）；``view_df`` 为调用方已构建并
-        过滤的 sample 视图（tester 沿链复用，避免同一视图重复 join/collect）。
-        物化前做**列投影**（keys + 公式引用列）——宽表 panel（200+ 列）下避免
-        全列 collect，join 时只取所需列。
-        """
-        feature = node.get("feature", "").split(":", 1)[1]
-        sample = node.get("sample", "").split(":", 1)[1]
-        fnode = self._require_node("feature", feature)
-        keys = self._factor_keys(node)
-        lf = view_df.lazy() if view_df is not None \
-            else self._sample_view_lf(sample)
-        if dt_range:
-            dt = keys[-1]
-            lo, hi = dt_range
-            lf = lf.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
-        if symbols:
-            lf = lf.filter(pl.col(keys[0]).is_in(symbols))
-        view_cols = set(lf.collect_schema().names())
-        need = list(dict.fromkeys(
-            keys + _formula_refs(fnode.get("formula") or "", view_cols)))
-        df = lf.select(*need).collect()  # 只物化所需列（宽表 panel 收益明显）
-        engine = get_factor_engine(node.get("engine") or "polars")
-        field = engine.field(df.lazy(), fnode.get("formula") or "")
-        src_rows = df.height
-        if field.height != src_rows:
-            raise ValueError(f"feature 公式非逐行计算: 结果 {field.height} 行 != 样本 {src_rows} 行")
-        idx = df.select(*[pl.col(k) for k in keys])
-        factor_col = node.get("factor_col") or feature
-        out = idx.hstack(field.rename({"field": factor_col}))
-        return engine.transform(out, node.get("pipeline") or "nothing()")
-
-    def _factor_view_lf(self, name: str, *, where=None,
-                        partition: str | None = None) -> pl.LazyFrame:
-        """读 factor（lazy，第 1/3 态）：已物化（curated）→ 读物化 parquet；
-        未物化 → 报错提示先 update（不再实时计算回退）。"""
-        node = self._require_node("factor", name)
-        fm = self._factor_meta_dict(name)
-        root = self._require_materialized("factor", name, fm)
-        lf = self._scan_materialized(root, partition=partition)
-        if where is not None:
-            lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
-        return lf
-
-    def factor_add(self, name: str, feature: str, sample: str, *,
-                   engine: str = "polars", pipeline: str = "nothing()",
-                   factor_col: str | None = None, **kw) -> dict:
-        """创建最终因子：校验 feature/sample 已注册 + pipeline/engine 合法。
-
-        列级血缘**只保留因子列**：factor_col DERIVES → feature 公式引用的
-        sample 视图列（一条或多条边，DEPENDS 边 detail.columns）——keys
-        （sym/date）是索引透传，不建字段级映射（对资产血缘无信息量，因子列
-        指向 sample 数据字段已表达"因子用了哪些字段"）。
-        """
-        if not feature:
-            raise ValueError("factor add 需要 --feature <feature 名>")
-        if not sample:
-            raise ValueError("factor add 需要 --sample <sample 名>")
-        fnode = self._require_node("feature", feature)
-        snode = self._require_node("sample", sample)
-        parse_pipeline(pipeline)
-        get_factor_engine(engine)
-        fcol = factor_col or feature
-        view = set(self._fieldset_view_col_names(
-            snode.get("fieldset", "").split(":", 1)[-1]))
-        refs = _formula_refs(fnode.get("formula") or "", view)
-        col_maps = {"sample": {fcol: refs}} if refs else None
-        FactorHandler.add(self.graph, name, feature, sample, engine=engine,
-                          pipeline=pipeline, factor_col=factor_col,
-                          column_maps=col_maps, **kw)
-        return self._factor_meta_dict(name)
-
-    def factor_get(self, name: str, *, where=None, partition: str | None = None,
-                   limit=None, offset=None, count_total: bool = False):
-        lf = self._factor_view_lf(name, where=where, partition=partition)
-        return self._collect_page(lf, limit=limit, offset=offset, count_total=count_total)
-
-    def factor_meta(self, name: str) -> dict:
-        return self._factor_meta_dict(name)
-
-    def factor_list(self) -> list:
-        return [self._factor_meta_dict(n["name"]) for n in self.graph.list("factor")]
-
-    def factor_set(self, name: str, **kw) -> dict:
-        self._require_node("factor", name)
-        return self.graph.set("factor", name, **kw)
-
-    def factor_delete(self, name: str, *, force: bool = False) -> dict:
-        self._require_node("factor", name)
-        self.graph.delete("factor", name, force=force)
-        shutil.rmtree(self.data_dir / "factor" / name, ignore_errors=True)
-        return {"deleted": name}
-
-    def factor_check(self, name: str) -> dict:
-        """校验因子：计算成功、含全部索引列、因子列恰好一列、行数 > 0。"""
-        node = self._require_node("factor", name)
-        keys = self._factor_keys(node)
-        try:
-            df = self._factor_compute(node)
-        except Exception as e:
-            return {"factor": name, "ok": False, "rows": 0, "columns": list(keys),
-                    "message": f"因子计算失败: {e}"}
-        missing = [k for k in keys if k not in df.columns]
-        if missing:
-            return {"factor": name, "ok": False, "rows": df.height,
-                    "columns": list(df.columns), "message": f"结果集缺少索引列: {missing}"}
-        factor_cols = [c for c in df.columns if c not in keys]
-        if len(factor_cols) != 1:
-            return {"factor": name, "ok": False, "rows": df.height,
-                    "columns": list(df.columns),
-                    "message": f"因子列应恰好 1 列，实际 {len(factor_cols)} 列"}
-        if df.height == 0:
-            return {"factor": name, "ok": False, "rows": 0,
-                    "columns": list(df.columns), "message": "结果行数为 0"}
-        return {"factor": name, "ok": True, "rows": df.height,
-                "columns": list(df.columns), "message": f"有效（{df.height} 行）"}
-
-    def factor_update(self, name: str | None = None, *, all: bool = False,
-                      resync: bool = False) -> dict | list[dict]:
-        """factor 更新：传导检查上游（sample/feature 全链）就绪 → 物化 factors/<name>/。
-
-        ``--all`` 批量：同 sample 多因子**共享视图计算、分别物化**（见
-        ``_factor_scan_many``）。幂等（依赖签名一致则跳过）；update 成功后节点置
-        valid=True。scan 为旧名别名。
-        """
-        if all:
-            return self._factor_scan_many(resync=resync)
-        if not name:
-            raise ValueError("factor update 需要因子名（或 --all）")
-        self.graph.assert_ready("factor", name)
-        return self._factor_scan_one(name, resync=resync)
-
-    def _factor_plan(self, node: dict, *, resync: bool = False) -> dict:
-        """因子物化计划（**纯图内元数据，不触数据计算**）：幂等判定 + keys/分区
-        方案 + 增量范围（feature 窗口展开）+ 物化存在性。
-
-        供单因子 ``_factor_scan_one`` 与批量 ``_factor_scan_many`` 共用——
-        批量先给全部因子出计划（阶段 1），再共享计算（阶段 2）、分别写盘（阶段 3）。
-        """
-        extra = dict(node.get("extra") or {})
-        name = node["name"]
-        keys = self._factor_keys(node)
-        dt = keys[-1] if keys else ""
-        pkeys, gran = self._partition_plan(node, dt_col=dt)
-        out_dir = self.data_dir / "factor" / name
-        out_path = out_dir / ("data.parquet" if not pkeys else "")
-        feature = node.get("feature", "").split(":", 1)[1]
-        fnode = self._require_node("feature", feature)
-        # 增量物化：最近上游积累事件有明确 datetime 区间且已有物化 → 只重算该区间
-        # （分区场景只替换受影响分区文件，flat 场景删区间+合并）
-        # feature 滚动窗口：输入 [lo, hi] 变化 → factor 输出受影响 [lo, hi+w-1]
-        scope = None if resync else self._upstream_scope(node)
-        fwin = int(fnode.get("window_size") or 0)
-        if scope and fwin > 1:
-            (lo, hi), syms = scope
-            scope = (_expand_scope([lo, hi], forward=fwin - 1), syms)
-        has_old = (pkeys and out_dir.exists()) or (not pkeys and out_path.exists())
-        cur_hash = self._factor_hash(node)
-        return {
-            "node": node, "name": name, "keys": keys, "dt": dt,
-            "pkeys": pkeys, "gran": gran, "scope": scope,
-            "incremental": bool(scope) and has_old,
-            "out_dir": out_dir, "out_path": out_path,
-            "feature": feature, "fnode": fnode, "cur_hash": cur_hash,
-            "version_before": node.get("version", 0),
-            "skip": (not resync and node.get("valid")
-                     and extra.get("dependency_hash") == cur_hash
-                     and (node.get("materialized") or extra.get("materialized"))),
-        }
-
-    @staticmethod
-    def _factor_skip_report(plan: dict) -> dict:
-        """幂等跳过的 update 报告（changed=False，版本不推进）。"""
-        return {"name": plan["name"], "version_before": plan["version_before"],
-                "version_after": plan["version_before"], "materialized": True,
-                "changed": False, "partition_by": list(plan["pkeys"])}
-
-    def _factor_write(self, plan: dict, df: pl.DataFrame) -> dict:
-        """按物化计划写盘（增量/全量）+ resolve 收口；返回 update 报告。
-
-        单因子路径（``_factor_scan_one``）与批量路径（``_factor_scan_many``）共用
-        同一写盘语义——共享计算出的 df 逐因子**分别物化**。
-        """
-        node = plan["node"]
-        name, keys, dt = plan["name"], plan["keys"], plan["dt"]
-        pkeys, gran, scope = plan["pkeys"], plan["gran"], plan["scope"]
-        out_dir, out_path = plan["out_dir"], plan["out_path"]
-        fnode = plan["fnode"]
-        if plan["incremental"]:
-            (lo, hi), syms = scope
-            dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
-            sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
-            if pkeys:
-                old = pl.scan_parquet(out_dir, hive_partitioning=True)
-                self._rewrite_buckets(old, df, dt_expr, pkeys, out_dir, gran, dt,
-                                      sym_expr=sym_expr,
-                                      sort_cols=[dt, keys[0]] if dt else None)
-            else:
-                keep = pl.scan_parquet(out_path).filter(
-                    ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
-                ).collect()
-                df = pl.concat([keep, df], how="vertical_relaxed"
-                               ).unique(subset=keys, keep="last")
-                if dt:
-                    df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
-                df.write_parquet(out_path)
-        else:
-            if dt:
-                df = df.sort([dt, keys[0]])  # 物化存储时间优先
-            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt,
-                                    clean=True)
-        # 物化成功 → resolve 收口：铸版本并记录**消费的合并事件**（own_event 带
-        # 窗口展开后的 datetime_scope，供下游 test 沿链增量）+ 出边水位对齐
-        m = self.graph.resolve("factor", name, extra={
-            "dependency_hash": plan["cur_hash"], "partition_by": pkeys,
-            "partition_gran": gran, "materialized_at": _now_iso(),
-            "field": {"name": node.get("factor_col") or plan["feature"],
-                      "formula": fnode.get("formula") or "",
-                      "display_name": node.get("factor_col") or plan["feature"],
-                      "description": "", "unit": None, "tags": [],
-                      "window_size": int(fnode.get("window_size") or 0)},
-        }, own_event=DataChangeEvent(
-            action="upsert",
-            field_scope=[node.get("factor_col") or plan["feature"]],
-            datetime_scope=scope[0] if scope else None,
-            symbol_scope=scope[1] if scope else None,
-        ))
-        return {"name": name, "version_before": plan["version_before"],
-                "version_after": m["version"], "materialized": True, "changed": True,
-                "partition_by": list(pkeys), "rebuilt_partitions": [""]}
-
-    def _factor_batch_compute(self, plans: list[dict]) -> dict[str, pl.DataFrame]:
-        """同 sample 多因子**共享视图批量计算**（``factor update --all`` 阶段 2）。
-
-        按 sample 分组：每组只构建一次 sample 视图（join 链 lazy 计划 + **一次
-        collect**，列投影 = keys + 组内全部 feature 公式引用列并集）；组内按引擎
-        分组，一次 ``FactorEngine.fields`` 算齐全部公式列（polars 单 select，
-        同公式去重共享一列）；每个因子再按**自己的增量范围**过滤、施加各自
-        pipeline 算子链。返回 ``{因子名: DataFrame}``——物化写盘由调用方逐因子
-        执行（共享计算、分别物化）。
-        """
-        out: dict[str, pl.DataFrame] = {}
-        groups: dict[str, list[dict]] = {}
-        for p in plans:
-            sample = p["node"].get("sample", "").split(":", 1)[1]
-            groups.setdefault(sample, []).append(p)
-        for sample, items in groups.items():
-            keys = items[0]["keys"]
-            # 联合范围：任一因子全量（无范围/首次/resync）→ 整视图；否则并集区间
-            # 与标的（任一因子全集 → 视图不按标的过滤，各自再精确过滤）
-            incs = [p for p in items if p["incremental"]]
-            if len(incs) == len(items):
-                los = [p["scope"][0][0] for p in incs]
-                his = [p["scope"][0][1] for p in incs]
-                lo, hi = min(los), max(his)
-                sym_sets = [p["scope"][1] for p in incs]
-                syms = list(dict.fromkeys(
-                    s for sl in sym_sets if sl for s in sl)) \
-                    if all(sym_sets) else None
-            else:
-                lo = hi = None
-                syms = None
-            lf = self._sample_view_lf(sample)
-            if lo is not None and keys:
-                dt = keys[-1]
-                lf = lf.filter(pl.col(dt).cast(pl.String)
-                               .is_between(pl.lit(lo), pl.lit(hi)))
-            if syms and keys:
-                lf = lf.filter(pl.col(keys[0]).is_in(syms))
-            view_cols = set(lf.collect_schema().names())
-            need = list(dict.fromkeys(
-                keys + [r for p in items
-                        for r in _formula_refs(p["fnode"].get("formula") or "",
-                                               view_cols)]))
-            df = lf.select(*need).collect()  # 每组一次 collect（共享视图）
-            by_engine: dict[str, list[dict]] = {}
-            for p in items:
-                by_engine.setdefault(p["node"].get("engine") or "polars", []).append(p)
-            for eng_name, eng_items in by_engine.items():
-                engine = get_factor_engine(eng_name)
-                formula_cols: dict[str, str] = {}  # 公式 → 临时列名（同公式共享一列）
-                formulas: dict[str, str] = {}      # 临时列名 → 公式（fields 入参）
-                for p in eng_items:
-                    formula = p["fnode"].get("formula") or ""
-                    temp = formula_cols.setdefault(
-                        formula, f"__f{len(formula_cols)}")
-                    p["_temp"] = temp
-                    formulas[temp] = formula
-                field_df = engine.fields(df.lazy(), formulas)
-                if field_df.height != df.height:
-                    raise ValueError(
-                        f"feature 公式非逐行计算: 结果 {field_df.height} 行 != "
-                        f"样本 {df.height} 行")
-                for p in eng_items:
-                    node = p["node"]
-                    fcol = node.get("factor_col") or p["feature"]
-                    fdf = df.select(*[pl.col(k) for k in keys]).hstack(
-                        field_df.select(pl.col(p["_temp"]).alias(fcol)))
-                    if p["incremental"] and keys:
-                        (lo1, hi1), syms1 = p["scope"]
-                        dt = keys[-1]
-                        fdf = fdf.filter(
-                            pl.col(dt).cast(pl.String)
-                            .is_between(pl.lit(lo1), pl.lit(hi1)))
-                        if syms1:
-                            fdf = fdf.filter(pl.col(keys[0]).is_in(syms1))
-                    out[p["name"]] = engine.transform(
-                        fdf, node.get("pipeline") or "nothing()")
-        return out
-
-    def _factor_scan_many(self, *, resync: bool = False) -> list[dict]:
-        """``factor update --all``：同 sample 多因子**共享视图批量计算**，分别物化。
-
-        阶段 1（纯图内元数据，无计算）：``_factor_plan`` 逐因子判幂等、取 keys/
-        分区方案/增量范围；阶段 2（共享计算）：``_factor_batch_compute`` 按 sample
-        分组——每组构建一次视图 + 一次 collect，组内全部因子列一次算齐
-        （``FactorEngine.fields``）；阶段 3（分别物化）：逐因子增量/全量写盘 +
-        resolve 收口（``_factor_write``，与单因子路径同语义）。
-        """
-        plans = [self._factor_plan(self._require_node("factor", n["name"]),
-                                   resync=resync)
-                 for n in self.graph.list("factor")]
-        reports = [self._factor_skip_report(p) for p in plans if p["skip"]]
-        active = [p for p in plans if not p["skip"]]
-        if active:
-            computed = self._factor_batch_compute(active)
-            reports += [self._factor_write(p, computed[p["name"]]) for p in active]
-        return reports
-
-    def _factor_scan_one(self, name: str, *, resync: bool = False) -> dict:
-        node = self._require_node("factor", name)
-        plan = self._factor_plan(node, resync=resync)
-        if plan["skip"]:
-            return self._factor_skip_report(plan)
-        if plan["incremental"]:
-            (lo, hi), syms = plan["scope"]
-            df = self._factor_compute(node, dt_range=(lo, hi), symbols=syms)
-        else:
-            df = self._factor_compute(node)
-        return self._factor_write(plan, df)
+        """实时计算因子（实现见 factor/ops.py）。"""
+        return factor_ops._factor_compute(self, node, partition=partition,
+                                          dt_range=dt_range, symbols=symbols,
+                                          view_df=view_df)
 
     # =====================================================================
-    # test（因子测试数据集：factor 关联 sample 视图 + 测试必需列；物化落盘）
+    # tester（业务实现见 factor_tester/ops.py——本层仅薄委托）
     # =====================================================================
-
-    def _tester_spec(self, node: dict) -> FactorTesterSpec:
-        return FactorTesterSpec.from_dict(node.get("spec") or {})
-
-    def _tester_meta_dict(self, name: str) -> dict:
-        """V2.0 FactorTestMeta 形态 dict。"""
-        node = self._require_node("tester", name)
-        meta = self.graph._meta(node)
-        extra = dict(meta.get("extra") or {})
-        materialized = bool(node.get("materialized") or extra.get("materialized"))
-        dep_hash = extra.get("dependency_hash") or ""
-        return {
-            "name": name,
-            "version": node.get("version", 0),
-            "factor": node.get("factor", "").split(":", 1)[1] if node.get("factor") else "",
-            "sample": node.get("sample", "").split(":", 1)[1] if node.get("sample") else "",
-            "returns": node.get("returns", "r"),
-            "groupby": node.get("groupby", "ic"),
-            "marketcap": node.get("marketcap", "fv"),
-            "spec": self._tester_spec(node).to_dict(),
-            "factor_col": node.get("factor_col", ""),
-            "keys": list(node.get("keys") or ()),
-            "materialized": materialized,
-            "materialized_at": extra.get("materialized_at"),
-            "curated": materialized and dep_hash == self._tester_hash(node),
-            "columns": list(extra.get("columns") or ()),
-            "extra": extra,
-            "display_name": node.get("display_name") or name,
-            "description": node.get("description", ""),
-            "tags": list(node.get("tags") or ()),
-            "source": node.get("source", "local"),
-            "created_at": node.get("create_time", ""),
-            "updated_at": node.get("update_time", ""),
-        }
-
-    def _tester_hash(self, node: dict) -> str:
-        """物化一致性签名 = factor 的 hash + spec + 测试列名。"""
-        factor = node.get("factor", "").split(":", 1)[1] if node.get("factor") else ""
-        fnode = self._require_node("factor", factor)
-        parts = [
-            f"factor:{factor}:{self._factor_hash(fnode)}",
-            f"returns:{node.get('returns', 'r')}",
-            f"groupby:{node.get('groupby', 'ic')}",
-            f"marketcap:{node.get('marketcap', 'fv')}",
-            f"factor_col:{node.get('factor_col', '')}",
-            f"spec:{dumps_str(self._tester_spec(node).to_dict())}",
-        ]
-        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
-
-    def _tester_build(self, node: dict, *, dt_range: tuple[str, str] | None = None,
-                      symbols: list[str] | None = None) -> pl.DataFrame:
-        """测试数据集：sample 视图（含测试必需列）+ factor 列 → prepare_factor_data。
-
-        ``dt_range=(lo, hi)`` / ``symbols`` 给出时只构造「时间区间 × 标的集合」
-        内的行（增量物化用）。sample 视图只 collect 一次并做**列投影**（测试
-        必需列 + keys + factor 公式引用列），再传给 ``_factor_compute`` 复用
-        （宽表 panel 下避免全列物化）。
-        """
-        factor = node.get("factor", "").split(":", 1)[1]
-        fnode = self._require_node("factor", factor)
-        fm = self._factor_meta_dict(factor)
-        sample = node.get("sample", "").split(":", 1)[1] if node.get("sample") else fm["sample"]
-        view = self._sample_view_lf(sample)
-        keys = list(fm["keys"])
-        if dt_range:
-            dt = keys[-1]
-            lo, hi = dt_range
-            view = view.filter(pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi)))
-        if symbols:
-            view = view.filter(pl.col(keys[0]).is_in(symbols))
-        returns = node.get("returns", "r")
-        groupby = node.get("groupby", "ic")
-        marketcap = node.get("marketcap", "fv")
-        # 键列跟随 factor keys（index 的 symbol/datetime 列名可自定义）
-        sym_col = keys[0] if keys else "sym"
-        dt_col = keys[-1] if keys else "date"
-        need = [dt_col, sym_col, returns, groupby, marketcap]
-        view_cols = set(view.collect_schema().names())
-        feat_name = fm.get("feature") or fnode.get("feature", "").split(":", 1)[1]
-        formula = self._require_node("feature", feat_name).get("formula") or ""
-        proj = list(dict.fromkeys(
-            [c for c in need if c in view_cols] + keys
-            + _formula_refs(formula, view_cols)))
-        view_df = view.select(*proj).collect()
-        missing = [c for c in need if c not in view_df.columns]
-        if missing:
-            raise ValueError(f"sample 缺少测试必需列: {missing}（需要 date/sym 与 "
-                             f"returns/groupby/marketcap）")
-        fdf = self._factor_compute(fnode, dt_range=dt_range, symbols=symbols,
-                                   view_df=view_df)
-        base = (
-            view_df.select(*[pl.col(c) for c in need])
-            .with_columns(pl.lit(1, dtype=pl.Int32).alias("sample"))
-            .join(fdf, on=keys, how="left")
-            .rename({fm["factor_col"]: "factor", returns: "returns",
-                     groupby: "group", marketcap: "marketcap"})
-        )
-        return prepare_factor_data(base, self._tester_spec(node), keys=keys)
-
-    def _tester_view_lf(self, name: str, *, where=None) -> pl.LazyFrame:
-        """读测试数据集（lazy，第 1/3 态）：已物化（curated）→ 读物化 parquet；
-        未物化 → 报错提示先 update。"""
-        node = self._require_node("tester", name)
-        tm = self._tester_meta_dict(name)
-        root = self._require_materialized("tester", name, tm)
-        lf = self._scan_materialized(root)
-        if where is not None:
-            lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
-        return lf
-
-    def tester_data(self, name: str) -> pl.DataFrame:
-        """测试数据集 DataFrame（stat 测试器用，第 1/3 态）：已物化 → 读物化；
-        未物化 → 报错提示先 update（不再实时构造回退）。"""
-        node = self._require_node("tester", name)
-        tm = self._tester_meta_dict(name)
-        root = self._require_materialized("tester", name, tm)
-        return self._scan_materialized(root).collect()
 
     def tester_add(self, name: str, factor: str, *, returns: str = "r",
-                 groupby: str = "ic", marketcap: str = "fv",
-                 factor_col: str | None = None, spec: dict | None = None,
-                 **kw) -> dict:
-        """创建测试数据集：依赖已注册 factor，校验 sample 视图含必需列。"""
-        if not factor:
-            raise ValueError("test add 需要 --factor <因子名>")
-        fnode = self._require_node("factor", factor)
-        fm = self._factor_meta_dict(factor)
-        sample = fm["sample"]
-        keys = list(fm["keys"])
-        # 键列从 factor/sample keys 推断（不硬编码 date/sym）：index 的
-        # symbol_col/datetime_col 可自定义，tester 必须跟随实际键列名
-        sym_col = keys[0] if keys else "sym"
-        dt_col = keys[-1] if keys else "date"
-        # 校验 sample 视图含测试必需列
-        view_cols = {c["name"] for c in self._sample_view_cols(sample)}
-        need = [dt_col, sym_col, returns, groupby, marketcap]
-        missing = [c for c in need if c not in view_cols]
-        if missing:
-            raise ValueError(f"sample 缺少测试必需列 {missing}，不能创建测试数据集（需要 {need}）")
-        spec_d = FactorTesterSpec.from_dict(spec or {}).to_dict() if spec else \
-            {"quantiles": 5, "periods": [1, 5, 10],
-             "date_range": ["2023-01-01", "2026-01-01"], "rolling_window": 252}
-        keys = list(fm["keys"])
-        # tester **不做列级血缘**（列节点/DERIVES/BELONGS_TO 均不建）：tester 是
-        # 测试面板（keys/returns/group/marketcap/d{no}/factor_quantile 等派生字段
-        # 对资产血缘无信息量），其资产级 DEPENDS → factor 已表达"因子数据来源"；
-        # 字段 schema 在 tester meta（columns）里展示，不进入列节点图
-        TesterHandler.add(
-            self.graph, name, factor,
-            returns=returns, groupby=groupby, marketcap=marketcap,
-            factor_col=factor_col or fm["factor_col"] or factor,
-            spec=spec_d, sample=node_id("sample", sample),
-            keys=keys, **kw)
-        return self._tester_meta_dict(name)
+                   groupby: str = "ic", marketcap: str = "fv",
+                   factor_col: str | None = None, spec: dict | None = None,
+                   **kw) -> dict:
+        return tester_ops.tester_add(self, name, factor, returns=returns,
+                                     groupby=groupby, marketcap=marketcap,
+                                     factor_col=factor_col, spec=spec, **kw)
 
     def tester_get(self, name: str, *, where=None, limit=None, offset=None,
-                 count_total: bool = False):
-        lf = self._tester_view_lf(name, where=where)
-        return self._collect_page(lf, limit=limit, offset=offset, count_total=count_total)
+                   count_total: bool = False):
+        return tester_ops.tester_get(self, name, where=where, limit=limit,
+                                     offset=offset, count_total=count_total)
 
     def tester_meta(self, name: str) -> dict:
-        return self._tester_meta_dict(name)
+        return tester_ops.tester_meta(self, name)
 
     def tester_list(self) -> list:
-        return [self._tester_meta_dict(n["name"]) for n in self.graph.list("tester")]
+        return tester_ops.tester_list(self)
 
     def tester_set(self, name: str, **kw) -> dict:
-        self._require_node("tester", name)
-        return self.graph.set("tester", name, **kw)
+        return tester_ops.tester_set(self, name, **kw)
 
     def tester_delete(self, name: str, *, force: bool = False) -> dict:
-        self._require_node("tester", name)
-        self.graph.delete("tester", name, force=force)
-        shutil.rmtree(self.data_dir / "factor_tester" / name, ignore_errors=True)
-        return {"deleted": name}
+        return tester_ops.tester_delete(self, name, force=force)
 
     def tester_check(self, name: str) -> dict:
-        """校验测试数据集：构造成功、含必需列、行数 > 0。"""
-        node = self._require_node("tester", name)
-        keys = list(node.get("keys") or ())
-        try:
-            df = self._tester_build(node)
-        except Exception as e:
-            return {"tester": name, "ok": False, "rows": 0, "columns": list(keys),
-                    "message": f"测试数据集构造失败: {e}"}
-        # 输出列 = 实际键列名（index symbol/datetime 可自定义）+ 固定测试列
-        need = ([keys[-1], keys[0]] if keys else ["date", "sym"]) \
-            + ["sample", "returns", "group", "marketcap",
-               "factor", "factor_quantile"]
-        missing = [c for c in need if c not in df.columns]
-        if missing:
-            return {"tester": name, "ok": False, "rows": df.height,
-                    "columns": list(df.columns), "message": f"结果集缺少必需列: {missing}"}
-        if df.height == 0:
-            return {"tester": name, "ok": False, "rows": 0,
-                    "columns": list(df.columns), "message": "结果行数为 0"}
-        return {"tester": name, "ok": True, "rows": df.height,
-                "columns": list(df.columns), "message": f"有效（{df.height} 行）"}
+        return tester_ops.tester_check(self, name)
+
+    def tester_data(self, name: str) -> pl.DataFrame:
+        """测试数据集 DataFrame（stat 测试器用）。"""
+        return tester_ops.tester_data(self, name)
 
     def tester_update(self, name: str | None = None, *, all: bool = False,
-                    resync: bool = False) -> dict | list[dict]:
-        """tester 更新：传导检查上游（factor 全链）就绪 → 物化 factor_tester/<name>/。
-
-        幂等；update 成功后节点置 valid=True。
-        """
-        if all:
-            return [self._tester_scan_one(n["name"], resync=resync)
-                    for n in self.graph.list("tester")]
-        if not name:
-            raise ValueError("test update 需要测试集名（或 --all）")
-        self.graph.assert_ready("tester", name)
-        return self._tester_scan_one(name, resync=resync)
-
-    def _tester_scan_one(self, name: str, *, resync: bool = False) -> dict:
-        node = self._require_node("tester", name)
-        extra = dict(node.get("extra") or {})
-        cur_hash = self._tester_hash(node)
-        spec = self._tester_spec(node)
-        version_before = node.get("version", 0)
-        # 幂等仅当节点有效：上游变化置脏（valid=False）后 update 必须强制重建
-        if not resync and node.get("valid") \
-                and extra.get("dependency_hash") == cur_hash \
-                and (node.get("materialized") or extra.get("materialized")):
-            return {"name": name, "version_before": version_before,
-                    "version_after": version_before, "materialized": True,
-                    "changed": False, "rows": 0, "quantiles": spec.quantiles,
-                    "periods": list(spec.periods)}
-        out_dir = self.data_dir / "factor_tester" / name
-        keys = list(self._factor_meta_dict(
-            node.get("factor", "").split(":", 1)[1])["keys"])
-        dt = keys[-1] if keys else ""
-        pkeys, gran = self._partition_plan(node, dt_col=dt)
-        out_path = out_dir / ("data.parquet" if not pkeys else "")
-        # 增量物化：最近上游积累事件有明确 datetime 区间且已有物化 → 只重算该区间
-        # （分区场景只替换受影响分区文件，flat 场景删区间+合并）
-        scope = None if resync else self._upstream_scope(node)
-        # d{no} 为前向累计收益（t 时刻输出用到 t..t+no-1 的 returns）：输入在
-        # [lo, hi] 变化 → 输出受影响 [hi-no+1, hi]，重算区间按最大 period 向后展开
-        max_no = max(spec.periods, default=0)
-        if scope and max_no > 1:
-            (lo, hi), syms = scope
-            scope = (_expand_scope([lo, hi], back=max_no - 1), syms)
-        if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
-            (lo, hi), syms = scope
-            dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
-            sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
-            inc = self._tester_build(node, dt_range=(lo, hi), symbols=syms)
-            if pkeys:
-                old = pl.scan_parquet(out_dir, hive_partitioning=True)
-                df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt,
-                                           sym_expr=sym_expr,
-                                           sort_cols=[dt, keys[0]] if dt else None)
-            else:
-                keep = pl.scan_parquet(out_path).filter(
-                    ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
-                ).collect()
-                df = pl.concat([keep, inc], how="vertical_relaxed"
-                               ).unique(subset=keys, keep="last")
-                if dt:
-                    df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
-                df.write_parquet(out_path)
-        else:
-            df = self._tester_build(node)
-            if dt:
-                df = df.sort([dt, keys[0]])  # 物化存储时间优先
-            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt,
-                                    clean=True)
-        cols = [{"name": c, "display_name": c, "data_type": str(t)}
-                for c, t in zip(df.columns, df.dtypes)]
-        # 物化成功 → resolve 收口：铸版本并记录消费的合并事件（带 datetime_scope，
-        # 供下游沿链增量）+ 出边 required_version 对齐 + valid/materialized
-        m = self.graph.resolve("tester", name, extra={
-            "dependency_hash": cur_hash, "materialized_at": _now_iso(),
-            "columns": cols,
-        })
-        version_after = m["version"]
-        return {"name": name, "version_before": version_before,
-                "version_after": version_after, "materialized": True, "changed": True,
-                "rows": df.height, "quantiles": spec.quantiles,
-                "periods": list(spec.periods)}
-
+                      resync: bool = False) -> dict | list[dict]:
+        return tester_ops.tester_update(self, name, all=all, resync=resync)
     # ---------- 沿链级联 update ----------
 
     def update_cascade(self, asset_type: str | None = None, name: str | None = None,
@@ -2472,18 +979,6 @@ class GraphService:
             updated.append({"node": nid_, "version_before": before,
                             "version_after": after, "result": result})
         return {"node": center, "scope": scope, "updated": updated}
-
-
-def get_fieldset_engine(name: str):
-    from ..fieldset.engine import get_engine
-
-    return get_engine(name)
-
-
-def get_feature_engine(name: str):
-    from ..feature.engine import get_engine
-
-    return get_engine(name)
 
 
 __all__ = ["GraphService"]

@@ -48,27 +48,35 @@ src/stkoe/
 │   ├── spec.py        # TableLayout/ColumnMeta/FileDiff dataclass
 │   ├── util.py        # parquet 指纹/布局识别/footer/差异/signature
 │   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
+│   ├── ops.py         # table 资产业务（登记/读取/重扫对账；GraphService 薄委托入口）
 │   └── handlers.py    # 任务版 Handler（source="table"，注册进 TaskRegistry）
 ├── index/             # 索引资产（symbol/datetime 列，独立物理目录 index/，走 GraphService）
+│   ├── ops.py         # index 资产业务（登记 + 键唯一性校验/物化粒度引导/重扫对账）
 │   └── handlers.py    # 任务版 Handler（source="index"，注册进 TaskRegistry）
 ├── panel/             # 逻辑数据集（index 表 + 成员表 join，走 GraphService）
+│   ├── ops.py         # panel 资产业务（登记/物化/视图构建 _panel_lazy，下游沿链复用）
 │   └── handlers.py    # 任务版 Handler（source="panel"，注册进 TaskRegistry）
 ├── fieldset/          # 衍生指标集（走 GraphService）
 │   ├── spec.py        # FieldMeta dataclass
 │   ├── engine.py      # 公式引擎插件（CalcEngine + register/get；仅 polars）
+│   ├── ops.py         # fieldset 资产业务（字段定义/校验/物化；_formula_refs/_expand_scope 原点）
 │   └── handlers.py    # 任务版 Handler（source="fieldset"，注册进 TaskRegistry）
 ├── sample/            # 样本池（fieldset 视图 ∩ 指定 index 键集合，无物化）
+│   ├── ops.py         # sample 资产业务（实时视图 _sample_view_lf，factor/tester 沿链复用）
 │   └── handlers.py    # 任务版 Handler（source="sample"，注册进 TaskRegistry）
 ├── feature/           # 因子定义库（走 GraphService；纯定义，无物化）
 │   ├── engine.py      # 公式引擎插件（复用 CalcEngine 注册表；仅 polars）
+│   ├── ops.py         # feature 资产业务（定义/即时求值）
 │   └── handlers.py    # 任务版 Handler（source="feature"，注册进 TaskRegistry）
 ├── factor/            # 最终因子（走 GraphService）
 │   ├── engine.py      # 算子注册表（FactorOperator/NothingOperator）+ pipeline 解析 + 公式引擎
+│   ├── ops.py         # factor 资产业务（计算/物化/批量共享视图；_factor_compute 供 tester 复用）
 │   └── handlers.py    # 任务版 Handler（source="factor"，注册进 TaskRegistry）
 ├── factor_tester/     # 因子测试数据集（走 GraphService）
 │   ├── spec.py        # FactorTesterSpec dataclass
 │   ├── tester.py      # 测试数据集准备 + 六类测试器（bucket_returns/factor_returns/
 │   │                  #   bucket_turnover/autocorrelation/ic/coverage，纯 polars）
+│   ├── ops.py         # tester 资产业务（构造/物化/校验；资产链末端）
 │   └── handlers.py    # 任务版 Handler（source="tester"，注册进 TaskRegistry）
 ├── stat/              # 数据统计资产（StatController，async 接口）
 │   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
@@ -83,8 +91,9 @@ src/stkoe/
 │   ├── store.py       # GraphStore：节点/边 CRUD + 血缘遍历（BFS，带环保护）+ 物理指纹普通表
 │   ├── events.py      # 事件合并（symbol/datetime 并集、field 交集）与积累（水位线）
 │   ├── controller.py  # GraphController：资产 CRUD + 依赖约束 + notify_change/resolve(_all)
-│   ├── service.py     # GraphService：table/index/panel/fieldset/sample/feature/factor/tester
-│   │                  #   统一服务（登记/依赖/版本走 graph；实时视图 + 物化落盘）
+│   ├── service.py     # GraphService：图交互 + 共享基础设施（登记/事件/列解析/级联 update）；
+│   │                  #   各资产公共 API 仅薄委托到对应模块 ops.py（业务实现不在本文件）
+│   ├── materialize.py # 物化共享基础设施（时间桶分区计划/PartitionBy 落盘/桶增量重写）
 │   ├── handlers.py    # 各资产 Handler（V3.0 设计形态：table/index/panel/fieldset/…/graph）
 │   └── errors.py      # AssetNotFound/Exists、DependencyError、CycleError 等
 └── task/              # 任务框架
@@ -124,7 +133,14 @@ src/stkoe/
    （panel/fieldset/factor/test）→ 报错提示先 `<type> update <name>`；sample/feature 恒实时
 5. **依赖查询用 Cypher**（变长/批量），不用 Python 循环：`store._walk` 逐层批量
    `MATCH (a)-[r:DEPENDS]->(n) WHERE a.id IN $ids`
-6. **单一实现**：业务只在 GraphService 一份；CLI/Execute/task handlers 只是薄参数解析
+6. **业务分资产模块、GraphService 薄委托**：各资产业务实现在其模块 `ops.py`
+   （`table/ops.py` / `panel/ops.py` / `fieldset/ops.py` / …），函数第一参数为
+   GraphService 实例，经 `svc` 调用图能力；GraphService 保留**图交互与共享基础
+   设施**（节点/事件/列解析/级联 update/通用读取）并对其公共 API 做**薄委托**
+   （保持 Execute/CLI/测试既有调用不变）；跨模块共享的视图/计算能力
+   （`_panel_lazy`/`_sample_view_lf`/`_factor_compute` 等）也在 GraphService 上
+   留同名委托，便于统一入口与测试 monkeypatch；CLI/Execute/task handlers 只是
+   薄参数解析。物化落盘共用 `graph/materialize.py`（时间桶/PartitionBy/桶重写）
 7. **resolve 收口**：update 成功后走 `graph.resolve` → 铸版本 + 合并事件入 version_list +
    出边 required_version 对齐 + valid/materialized；`set(self_invalidate=...)` 定义键变更
    置脏自身（fieldset check 写回 validated 用 `self_invalidate=False` 例外）
@@ -235,6 +251,33 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 refactor: GraphService 瘦身——资产业务分模块 ops.py（130KB → 48KB）
+
+- **背景**：`graph/service.py` 巨石（150 方法 / 130KB）——table/index/panel/fieldset/
+  sample/feature/factor/tester 全部业务 + 物化 + 事件都堆在一个类里，定位问题/修改困难
+- **拆分**：8 个资产模块各建 **`ops.py`**（模块级函数，第一参数 `svc`=GraphService
+  实例）承载全部业务实现——`table/ops.py`、`index/ops.py`（含 `_partition_hint`）、
+  `panel/ops.py`（含视图构建 `_panel_lazy`/`_asof_join`）、`fieldset/ops.py`（含
+  `_formula_refs`/`_expand_scope` 原点）、`sample/ops.py`（含 `_sample_view_lf`）、
+  `feature/ops.py`、`factor/ops.py`（含批量共享视图三阶段）、`factor_tester/ops.py`
+  （资产链末端）；共享物化基础设施 → 新模块 **`graph/materialize.py`**
+  （`partition_plan`/`scan_materialized`/`write_partitioned`/`rewrite_buckets`/
+  `index_node`）；`_now_iso` 移入 `graph/version.py`（`now_iso`，避免循环导入）；
+  删死代码 `_index_partition_keys` 与模块尾部 `get_fieldset_engine`/
+  `get_feature_engine` 转发
+- **GraphService 保留**：图交互 + 共享基础设施（`_scan_disk`/`_change_events`/
+  `_meta_dict`/`_read_lazy`/`_resolve_col_meta`/`_require_materialized`/
+  `_collect_page`/`_upstream_scope`/`_index_node`/`update_cascade`）；公共 API 全部
+  **薄委托**（dispatch/CLI/stat/测试 160+ 调用点零改动）；跨模块共享视图/计算能力
+  （`_panel_lazy`/`_fieldset_view_lf`/`_sample_view_lf`/`_factor_meta_dict`/
+  `_factor_hash`/`_factor_compute` 等）留同名委托——ops 间统一经 `svc` 调用，
+  便于统一入口与测试 monkeypatch
+- **依赖方向**：panel ← fieldset ← sample ← feature/factor ← tester（与资产血缘
+  同向，无环）；测试 spy 从 patch GraphService 私有方法改为 patch 模块函数
+  （~13 处）
+- 测试：全量 278 用例绿（108s）；文档：README §1/§15、AGENTS.md 目录结构 +
+  架构要点 #6
 
 ### 2026-08 fix: 全量物化写前清空物化目录——清理新数据中已消失的陈旧桶（phantom 行）
 

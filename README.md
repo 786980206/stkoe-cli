@@ -3,8 +3,10 @@
 stkoe 数据服务（gRPC）：管理**表 / 索引 / 面板 / 衍生指标集 / 样本池 / 因子 / 因子测试集 / 统计**等数据资产。
 
 - **图资产模型**：`src/stkoe/graph/` 图模块（graphqlite 嵌入式图库，节点/边/版本/事件响应）
-  + `GraphService` 统一服务（table/index/panel/fieldset/sample/feature/factor/tester
-  三路径统一，资产登记/依赖/版本/血缘全部走图）。
+  + `GraphService` 统一服务入口（table/index/panel/fieldset/sample/feature/factor/tester
+  三路径统一，资产登记/依赖/版本/血缘全部走图）——**业务实现分资产模块**
+  （`table/ops.py` / `panel/ops.py` / …，见 §15 目录结构），GraphService 保留图交互
+  与共享基础设施，公共 API 薄委托到各模块。
 - **本文档是唯一入口文档**：数据资产与图设计、对外 API 全量说明、配置、存储布局、
   测试与路线图都在这里。
 
@@ -954,18 +956,20 @@ uv run pytest -q        # 默认全量 278 用例（graph 模块 + gRPC/资产�
 src/stkoe/
 ├── cli.py / args.py / jsonutil.py / logutil.py / settings.py / dbt.py
 ├── grpc/               # stkoe.proto + 编译产物 + dispatch.py（Execute 分发）+ server.py
-├── table/ index/ panel/ fieldset/ sample/ feature/ factor/ factor_tester/ stat/ mock/
+├── table/ …/ factor_tester/    # 资产模块：ops.py = 资产业务实现（GraphService 薄委托入口），
+│                               #   handlers.py = 任务版 Handler，engine/spec/util = 领域组件
 ├── graph/              # 资产血缘图（graphqlite）+ GraphService
 │   ├── model.py        # DataChangeEvent / AssetMeta / DependencyEdge / 列元数据
 │   ├── store.py        # GraphStore：节点/边 CRUD + BFS 血缘遍历 + txn 事务
 │   ├── export.py       # build_payload / column_payload / node_summaries（→ Cytoscape elements JSON）
 │   ├── events.py       # 事件合并（并集/交集）与积累（required_version 水位线）
 │   ├── controller.py   # GraphController：CRUD + 依赖约束 + notify_change/resolve(_all)
-│   ├── service.py      # GraphService：table/index/panel/fieldset/sample/feature/factor/tester
-│   │                  #   统一服务（登记/依赖/版本走 graph；实时视图 + 物化落盘）
+│   ├── service.py      # GraphService：图交互 + 共享基础设施（登记/事件/列解析/级联
+│   │                  #   update）；各资产公共 API 仅薄委托到对应模块 ops.py
+│   ├── materialize.py  # 物化共享基础设施（时间桶分区计划 / PartitionBy 落盘 / 桶增量重写）
 │   ├── handlers.py     # 资产 Handler（图账本层）
 │   ├── analyze.py      # 图算法 + 影响分析（page_rank / degree / components / impact）
-│   ├── version.py      # 高精度时间戳版本号
+│   ├── version.py      # 高精度时间戳版本号 + now_iso
 │   └── errors.py
 └── task/               # 后台任务框架
 ```

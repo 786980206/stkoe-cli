@@ -21,4 +21,9 @@ def new_version() -> int:
     return v
 
 
-__all__ = ["new_version"]
+def now_iso() -> str:
+    """当前时间的人类可读字符串（``%Y-%m-%d %H:%M:%S``，版本/物化时间戳展示）。"""
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+__all__ = ["new_version", "now_iso"]

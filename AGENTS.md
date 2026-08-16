@@ -236,6 +236,22 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 test: gRPC Execute 端到端补测——graph update/analyze/impact 全链路回归
+
+- **补用例**（test_graph.py TestGraphGrpcExecute 4 → 9 例）：`e:graph update
+  --node/--all`（真实 gRPC + 真实物化）、`e:graph analyze`（PageRank/度/连通
+  分量结构）、`e:graph impact --node`（下游清单 + depth）、update 缺参数/节点
+  不存在 → DataHeader.code != 0 边界
+- **新 fixture `srv_data`**：带物理数据 + 全链就绪的 gRPC 服务（handler 层链
+  无物理文件，级联 update 无法真实执行）——GraphService 建链 + 依次 update
+  后再起服务
+- **测试基建教训**：gRPC 的 graph update（含参数错误的请求）会在 server worker
+  线程创建线程本地 GraphService 缓存连接（`_graph_service` 不 close）→ Windows
+  上固定路径数据目录的 rmtree 被占用静默失败（ignore_errors）→ 残留库污染
+  下一个用例（index already exists 假象）。srv/srv_data 都改用唯一临时目录
+  （tempfile.mkdtemp），残留目录不再复用
+- 文档：AGENTS.md
+
 ### 2026-08 feat: symbol_scope 提取——源头事件带标的集合，增量按「时间 × 标的」裁剪
 
 - **背景**：P0 范围化事件只提取 datetime 区间，`symbol_scope` 恒 None（全集）——

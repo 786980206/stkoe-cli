@@ -762,18 +762,24 @@ class TestGraphAnalyze:
         finally:
             import shutil
             shutil.rmtree(base, ignore_errors=True)
+
+
+class TestGraphGrpcExecute:
     """gRPC Execute 端到端：e:graph ... → DataHeader(0) + JsonData。"""
 
     @pytest.fixture()
     def srv(self):
         import socket
+        import tempfile
 
         from stkoe.grpc.server import StkoeServer
 
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_grpc")
+        # 唯一临时目录：graph update（含参数错误的请求）会在 server worker 线程
+        # 持有线程本地缓存连接，固定路径的 rmtree 会被占用（Windows）→ 残留污染
+        base = tempfile.mkdtemp(prefix="gql_test_grpc_")
         _make_graph_db(base)
         srv = StkoeServer(port=port, data_dir=base).start()
         yield srv
@@ -788,6 +794,65 @@ class TestGraphAnalyze:
         from stkoe.grpc import stkoe_pb2_grpc
 
         ch = grpc.insecure_channel(f"127.0.0.1:{srv.port}")
+        yield stkoe_pb2_grpc.StkoeServiceStub(ch)
+        ch.close()
+
+    @pytest.fixture()
+    def srv_data(self):
+        """带物理数据 + 全链就绪的 gRPC 服务（graph update 端到端用）。
+
+        与 srv（handler 层无物理数据）不同：GraphService 建链 + 依次 update，
+        使级联 update / 增量物化可真实执行。数据目录用唯一临时目录——graph
+        update 会在 server worker 线程持有线程本地缓存连接，固定路径的 rmtree
+        会被占用（Windows），残留库会污染下一个用例。
+        """
+        import socket
+        import tempfile
+
+        import polars as pl
+
+        from stkoe.graph.service import GraphService
+        from stkoe.grpc.server import StkoeServer
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        base = tempfile.mkdtemp(prefix="gql_grpc_data_")
+        for sub, d in (("index", "index"), ("table", "m1")):
+            os.makedirs(os.path.join(base, sub, d), exist_ok=True)
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "code": [1, 2]}).write_parquet(
+            os.path.join(base, "index", "index", "data.parquet"))
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "price": [1.5, 2.5]}).write_parquet(
+            os.path.join(base, "table", "m1", "data.parquet"))
+        s = GraphService(base)
+        s.table_add("m1")
+        s.index_add("index")
+        s.panel_add("ds1", "index", ["m1"])
+        s.fieldset_add("fs1", "ds1")
+        s.fieldset_add_field("fs1", "x2", "code * 2")
+        s.fieldset_check("fs1", "x2")
+        s.sample_add("sp1", "fs1", "index")
+        s.feature_add("f1", "code * 2")
+        s.factor_add("fac1", "f1", "sp1")
+        for t, n in [("panel", "ds1"), ("fieldset", "fs1"), ("sample", "sp1"),
+                     ("feature", "f1"), ("factor", "fac1")]:
+            getattr(s, f"{t}_update")(n)
+        s.close()
+        srv = StkoeServer(port=port, data_dir=base).start()
+        yield srv
+        srv.stop()
+        import shutil
+        shutil.rmtree(base, ignore_errors=True)
+
+    @pytest.fixture()
+    def client_data(self, srv_data):
+        import grpc
+
+        from stkoe.grpc import stkoe_pb2_grpc
+
+        ch = grpc.insecure_channel(f"127.0.0.1:{srv_data.port}")
         yield stkoe_pb2_grpc.StkoeServiceStub(ch)
         ch.close()
 
@@ -847,3 +912,78 @@ class TestGraphAnalyze:
             stkoe_pb2.ExecuteRequest(source="graph", action="lineage",
                                      args=["--depth", "0"])))
         assert header.code != 0  # 业务错误：深度必须为正
+
+    def test_execute_graph_update_cascade(self, client_data):
+        """e:graph update --node：沿链级联（gRPC Execute 端到端，真实物化）。"""
+        from stkoe.grpc import stkoe_pb2
+
+        header, datas = self._collect(client_data.Execute(
+            stkoe_pb2.ExecuteRequest(
+                source="graph", action="update",
+                args=["--node", "fieldset:fs1"])))
+        assert header.code == 0
+        data = json.loads(datas[0].json.data)
+        assert data["scope"] == "downstream"
+        assert data["node"] == "fieldset:fs1"
+        assert [u["node"] for u in data["updated"]] == \
+            ["fieldset:fs1", "sample:sp1", "factor:fac1"]
+        # 全部真实更新（版本推进）或已就绪幂等（版本不变）均可，但必须物化成功
+        assert all(u["version_after"] >= u["version_before"]
+                   for u in data["updated"])
+
+    def test_execute_graph_update_all(self, client_data):
+        """e:graph update --all：全图拓扑序更新。"""
+        from stkoe.grpc import stkoe_pb2
+
+        header, datas = self._collect(client_data.Execute(
+            stkoe_pb2.ExecuteRequest(source="graph", action="update",
+                                     args=["--all"])))
+        assert header.code == 0
+        data = json.loads(datas[0].json.data)
+        assert data["scope"] == "all"
+        nodes = [u["node"] for u in data["updated"]]
+        assert set(nodes) == {"table:m1", "index:index", "panel:ds1",
+                              "fieldset:fs1", "sample:sp1", "feature:f1",
+                              "factor:fac1"}
+        idx = {n: i for i, n in enumerate(nodes)}
+        assert idx["fieldset:fs1"] > idx["panel:ds1"]
+        assert idx["factor:fac1"] > idx["sample:sp1"]
+        assert idx["factor:fac1"] > idx["feature:f1"]
+
+    def test_execute_graph_analyze(self, client):
+        """e:graph analyze：PageRank/度/连通分量（gRPC Execute 端到端）。"""
+        from stkoe.grpc import stkoe_pb2
+
+        header, datas = self._collect(client.Execute(
+            stkoe_pb2.ExecuteRequest(source="graph", action="analyze")))
+        assert header.code == 0
+        data = json.loads(datas[0].json.data)
+        assert set(data) == {"page_rank", "degree", "components"}
+        assert len(data["page_rank"]) == 7
+        assert len(data["components"]) == 1
+
+    def test_execute_graph_impact(self, client):
+        """e:graph impact --node：下游影响清单（gRPC Execute 端到端）。"""
+        from stkoe.grpc import stkoe_pb2
+
+        header, datas = self._collect(client.Execute(
+            stkoe_pb2.ExecuteRequest(
+                source="graph", action="impact",
+                args=["--node", "fieldset:fs1"])))
+        assert header.code == 0
+        data = json.loads(datas[0].json.data)
+        assert data["node"] == "fieldset:fs1"
+        assert [a["id"] for a in data["assets"]] == ["sample:sp1", "factor:fac1"]
+        assert [a["depth"] for a in data["assets"]] == [1, 2]
+
+    def test_execute_graph_update_bad_args(self, client):
+        """update 缺 --node/--all 或节点不存在 → 业务错误（DataHeader.code != 0）。"""
+        from stkoe.grpc import stkoe_pb2
+
+        header, _ = self._collect(client.Execute(
+            stkoe_pb2.ExecuteRequest(source="graph", action="update")))
+        assert header.code != 0
+        header, _ = self._collect(client.Execute(
+            stkoe_pb2.ExecuteRequest(source="graph", action="update",
+                                     args=["--node", "table:ghost"])))
+        assert header.code != 0

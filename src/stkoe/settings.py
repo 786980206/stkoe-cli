@@ -1,8 +1,8 @@
 """stkoe.json 配置：查找 / 加载 / 保存
 
 约定：
-- 查找优先级：``STKOE_CONFIG`` 环境变量 > ``./stkoe.json``（若存在）> ``~/.stkoe/stkoe.json``
-- 写入位置：``STKOE_CONFIG``（若设置）> ``./stkoe.json``
+- 配置路径（读取与写入同一文件）：``STKOE_CONFIG`` 环境变量 > ``./stkoe.json``
+  （若存在）> ``~/.stkoe/stkoe.json``
 - 文件内键名保持用户输入形态（含连字符，如 ``grpc-host``），不做任何转换
 - 内存对象为 ``StkoeConfig`` dataclass：已知键映射为类型化字段，任意自定义键进 ``extra``
 """
@@ -54,7 +54,7 @@ class StkoeConfig:
 
 
 def config_path() -> Path:
-    """读取用配置路径（查找优先级：env > 本地 > ~/.stkoe/stkoe.json）"""
+    """生效配置路径（读取与写入同一文件：env > 本地若存在 > ~/.stkoe/stkoe.json）"""
     env = os.environ.get("STKOE_CONFIG")
     if env:
         return Path(env)
@@ -62,14 +62,6 @@ def config_path() -> Path:
     if local.exists():
         return local
     return Path.home() / ".stkoe" / "stkoe.json"
-
-
-def save_path() -> Path:
-    """写入用配置路径（env > 本地 stkoe.json）"""
-    env = os.environ.get("STKOE_CONFIG")
-    if env:
-        return Path(env)
-    return Path.cwd() / "stkoe.json"
 
 
 def _read_dict(path: Path) -> dict:
@@ -102,8 +94,8 @@ def load_config() -> StkoeConfig:
 
 
 def save_config(kv: dict) -> Path:
-    """合并写入配置项（保留文件中未涉及的键）；返回写入路径"""
-    p = save_path()
+    """合并写入配置项（保留文件中未涉及的键）；写入生效配置所在文件，返回写入路径"""
+    p = config_path()
     existing = _read_dict(p)
     existing.update(kv)
     p.parent.mkdir(parents=True, exist_ok=True)

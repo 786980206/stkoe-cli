@@ -56,18 +56,20 @@ def test_save_keeps_hyphen_key(cfg_env):
 
 
 def test_config_path_env_priority(tmp_path, monkeypatch):
-    """STKOE_CONFIG 优先于本地/家目录"""
+    """STKOE_CONFIG 优先于本地/家目录（读与写同一文件）"""
     monkeypatch.setenv("STKOE_CONFIG", str(tmp_path / "x.json"))
     assert settings.config_path() == tmp_path / "x.json"
-    assert settings.save_path() == tmp_path / "x.json"
+    assert settings.save_config({"grpc-host": "0.0.0.0"}) == tmp_path / "x.json"
 
 
 def test_config_path_home_fallback(tmp_path, monkeypatch):
-    """无 env 且无本地配置时，回退 ~/.stkoe/stkoe.json"""
+    """无 env 且无本地配置时，回退 ~/.stkoe/stkoe.json（读写同一文件）"""
     monkeypatch.delenv("STKOE_CONFIG", raising=False)
     monkeypatch.chdir(tmp_path)  # 隔离 cwd，避免命中本地 stkoe.json
-    assert settings.config_path() == Path.home() / ".stkoe" / "stkoe.json"
-    assert settings.save_path() == tmp_path / "stkoe.json"  # 写入仍优先本地
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")  # 隔离真实用户目录
+    home_cfg = tmp_path / "home" / ".stkoe" / "stkoe.json"
+    assert settings.config_path() == home_cfg
+    assert settings.save_config({"grpc-host": "0.0.0.0"}) == home_cfg  # 写入生效配置文件
 
 
 def test_corrupt_config_raises(cfg_env):

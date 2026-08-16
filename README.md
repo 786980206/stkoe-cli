@@ -217,7 +217,7 @@ uv run pytest -q        # 全量测试
 ## 5. 配置（stkoe.json）
 
 - **查找优先级**：`STKOE_CONFIG` 环境变量（或 `stkoe serve --config <路径>`）> `./stkoe.json` > `~/.stkoe/stkoe.json`
-- **写入位置**：`STKOE_CONFIG` > `./stkoe.json`
+- **写入位置**：与读取同一文件（生效配置所在文件，即 `config get` 的 `config_file`）
 - **已知键**：
 
 | 键 | 默认 | 说明 |

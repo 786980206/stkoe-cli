@@ -234,6 +234,18 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 refactor(settings): config set 写入位置与读取统一（写入生效配置所在文件）
+
+- **问题**：读取有三级回退（`STKOE_CONFIG` > `./stkoe.json` > `~/.stkoe/stkoe.json`），
+  但 `save_path` 写入只认 `STKOE_CONFIG` > `./stkoe.json`——配置来自用户目录时
+  `config set` 却写到当前目录，读写位置不一致
+- **修复**：删除 `save_path`，`save_config` 统一用 `config_path()`（env > 本地若存在 >
+  `~/.stkoe/stkoe.json`）——写入生效配置所在文件，`config get/set` 的
+  `config_file`/`written` 天然一致
+- 测试：test_config.py 两处 `save_path` 断言改为 `save_config` 落盘断言（家目录回退
+  用例 monkeypatch `Path.home` 隔离真实用户目录）；全量 211 用例绿
+- 文档：README §5 写入位置说明、settings.py docstring
+
 ### 2026-08 refactor: 删除 v3.0-def.py 设计基准 + tools/graph-viewer 独立可视化工具
 
 - **`v3.0-def.py` 删除**（485 行 pydantic 初始设计定义）：无任何代码引用/执行，其定义

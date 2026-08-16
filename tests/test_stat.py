@@ -146,6 +146,91 @@ def test_list_and_delete(ctl, tmp_path):
         _meta(ctl, "panel", "ds1")
 
 
+# ---------- stat 进图 ----------
+
+def _stat_svc(root):
+    from stkoe.graph.service import GraphService
+
+    return GraphService(data_dir=root)
+
+
+def test_scan_registers_graph_node(ctl, tmp_path):
+    """stat 进图：scan 后 Stat 节点 + DEPENDS 边 → 目标登记，graph 各通道可见"""
+    root = _setup_sources(tmp_path)
+    _scan(ctl, "panel", "ds1")
+    svc = _stat_svc(root)
+    try:
+        node = svc.store.get_node("stat:panel/ds1/coverage")
+        assert node is not None
+        assert node["type"] == "stat"
+        assert node["kind"] == "coverage"
+        assert node["target_type"] == "panel" and node["target_name"] == "ds1"
+        assert node["partitions"] == ["all", "date", "sym"]
+        assert len(node["files"]) == 3
+        assert node["files"][0]["partition"] == "all"
+        deps = svc.store.deps_of("stat:panel/ds1/coverage")
+        assert [d["target"] for d in deps] == ["panel:ds1"]
+        assert deps[0].get("role") == "target"
+        # graph nodes 可见（node_summaries --type stat）；血缘：目标下游含 stat
+        from stkoe.graph.export import node_summaries
+
+        assert "panel/ds1/coverage" in \
+            [n["name"] for n in node_summaries(svc.store, "stat")]
+        assert "stat:panel/ds1/coverage" in \
+            [d["id"] for d in svc.store.downstream("panel:ds1")]
+    finally:
+        svc.close()
+
+
+def test_scan_rescan_updates_single_node(ctl, tmp_path):
+    """重复 scan 幂等：更新同一 Stat 节点（不重复登记）"""
+    root = _setup_sources(tmp_path)
+    _scan(ctl, "panel", "ds1")
+    _scan(ctl, "panel", "ds1")
+    svc = _stat_svc(root)
+    try:
+        assert len(svc.store.list_nodes("Stat")) == 1
+    finally:
+        svc.close()
+
+
+def test_stat_delete_removes_graph_node(ctl, tmp_path):
+    """stat delete 同步删图内节点（按 kind 精确 / 整目标）"""
+    root = _setup_sources(tmp_path)
+    _scan(ctl, "panel", "ds1")
+    _scan(ctl, "table", "m1")
+    svc = _stat_svc(root)
+    try:
+        assert svc.store.get_node("stat:panel/ds1/coverage") is not None
+        assert svc.store.get_node("stat:table/m1/coverage") is not None
+    finally:
+        svc.close()
+
+    _delete(ctl, "panel", "ds1")  # 删整目标 → 该目标 stat 节点全清
+    svc = _stat_svc(root)
+    try:
+        assert svc.store.get_node("stat:panel/ds1/coverage") is None
+        assert svc.store.get_node("stat:table/m1/coverage") is not None  # 其他目标不动
+    finally:
+        svc.close()
+
+
+def test_target_delete_cascades_stat_node(ctl, tmp_path):
+    """目标资产删除 → Stat 节点级联清理（有统计引用时需 --force）"""
+    root = _setup_sources(tmp_path)
+    _scan(ctl, "panel", "ds1")
+    svc = _stat_svc(root)
+    try:
+        assert svc.store.get_node("stat:panel/ds1/coverage") is not None
+        with pytest.raises(Exception):
+            svc.panel_delete("ds1")  # 统计节点是下游 → 非 force 被拦截
+        svc.panel_delete("ds1", force=True)
+        assert svc.store.get_node("panel:ds1") is None
+        assert svc.store.get_node("stat:panel/ds1/coverage") is None
+    finally:
+        svc.close()
+
+
 def test_table_target_scan(ctl, tmp_path):
     """table 目标：索引 = 非工具列（index 为独立资产，扫成员表 m1）"""
     _setup_sources(tmp_path)

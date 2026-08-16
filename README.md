@@ -23,7 +23,7 @@ stkoe 数据服务（gRPC）：管理**表 / 索引 / 数据集 / 衍生指标 /
 | `feature` | 因子定义库（命名公式，纯定义），`feature test` 在样本视图即时求值 |
 | `factor` | 最终因子（feature 公式 + sample 视图 + pipeline 算子链），物化、幂等 |
 | `tester` | 因子测试数据集（factor_tester）+ 六类测试器（stat 集成） |
-| `stat` | 覆盖率 / 存续统计（storage），输出 parquet 产物（不进 graph） |
+| `stat` | 覆盖率 / 存续统计（storage），输出 parquet 产物，scan 后在 graph 登记 Stat 节点 |
 | `mock` | 演示数据生成（`stkoe mock demo`/`gen`） |
 | `task` | 后台任务框架（SubmitTask/SubscribeTask/TaskControl，协作式取消） |
 
@@ -81,7 +81,7 @@ create_time / update_time / extra`。
 | `Factor` | FactorNode | `feature`（节点 id）、`sample`（节点 id）、`engine`、`pipeline`、`factor_col` |
 | `Tester` | TesterNode | `factor`（节点 id）、`returns/groupby/marketcap`、`spec`（quantiles/periods/…） |
 | `Model` | ModelNode | （预留） |
-| `Stat` | StatNode | （预留，stat 当前不进图） |
+| `Stat` | StatNode | `target_type`、`target_name`、`kind`、`partitions[]`、`files[{partition, rel_path, rows, size}]`（scan 后登记，见 §10） |
 | `Column` | 列节点（列级血缘） | `name`（列名）、`asset`（所属资产节点 id）、`asset_type`、`data_type/unit/formula/display_name/description/tags/as_index/source_table/source_field` |
 
 ColumnMeta / FieldMeta：`name, display_name, description, data_type, unit, formula, tags,
@@ -730,7 +730,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 ├── factor_tester/<name>/       # 因子测试数据集物化产物（时间桶 part=<v>/，见 §6.5）
 ├── panel/<name>/             # panel 物化产物（join 视图，时间桶 part=<v>/，见 §6.5）
 ├── fieldset/<name>/          # fieldset 物化产物（keys + 已校验字段，时间桶 part=<v>/，见 §6.5）
-└── stat/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 graph）
+└── stat/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（scan 后进 graph 登记）
 ```
 
 - **catalog.db vs tasks.db 分离**：catalog.db 管资产（图节点/边 + 物理指纹表，单文件同事务），
@@ -738,7 +738,12 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 - **catalog.db 已废弃**：不再产生；原 stkoe_objects/stkoe_depends 由 graph 节点/边承载，
   stkoe_data_files/stkoe_file_stats 迁入 catalog.db 普通表（同文件同事务可回滚）
 - **表删除只删登记（graph 节点/指纹），绝不删用户 parquet**（可重新 `add` 发现）；index 资产物理目录为 `index/`（与 table 的 `table/` 分离）
-- **stat 资产不进 graph**：文件夹存在即已扫描，`meta`/`list` 读目录
+- **stat 进图登记**：`stat scan` 成功后登记图内 `Stat` 节点
+  （`stat:<target_type>/<target_name>/<kind>`，含目标引用/分区/文件清单/时间）+
+  `(Stat)-[:DEPENDS]->目标` 边（role=target）——graph nodes/lineage/stats 可见，
+  目标下游闭包含 stat；**物理文件仍是唯一数据源**，节点是登记镜像（重复 scan
+  幂等更新；`stat delete` 同步删节点；目标资产删除时级联清理，删除目标需
+  `--force`——有统计引用视为下游）
 - **sample 无物化产物**：只登记于 graph（依赖 fieldset + 筛选 index），读取动态构造
   fieldset 视图 ∩ index 键集合
 - **feature 纯定义**：只登记于 graph，无任何磁盘产物
@@ -764,7 +769,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 | **factor** | **增量物化**：按源头积累事件区间只重算该区间（受影响桶）并合并写回；`--resync` 全量 | `factor/<name>/part=<v>/` |
 | **tester** | **增量物化**（同 factor） | `factor_tester/<name>/part=<v>/` |
 | **sample / feature** | 无物化，update 只**铸版本**（消费事件入 version_list）+ 出边水位对齐 | 无（实时构造） |
-| **stat** | 不进 graph，纯文件产物（手动 `stat scan` 触发） | `stat/<target>/<name>/<kind>/*.parquet` |
+| **stat** | scan 后登记 `Stat` 节点 + `(Stat)-[:DEPENDS]->目标` 边（无物化/版本语义，手动 `stat scan` 触发） | `stat/<target>/<name>/<kind>/*.parquet` |
 
 读取端（panel/fieldset/factor/test `get`）：**物化且 curated 读物化 parquet，否则实时计算**
 （curated = 已物化且依赖签名 == 当前签名；上游版本变化 → curated 失效自动回退实时）。
@@ -972,7 +977,7 @@ gclient> t:<task_id>
 | G6 | `AssetNode.version: str` | `int`（time_ns 时间戳，可直接排序比较） | 类型改进 ✓ |
 | G7 | 节点列存 `columns: dict[str, ColumnsMeta]` | 平铺 `columns` 列表 + `_norm_cols` 规范化 | 形态差异，行为等价 |
 | G8 | storage 钩子负责物化 | controller 层 `NullStorage` no-op 占位，service 层直接落盘（fieldset/factor/test 真实写 `<data_dir>/<type>/`） | 两层并存，物理层在 service 侧 |
-| G9 | `StatNode` 是图资产 | stat **不进 graph**（纯文件系统产物，见 §6.6） | **设计出入**：stat 在图外，血缘图看不到 stat 节点 |
+| G9 | `StatNode` 是图资产 | stat **进图登记**：scan 后建 `Stat` 节点 + `(Stat)-[:DEPENDS]->目标` 边（物理文件仍是唯一数据源，节点是登记镜像，见 §10） | ✅ 已修（评审项） |
 | G10 | `ModelNode` 资产 | 无 model 实现（ASSET_TYPES 含 "model" 但无 add/update） | 未实现（后续规划） |
 | G11 | 无 `assert_ready` | update 前强制"全部上游链 valid"（上游不齐则失败） | 新增增强 ✓ |
 | G12 | 依赖方"积累事件"驱动 | 上游变化 → 置脏（valid=False）驱动重建；版本水位为辅 | 简化后的形态，配合幂等修复 |

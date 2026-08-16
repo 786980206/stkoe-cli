@@ -252,7 +252,13 @@ class GraphStore:
             )
 
     def delete_node(self, node_id: str, detach: bool = True) -> None:
-        """删除节点（detach=True 连带删除所有边，用于 force 路径）。"""
+        """删除节点（detach=True 连带删除所有边，用于 force 路径）。
+
+        统计节点（Stat）是叶子登记镜像，随**被统计目标删除级联清理**（目标没了
+        统计即失效——先删依赖该节点的 Stat 节点，再删节点本身）。
+        """
+        self._cypher("MATCH (s:Stat)-[:DEPENDS]->(n {id: $id}) DETACH DELETE s",
+                     {"id": node_id})
         if detach:
             self._cypher("MATCH (n {id: $id}) DETACH DELETE n", {"id": node_id})
         else:

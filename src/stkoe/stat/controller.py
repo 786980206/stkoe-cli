@@ -6,6 +6,10 @@
 - 分组文件：``all.parquet``（全量统计）+ 按目标索引分组逐分区文件
   （panel 索引 = 主键 keys；table = 非工具列），命名 ``<partition>.parquet``
 - ``stat scan`` 生成/更新分组产物（幂等，重算覆盖）；``stat get`` 读文件
+- **进图登记**：scan 成功后把产物登记为图内 ``Stat`` 节点
+  （``stat:<target_type>/<target_name>/<kind>``）+ ``(Stat)-[:DEPENDS]->目标``
+  边（role=target）——graph nodes/lineage/stats 可见；物理文件仍是唯一数据源，
+  节点是登记镜像（``stat delete`` 与目标资产删除时级联清理）
 """
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ from pathlib import Path
 
 import polars as pl
 
+from ..graph.model import node_id
 from ..table.errors import DEFAULT_IGNORE_COLS, TableNotFoundError
 from ..table.util import now
 from .calc import calc_stats, calc_storage
@@ -64,6 +69,55 @@ class StatController:
         from ..graph.service import GraphService
 
         return GraphService(data_dir=self.data_dir)
+
+    def _register_graph_node(self, report: StatScanReport) -> None:
+        """统计产物登记进图：``Stat`` 节点 + ``(Stat)-[:DEPENDS]->目标`` 边。
+
+        - 节点 id ``stat:<target_type>/<target_name>/<kind>``，属性含目标引用/
+          kind/分区清单/文件清单/时间——graph nodes/lineage/stats 可见；
+        - 重复 scan 幂等：节点已存在则 patch（不重复登记）；
+        - 物理文件仍是唯一数据源，节点是登记镜像（`stat delete` 同步删除；
+          目标资产删除时由 ``GraphStore.delete_node`` 级联清理）。
+        """
+        svc = self._graph_service()
+        try:
+            store = svc.store
+            nid = f"stat:{report.target_type}/{report.target_name}/{report.kind}"
+            props = {
+                "name": f"{report.target_type}/{report.target_name}/{report.kind}",
+                "target_type": report.target_type,
+                "target_name": report.target_name,
+                "kind": report.kind,
+                "partitions": list(report.partitions),
+                "files": [{"partition": f.partition, "rel_path": str(f.rel_path),
+                           "rows": f.rows, "size": f.size} for f in report.files],
+                "updated_at": now(),
+                "materialized": True,
+            }
+            if store.has_node(nid):
+                store.patch_node(nid, **props)
+            else:
+                props["created_at"] = now()
+                store.create_node(nid, "Stat", props)
+            tgt = node_id(report.target_type, report.target_name)
+            if store.has_node(tgt):
+                store.create_edge(nid, tgt, "DEPENDS",
+                                  {"role": "target", "required_version": 0})
+        finally:
+            svc.close()
+
+    def _delete_graph_nodes(self, target_type: str, target_name: str,
+                            kind: str | None = None) -> None:
+        """删除图内 stat 登记节点（与物理产物目录删除同步）。"""
+        svc = self._graph_service()
+        try:
+            prefix = f"stat:{target_type}/{target_name}"
+            for n in svc.store.list_nodes("Stat"):
+                nid = n.get("id") or ""
+                if nid.startswith(prefix) and (kind is None or nid == f"{prefix}/{kind}"):
+                    svc.store.delete_node(nid)
+        finally:
+            svc.close()
 
     def _index_cols(self, target_type: str, target_name: str) -> list[str]:
         """目标索引列：panel 用主键 keys；table 用非工具列（走 graph）"""
@@ -126,9 +180,11 @@ class StatController:
                                   rel_path=p.relative_to(self.root),
                                   rows=df.height, size=p.stat().st_size))
         files = list(_ordered(tuple(files)))
-        return StatScanReport(
+        report = StatScanReport(
             target_type="tester", target_name=target_name, kind=kind,
             partitions=tuple(f.partition for f in files), files=tuple(files))
+        self._register_graph_node(report)
+        return report
 
     # ---------- scan ----------
 
@@ -158,9 +214,11 @@ class StatController:
             files.append(StatFile(partition=p, rel_path=f.relative_to(self.root),
                                   rows=_parquet_rows(f), size=f.stat().st_size))
         files = list(_ordered(tuple(files)))
-        return StatScanReport(target_type=target_type, target_name=target_name,
-                              kind=kind, partitions=tuple(f.partition for f in files),
-                              files=tuple(files))
+        report = StatScanReport(target_type=target_type, target_name=target_name,
+                                kind=kind, partitions=tuple(f.partition for f in files),
+                                files=tuple(files))
+        self._register_graph_node(report)
+        return report
 
     def _scan_storage_sync(self, target_type: str, target_name: str,
                            on_progress=None) -> StatScanReport:
@@ -202,9 +260,11 @@ class StatController:
             out_files.append(StatFile(partition=p, rel_path=f.relative_to(self.root),
                                       rows=df.height, size=f.stat().st_size))
         out_files = list(_ordered(tuple(out_files)))
-        return StatScanReport(target_type=target_type, target_name=target_name,
-                              kind="storage", partitions=tuple(f.partition for f in out_files),
-                              files=tuple(out_files))
+        report = StatScanReport(target_type=target_type, target_name=target_name,
+                                kind="storage", partitions=tuple(f.partition for f in out_files),
+                                files=tuple(out_files))
+        self._register_graph_node(report)
+        return report
 
     # ---------- get ----------
 
@@ -289,6 +349,7 @@ class StatController:
         if not target.exists():
             raise StatNotFoundError(f"stat 目录不存在: {target.relative_to(self.root)}")
         shutil.rmtree(target)
+        self._delete_graph_nodes(target_type, target_name, kind)
         return {"deleted": f"{target_type}/{target_name}" + (f"/{kind}" if kind else "")}
 
     # ---------- async 接口 ----------

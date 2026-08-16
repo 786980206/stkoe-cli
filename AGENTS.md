@@ -252,6 +252,35 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
   （tempfile.mkdtemp），残留目录不再复用
 - 文档：AGENTS.md
 
+### 2026-08 评审低优先项收尾：stat 进图登记 / graph analyze 批量 / 读前快检回归 / 物化粒度引导 / serve 缓存文档
+
+- **⑤ stat 进图登记**（评审项，放最后的低优先项）：`stat scan` 成功后把产物登记
+  为图内 `Stat` 节点（id=`stat:<target_type>/<target_name>/<kind>`，属性含
+  target_type/target_name/kind/partitions/files（{partition,rel_path,rows,size}）/
+  created_at/updated_at）+ `(Stat)-[:DEPENDS]->目标` 边（role=target）——graph
+  nodes/lineage/stats 可见，目标资产下游闭包含 stat；**物理文件仍是唯一数据源**，
+  节点是登记镜像（重复 scan 幂等 patch 不重复登记；`stat delete` 同步删节点；
+  `GraphStore.delete_node` 级联清理随目标删除的 Stat 节点——目标有统计引用时
+  删除需 `--force`）
+- **④ graph analyze 批量**：`--node <type:name>[,<type:name>...]` 逗号分隔多中心
+  ——`asset_graph` 取各中心上下游闭包的**并集**批量分析（不存在的节点跳过不
+  虚造，单中心字符串兼容旧签名）
+- **① 读前快检回归**：`_ensure_fresh` 已有实现（签名=sha256(rel_path|size|mtime_ns)
+  一致则继续、不一致自动重扫对账、未登记隐式注册）——补 TestQuickCheck 3 例
+  锁定行为（外部改文件后 get 自动对账铸版本/未登记目录隐式注册/table_data_key
+  签名）
+- **③ 物化粒度引导**：`_check_index_unique` 登记扫描顺带返回 datetime 跨度；
+  `index_add` 默认 `yearly` 且数据跨多年 → 报告带 `partition_hint`（提示
+  monthly/daily，增量重写按整年桶替换）；单年/已细化粒度不提示
+- **② serve 缓存文档**：README §8.4 新增「serve 运行期缓存与一致性」——线程本地
+  GraphService 连接缓存（改代码需重启 serve）/读前快检/update 幂等/物化 curated
+  读取回退/stat 独立
+- 测试：TestQuickCheck 3 + TestGraphAnalyze +2（多中心并集/dispatch 逗号分隔+
+  不存在节点跳过）+ TestIndexGraph +1（partition_hint）+ test_stat +4（scan 登记
+  节点与边/重扫幂等单节点/delete 同步删/目标删除级联）；全量 270 用例绿
+- 文档：README §1.1/§2.2（Stat 行）/§6.5（粒度引导）/§6.13（analyze 多节点）/
+  §8.4/§10/§11.1/§14 G9 行、AGENTS.md
+
 ### 2026-08 因子批量抽象：同 sample 多因子共享视图计算、分别物化（FactorEngine.fields）
 
 - **背景**：`factor update --all` 原逐因子独立 `_factor_compute`——同一 sample 的

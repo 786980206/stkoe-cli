@@ -715,6 +715,11 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
     assert report["target_type"] == "tester"
     assert "ic_d1" in report["partitions"]
     assert (root / "stat" / "tester" / "t1" / "ic" / "ic_d1.parquet").exists()
+    # stat 进图后 Stat 节点是 tester 的下游：先删统计，再删 tester
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="stat", action="delete", args=["t1", "--kind", "ic"])))
+    assert header.code == 0
+    assert _json(datas, "stat")["deleted"] == "tester/t1/ic"
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="tester", action="delete", args=["t1"])))

@@ -83,7 +83,7 @@ uv run pytest -q        # 全量测试
 - 已知键：`grpc-host`（默认 127.0.0.1）、`grpc-port`（9569）、`data-dir`（~/.stkoe）；任意键进 extra
 
 ```bash
-uv run stkoe config show | set --<key> <value> ...
+uv run stkoe config get | set --<key> <value> ...
 ```
 
 ## CLI / gRPC 命令

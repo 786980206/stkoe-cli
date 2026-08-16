@@ -224,4 +224,4 @@ rm -rf example-data stkoe.example.json                          # bash
 ```
 
 > 注：`stkoe.example.json` 是 `STKOE_CONFIG` 指向的临时配置；`stkoe.json`（仓库根）为共享配置，
-> 若此前存在会优先被读取，演示时请留意 `config show` 的 `config_file` 指向。
+> 若此前存在会优先被读取，演示时请留意 `config get` 的 `config_file` 指向。

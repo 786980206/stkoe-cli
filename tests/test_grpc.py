@@ -67,16 +67,16 @@ def test_execute_version_json(client):
     assert "version" in datas[0].json.data
 
 
-def test_execute_config_show_json(client):
+def test_execute_config_get_json(client):
     header, datas = _collect(client.Execute(
-        stkoe_pb2.ExecuteRequest(source="config", action="show")))
+        stkoe_pb2.ExecuteRequest(source="config", action="get")))
     assert header.code == 0
     assert datas[0].WhichOneof("type") == "json"
     assert datas[0].json.name == "config"
 
 
-def test_execute_config_set_then_show(client, tmp_path, monkeypatch):
-    """Execute config set 任意字段 → stkoe.json；show 反映生效配置"""
+def test_execute_config_set_then_get(client, tmp_path, monkeypatch):
+    """Execute config set 任意字段 → stkoe.json；get 反映生效配置"""
     monkeypatch.setenv("STKOE_CONFIG", str(tmp_path / "stkoe.json"))
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -87,7 +87,7 @@ def test_execute_config_set_then_show(client, tmp_path, monkeypatch):
         "grpc-host": "0.0.0.0", "grpc-port": "9000"}
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="config", action="show")))
+        source="config", action="get")))
     assert header.code == 0
     out = json.loads(datas[0].json.data)
     assert out["config_file"] == str(tmp_path / "stkoe.json")

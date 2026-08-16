@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""stkoe.json 配置：settings 加载/保存 + CLI config show/set"""
+"""stkoe.json 配置：settings 加载/保存 + CLI config get/set"""
 import json
 from pathlib import Path
 
@@ -84,21 +84,21 @@ def test_extra_keys_preserved(cfg_env):
     assert cfg.to_dict()["foo-bar"] == "baz"
 
 
-def test_cli_config_show_defaults(cfg_env, capsys):
-    assert main(["config", "show"]) == 0
+def test_cli_config_get_defaults(cfg_env, capsys):
+    assert main(["config", "get"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["grpc-host"] == "127.0.0.1"
     assert out["config_file"] == str(cfg_env)
 
 
-def test_cli_config_set_and_show(cfg_env, capsys):
+def test_cli_config_set_and_get(cfg_env, capsys):
     assert main(["config", "set", "--grpc-host", "0.0.0.0",
                  "--grpc-port", "9000"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["written"] == str(cfg_env)
     assert out["set"] == {"grpc-host": "0.0.0.0", "grpc-port": "9000"}
 
-    assert main(["config", "show"]) == 0
+    assert main(["config", "get"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["grpc-host"] == "0.0.0.0"
     assert out["grpc-port"] == 9000

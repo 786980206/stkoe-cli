@@ -97,9 +97,9 @@ def _version(args: list[str], data_dir=None) -> list[Result]:
     return [Result.json("version", {"version": ver})]
 
 
-@handler("config", "show")
+@handler("config", "get")
 @handler("config", "")
-def _config_show(args: list[str], data_dir=None) -> list[Result]:
+def _config_get(args: list[str], data_dir=None) -> list[Result]:
     from ..settings import config_path, load_config
 
     cfg = load_config()

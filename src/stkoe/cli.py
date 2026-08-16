@@ -3,7 +3,7 @@
 命令：
 - ``stkoe serve [--host H] [--port P] [--config <路径>]``：前台运行 gRPC 服务
   （缺省取 stkoe.json 配置；``--config`` 显式指定配置文件，等价于设 STKOE_CONFIG）
-- ``stkoe config show``：查看生效配置
+- ``stkoe config get``：查看生效配置
 - ``stkoe config set --<key> <value> ...``：设置任意配置项（写入 stkoe.json，
   键名保持连字符形态，如 ``--grpc-host 0.0.0.0`` → ``"grpc-host": "0.0.0.0"``）
 """
@@ -48,7 +48,7 @@ def _cmd_serve(raw: list[str]) -> int:
 def _cmd_config(raw: list[str]) -> int:
     from .settings import config_path, load_config, save_config
 
-    if not raw or raw[0] == "show":
+    if not raw or raw[0] == "get":
         cfg = load_config()
         _print_json({"config_file": str(config_path()), **cfg.to_dict()})
         return 0
@@ -138,7 +138,7 @@ def _help() -> str:
     return (
         "用法: stkoe <command>\n"
         "  serve [--host H] [--port P] [--config <路径>]  运行 gRPC 服务（缺省取 stkoe.json 配置；--config 指定配置文件）\n"
-        "  config show                     查看生效配置\n"
+        "  config get                     查看生效配置\n"
         "  config set --<key> <value> ...  设置任意配置项（写入 stkoe.json）\n"
         "  table <action> <args...>        table 命令（list/meta/add/set/get/delete，与 Execute 对齐）\n"
         "  index <action> <args...>        index 命令（add/get/meta/list/set/col/update/delete；独立资产）\n"

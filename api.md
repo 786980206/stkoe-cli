@@ -8,7 +8,7 @@
 所有业务命令统一为 `<source> <action> <args...>` 位置参数形态，等价于 `stkoe <source> <action> <args...>`。
 
 - **source**：`version` / `config` / `table` / `index` / `panel` / `fieldset` / `sample` / `feature` / `factor` / `test` / `stat` / `task` / `mock` / `graph`
-- **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `update` / `check` / `test` / `delete`（`del` 别名）/ `show`
+- **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `update` / `check` / `test` / `delete`（`del` 别名）
 - **单侧动词例外**：`mock`（空 action）仅 SubmitTask 可用（示例任务，见 §4.6）；`mock demo`/`mock gen` 双路径可用（见 §3.1/§4.1）；`task` 仅 Execute 可用（任务元操作，见 §4.5）；`graph` 仅 Execute + CLI 可用（血缘图 JSON 查询，无任务版，见 §3.1/§3.13）
 - **args**：action 之后的位置参数 + `--key value` flag
 
@@ -77,7 +77,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | source | action | 位置参数 | flags | 返回 |
 |---|---|---|---|---|
 | version | （空）/ `get` | — | — | JsonData `{"version"}` |
-| config | （空）/ `show` | — | — | JsonData `{"config_file", "grpc-host", "grpc-port", "data-dir", "dbt-manifest-file", ...extra}` |
+| config | （空）/ `get` | — | — | JsonData `{"config_file", "grpc-host", "grpc-port", "data-dir", "dbt-manifest-file", ...extra}` |
 | config | `set` | — | `--<key> <value> ...`（任意键） | JsonData `{"written", "set"}` |
 | task | （空）/ `list` | — | `--state <state>` | JsonData `{"tasks": [...]}`（按创建时间倒序） |
 | mock | `demo` | — | `--n-syms N`（默认 300） `--n-days N`（默认 500，交易日数，从 2024-01-01 起） | JsonData（写入清单：`[{name, path, rows, columns}]`，写 `index/index`（index 资产目录）+ `table/m1`，不注册） |
@@ -439,7 +439,7 @@ pending → running → succeeded
 | 命令 | 说明 |
 |---|---|
 | `stkoe serve [--host H] [--port P] [--config <路径>]` | 前台运行 gRPC 服务；缺省取 stkoe.json（默认 `127.0.0.1:9569`）；`--config` 显式指定配置文件（等价于设 `STKOE_CONFIG` 环境变量） |
-| `stkoe config show` | 查看生效配置（含 config_file） |
+| `stkoe config get` | 查看生效配置（含 config_file） |
 | `stkoe config set --<key> <value> ...` | 设置任意配置项（写入 stkoe.json） |
 | `stkoe table <action> <args...>` | table 命令（走 Execute 同步分发，行为与 `e:table ...` 一致） |
 | `stkoe index <action> <args...>` | index 命令（add/get/meta/list/set/col/update/delete；独立资产） |
@@ -501,7 +501,7 @@ t:<task_id>
 | `data-dir` | `~/.stkoe` | 数据目录（表/数据集/统计/catalog/任务库） |
 | `dbt-manifest-file` | `""` | dbt 编译产物 `target/manifest.json` 路径（`stkoe config set --dbt-manifest-file <路径>`；expanduser，相对路径按当前工作目录解析）。配置后 **table/index add 时先应用 manifest 元数据**（按 name/alias 匹配 model/source 节点：资产级 `description` + `meta.display_name/source/tags`，列级 `description` + `meta.display_name/unit/tags`），**add 参数显式指定的值覆盖 manifest**；文件缺失/解析失败 → add 报错；无匹配节点 → 静默 |
 
-- 任意自定义键保留在 `extra`（`config show` 透出，`config set` 原样写入）
+- 任意自定义键保留在 `extra`（`config get` 透出，`config set` 原样写入）
 - 示例：`stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json`
 
 日志：`STKOE_LOG_LEVEL` 环境变量可覆盖默认 INFO 级别。
@@ -620,7 +620,7 @@ gclient> t:<task_id>
 
 #### A. 启动与健康检查
 1. `e:version`（空 action）→ 版本号；失败说明服务未启动或端口不对；
-2. `e:config show` → 生效配置（含 `data-dir`），用于与 CLI 目录核对。
+2. `e:config get` → 生效配置（含 `data-dir`），用于与 CLI 目录核对。
 
 #### B. 资产浏览（列表页 / 详情）
 1. 源头：`e:table list` / `e:index list`（JSON 数组）；

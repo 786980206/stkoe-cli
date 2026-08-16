@@ -6,7 +6,7 @@
 
 REPL 输入（前缀 : 命令形态）：
     h                                Health 探活
-    e:config show                    Execute（source action args...，JSON/表格打印）
+    e:config get                    Execute（source action args...，JSON/表格打印）
     e:table list
     e:table meta demo
     s:mock                           SubmitTask（提交后台任务，自动订阅到终态）
@@ -122,7 +122,7 @@ def do_control(stub, words: list[str]) -> None:
 
 _HELP = """可用命令：
   h                                   Health 探活
-  e:<source> <action> [args...]       Execute（如 e:config show）
+  e:<source> <action> [args...]       Execute（如 e:config get）
   s:<source> <action> [args...]       SubmitTask（自动订阅到终态）
   c:<task_id> cancel|pause|resume     TaskControl
   t:<task_id>                         SubscribeTask

@@ -232,6 +232,13 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 refactor(cli): config show 改名 config get
+
+- `stkoe config get` / `e:config get`（空 action 仍等价）取代 `show`（不留别名）；
+  CLI/Execute 两路径同步，返回结构不变（`{"config_file", ...}`）
+- 测试：test_config.py / test_grpc.py 用例名与 action 更新；全量 211 用例绿
+- 文档：api.md §1/§3.1/§5/§7/gclient 速查、README、example.md、AGENTS.md
+
 ### 2026-08 feat(cli): stkoe serve 支持 --config 指定配置文件
 
 - `stkoe serve [--host H] [--port P] [--config <路径>]`：`--config` 显式指定配置文件
@@ -243,7 +250,7 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 ### 2026-08 feat(dbt): 配置 dbt-manifest-file——table/index add 自动应用 dbt 模型元数据
 
 - **配置键**：`stkoe config set --dbt-manifest-file <路径>`（StkoeConfig 新增已知键
-  `dbt_manifest_file`，config show 透出；路径 expanduser，相对路径按 cwd 解析）
+  `dbt_manifest_file`，config get 透出；路径 expanduser，相对路径按 cwd 解析）
 - **新模块 `src/stkoe/dbt.py`**：解析 dbt 编译产物 `target/manifest.json`，按
   `name`（回退 `alias`）匹配 nodes/sources 的 model/source 节点；资产级提取
   `description` + `meta.display_name/source/tags`，列级提取 `description` +

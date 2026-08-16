@@ -118,8 +118,8 @@ def _cmd_factor(raw: list[str]) -> int:
     return _cmd_dispatch("factor", raw)
 
 
-def _cmd_test(raw: list[str]) -> int:
-    return _cmd_dispatch("test", raw)
+def _cmd_tester(raw: list[str]) -> int:
+    return _cmd_dispatch("tester", raw)
 
 
 def _cmd_task(raw: list[str]) -> int:
@@ -148,7 +148,7 @@ def _help() -> str:
         "  sample <action> <args...>       sample 命令（add/get/meta/list/set/check/delete；无物化）\n"
         "  feature <action> <args...>     feature 命令（add/set/meta/list/delete/test；纯定义，无物化）\n"
         "  factor <action> <args...>      factor 命令（add/get/meta/list/set/check/update/delete；可物化）\n"
-        "  test <action> <args...>        test 命令（add/get/meta/list/set/check/update/delete；因子测试数据集）\n"
+        "  tester <action> <args...>        tester 命令（add/get/meta/list/set/check/update/delete；因子测试数据集）\n"
         "  mock demo [--n-syms N] [--n-days N] 生成演示源表 index + m1（默认 300×500，写 index/ + table/，需 index add/table add 注册）\n"
         "  mock gen <name> --kind <kind>  参数化生成单张表（tdcal/common/index/feature/klday/m1）\n"
         "  task list [--state <state>]     任务列表（按创建时间倒序）\n"
@@ -190,8 +190,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_feature(args[1:])
     if cmd == "factor":
         return _cmd_factor(args[1:])
-    if cmd == "test":
-        return _cmd_test(args[1:])
+    if cmd == "tester":
+        return _cmd_tester(args[1:])
     if cmd == "task":
         return _cmd_task(args[1:])
     if cmd == "mock":

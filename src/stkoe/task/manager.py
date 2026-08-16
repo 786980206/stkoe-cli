@@ -87,9 +87,9 @@ class TaskManager:
         from ..factor.handlers import register as _register_factor_handlers
 
         _register_factor_handlers(self.registry)
-        from ..factor_test.handlers import register as _register_factor_test_handlers
+        from ..factor_tester.handlers import register as _register_factor_tester_handlers
 
-        _register_factor_test_handlers(self.registry)
+        _register_factor_tester_handlers(self.registry)
         from ..mock.handlers import register as _register_mock_handlers
 
         _register_mock_handlers(self.registry)

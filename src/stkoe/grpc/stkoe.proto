@@ -3,7 +3,7 @@
 // 约定：
 // - 所有请求均采用 `<source> <action> <args...>` 形态（等价于
 //   `stkoe <source> <action> <args...>` 位置参数），args 是 action 之后的位置参数
-// - source：table / dataset / stat / fieldset / sample / feature / factor / test / config / task / mock / version
+// - source：table / dataset / stat / fieldset / sample / feature / factor / tester / config / task / mock / version
 // - action：add / get / del / set / list / meta / check / test / scan / ... 等子命令动词
 // - Execute：服务端流式。第一条消息恒为 DataHeader（code=0 成功 / 非 0 业务错误），
 //   成功后按需跟随 JsonData（小结果 JSON）或 ArrowTable（表格数据 Arrow IPC）
@@ -31,7 +31,7 @@ service StkoeService {
 }
 
 message ExecuteRequest {
-  // source：table/dataset/stat/fieldset/sample/feature/factor/test/config/task/mock/version
+  // source：table/dataset/stat/fieldset/sample/feature/factor/tester/config/task/mock/version
   string source = 1;
   // action: add/get/del/set/list/meta 等
   string action = 2;
@@ -71,7 +71,7 @@ message ExecuteResponse {
 }
 
 message SubmitTaskRequest {
-  // source：table/dataset/stat/fieldset/sample/feature/factor/test/config/task/mock/version
+  // source：table/dataset/stat/fieldset/sample/feature/factor/tester/config/task/mock/version
   string source = 1;
   // action: add/get/del/set/list/meta 等
   string action = 2;

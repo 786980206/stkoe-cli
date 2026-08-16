@@ -665,10 +665,10 @@ def test_execute_factor_add_get_check_scan_delete(client, srv):
     assert _json(datas, "factor") == {"deleted": "fac1"}
 
 
-# ---------- Execute 版 factor_test（test 源） ----------
+# ---------- Execute 版 factor_tester（tester 源） ----------
 
 def test_execute_test_add_get_check_scan_and_stat(client, srv):
-    """Execute 路径 test add/get/check/scan + stat scan test 全链路（graph 语义）"""
+    """Execute 路径 tester add/get/check/update + stat scan tester 全链路（graph 语义）"""
     _seed_factor_chain(client, srv)
     root = Path(srv.data_dir)
 
@@ -681,21 +681,21 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
     assert header.code == 0
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="test", action="add", args=["t1", "--factor", "fac1",
+        source="tester", action="add", args=["t1", "--factor", "fac1",
                                            "--returns", "r", "--groupby", "ic",
                                            "--marketcap", "fv"])))
     assert header.code == 0
-    assert _json(datas, "test")["name"] == "t1"
-    assert _json(datas, "test")["keys"] == ["sym", "date"]
+    assert _json(datas, "tester")["name"] == "t1"
+    assert _json(datas, "tester")["keys"] == ["sym", "date"]
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="test", action="update", args=["t1"])))  # get 三态：先物化
+        source="tester", action="update", args=["t1"])))  # get 三态：先物化
     assert header.code == 0
-    assert _json(datas, "test")["changed"] is True
-    assert (root / "factor_test" / "t1" / "part=2024").exists()
+    assert _json(datas, "tester")["changed"] is True
+    assert (root / "factor_tester" / "t1" / "part=2024").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="test", action="get", args=["t1"])))
+        source="tester", action="get", args=["t1"])))
     assert header.code == 0
     tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
     assert len(tables) == 1
@@ -704,22 +704,22 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
     assert "factor_quantile" in [c["name"] for c in meta["columns"]]
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="test", action="check", args=["t1"])))
+        source="tester", action="check", args=["t1"])))
     assert header.code == 0
-    assert _json(datas, "test")["ok"] is True
+    assert _json(datas, "tester")["ok"] is True
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="stat", action="scan", args=["t1", "--kind", "ic"])))
     assert header.code == 0
     report = _json(datas, "stat")
-    assert report["target_type"] == "test"
+    assert report["target_type"] == "tester"
     assert "ic_d1" in report["partitions"]
-    assert (root / "stat" / "test" / "t1" / "ic" / "ic_d1.parquet").exists()
+    assert (root / "stat" / "tester" / "t1" / "ic" / "ic_d1.parquet").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="test", action="delete", args=["t1"])))
+        source="tester", action="delete", args=["t1"])))
     assert header.code == 0
-    assert _json(datas, "test") == {"deleted": "t1"}
+    assert _json(datas, "tester") == {"deleted": "t1"}
 
 
 # ---------- 请求日志 ----------

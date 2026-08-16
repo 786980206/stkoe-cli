@@ -21,8 +21,8 @@ import polars as pl
 
 from ..factor.engine import get_engine as get_factor_engine
 from ..factor.engine import parse_pipeline
-from ..factor_test.spec import FactorTesterSpec
-from ..factor_test.tester import prepare_factor_data
+from ..factor_tester.spec import FactorTesterSpec
+from ..factor_tester.tester import prepare_factor_data
 from ..jsonutil import dumps_str, loads
 from ..settings import load_config
 from ..table.errors import DEFAULT_IGNORE_COLS, TableExistsError
@@ -863,7 +863,7 @@ class GraphService:
         已物化（materialized 且 curated）→ 返回物化目录；调用方读物化 parquet。
         """
         dirs = {"panel": "panel", "fieldset": "fieldset",
-                "factor": "factor", "tester": "factor_test"}
+                "factor": "factor", "tester": "factor_tester"}
         root = self.data_dir / dirs[asset_type] / name
         if not meta.get("materialized") or not meta.get("curated"):
             raise ValueError(
@@ -1711,10 +1711,10 @@ class GraphService:
     # test（因子测试数据集：factor 关联 sample 视图 + 测试必需列；物化落盘）
     # =====================================================================
 
-    def _test_spec(self, node: dict) -> FactorTesterSpec:
+    def _tester_spec(self, node: dict) -> FactorTesterSpec:
         return FactorTesterSpec.from_dict(node.get("spec") or {})
 
-    def _test_meta_dict(self, name: str) -> dict:
+    def _tester_meta_dict(self, name: str) -> dict:
         """V2.0 FactorTestMeta 形态 dict。"""
         node = self._require_node("tester", name)
         meta = self.graph._meta(node)
@@ -1729,12 +1729,12 @@ class GraphService:
             "returns": node.get("returns", "r"),
             "groupby": node.get("groupby", "ic"),
             "marketcap": node.get("marketcap", "fv"),
-            "spec": self._test_spec(node).to_dict(),
+            "spec": self._tester_spec(node).to_dict(),
             "factor_col": node.get("factor_col", ""),
             "keys": list(node.get("keys") or ()),
             "materialized": materialized,
             "materialized_at": extra.get("materialized_at"),
-            "curated": materialized and dep_hash == self._test_hash(node),
+            "curated": materialized and dep_hash == self._tester_hash(node),
             "columns": list(extra.get("columns") or ()),
             "extra": extra,
             "display_name": node.get("display_name") or name,
@@ -1745,7 +1745,7 @@ class GraphService:
             "updated_at": node.get("update_time", ""),
         }
 
-    def _test_hash(self, node: dict) -> str:
+    def _tester_hash(self, node: dict) -> str:
         """物化一致性签名 = factor 的 hash + spec + 测试列名。"""
         factor = node.get("factor", "").split(":", 1)[1] if node.get("factor") else ""
         fnode = self._require_node("factor", factor)
@@ -1755,11 +1755,11 @@ class GraphService:
             f"groupby:{node.get('groupby', 'ic')}",
             f"marketcap:{node.get('marketcap', 'fv')}",
             f"factor_col:{node.get('factor_col', '')}",
-            f"spec:{dumps_str(self._test_spec(node).to_dict())}",
+            f"spec:{dumps_str(self._tester_spec(node).to_dict())}",
         ]
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
-    def _test_build(self, node: dict, *, dt_range: tuple[str, str] | None = None) -> pl.DataFrame:
+    def _tester_build(self, node: dict, *, dt_range: tuple[str, str] | None = None) -> pl.DataFrame:
         """测试数据集：sample 视图（含测试必需列）+ factor 列 → prepare_factor_data。
 
         ``dt_range=(lo, hi)`` 时只构造该时间区间内的行（增量物化用）。
@@ -1791,28 +1791,28 @@ class GraphService:
             .rename({fm["factor_col"]: "factor", returns: "returns",
                      groupby: "group", marketcap: "marketcap"})
         )
-        return prepare_factor_data(base, self._test_spec(node))
+        return prepare_factor_data(base, self._tester_spec(node))
 
-    def _test_view_lf(self, name: str, *, where=None) -> pl.LazyFrame:
+    def _tester_view_lf(self, name: str, *, where=None) -> pl.LazyFrame:
         """读测试数据集（lazy，第 1/3 态）：已物化（curated）→ 读物化 parquet；
         未物化 → 报错提示先 update。"""
         node = self._require_node("tester", name)
-        tm = self._test_meta_dict(name)
+        tm = self._tester_meta_dict(name)
         root = self._require_materialized("tester", name, tm)
         lf = self._scan_materialized(root)
         if where is not None:
             lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
         return lf
 
-    def test_data(self, name: str) -> pl.DataFrame:
+    def tester_data(self, name: str) -> pl.DataFrame:
         """测试数据集 DataFrame（stat 测试器用，第 1/3 态）：已物化 → 读物化；
         未物化 → 报错提示先 update（不再实时构造回退）。"""
         node = self._require_node("tester", name)
-        tm = self._test_meta_dict(name)
+        tm = self._tester_meta_dict(name)
         root = self._require_materialized("tester", name, tm)
         return self._scan_materialized(root).collect()
 
-    def test_add(self, name: str, factor: str, *, returns: str = "r",
+    def tester_add(self, name: str, factor: str, *, returns: str = "r",
                  groupby: str = "ic", marketcap: str = "fv",
                  factor_col: str | None = None, spec: dict | None = None,
                  **kw) -> dict:
@@ -1846,69 +1846,69 @@ class GraphService:
         sample_map = {"returns": returns, "group": groupby, "marketcap": marketcap}
         sample_map.update({f"d{no}": returns for no in spec_d.get("periods", [])})
         self.graph.sync_derives("tester", name, "sample", sample, sample_map)
-        return self._test_meta_dict(name)
+        return self._tester_meta_dict(name)
 
-    def test_get(self, name: str, *, where=None, limit=None, offset=None,
+    def tester_get(self, name: str, *, where=None, limit=None, offset=None,
                  count_total: bool = False):
-        lf = self._test_view_lf(name, where=where)
+        lf = self._tester_view_lf(name, where=where)
         return self._collect_page(lf, limit=limit, offset=offset, count_total=count_total)
 
-    def test_meta(self, name: str) -> dict:
-        return self._test_meta_dict(name)
+    def tester_meta(self, name: str) -> dict:
+        return self._tester_meta_dict(name)
 
-    def test_list(self) -> list:
-        return [self._test_meta_dict(n["name"]) for n in self.graph.list("tester")]
+    def tester_list(self) -> list:
+        return [self._tester_meta_dict(n["name"]) for n in self.graph.list("tester")]
 
-    def test_set(self, name: str, **kw) -> dict:
+    def tester_set(self, name: str, **kw) -> dict:
         self._require_node("tester", name)
         return self.graph.set("tester", name, **kw)
 
-    def test_delete(self, name: str, *, force: bool = False) -> dict:
+    def tester_delete(self, name: str, *, force: bool = False) -> dict:
         self._require_node("tester", name)
         self.graph.delete("tester", name, force=force)
-        shutil.rmtree(self.data_dir / "factor_test" / name, ignore_errors=True)
+        shutil.rmtree(self.data_dir / "factor_tester" / name, ignore_errors=True)
         return {"deleted": name}
 
-    def test_check(self, name: str) -> dict:
+    def tester_check(self, name: str) -> dict:
         """校验测试数据集：构造成功、含必需列、行数 > 0。"""
         node = self._require_node("tester", name)
         keys = list(node.get("keys") or ())
         try:
-            df = self._test_build(node)
+            df = self._tester_build(node)
         except Exception as e:
-            return {"test": name, "ok": False, "rows": 0, "columns": list(keys),
+            return {"tester": name, "ok": False, "rows": 0, "columns": list(keys),
                     "message": f"测试数据集构造失败: {e}"}
         need = ["date", "sym", "sample", "returns", "group", "marketcap",
                 "factor", "factor_quantile"]
         missing = [c for c in need if c not in df.columns]
         if missing:
-            return {"test": name, "ok": False, "rows": df.height,
+            return {"tester": name, "ok": False, "rows": df.height,
                     "columns": list(df.columns), "message": f"结果集缺少必需列: {missing}"}
         if df.height == 0:
-            return {"test": name, "ok": False, "rows": 0,
+            return {"tester": name, "ok": False, "rows": 0,
                     "columns": list(df.columns), "message": "结果行数为 0"}
-        return {"test": name, "ok": True, "rows": df.height,
+        return {"tester": name, "ok": True, "rows": df.height,
                 "columns": list(df.columns), "message": f"有效（{df.height} 行）"}
 
-    def test_update(self, name: str | None = None, *, all: bool = False,
+    def tester_update(self, name: str | None = None, *, all: bool = False,
                     resync: bool = False) -> dict | list[dict]:
-        """test 更新：传导检查上游（factor 全链）就绪 → 物化 factor_tests/<name>/。
+        """tester 更新：传导检查上游（factor 全链）就绪 → 物化 factor_tester/<name>/。
 
         幂等；update 成功后节点置 valid=True。
         """
         if all:
-            return [self._test_scan_one(n["name"], resync=resync)
+            return [self._tester_scan_one(n["name"], resync=resync)
                     for n in self.graph.list("tester")]
         if not name:
             raise ValueError("test update 需要测试集名（或 --all）")
         self.graph.assert_ready("tester", name)
-        return self._test_scan_one(name, resync=resync)
+        return self._tester_scan_one(name, resync=resync)
 
-    def _test_scan_one(self, name: str, *, resync: bool = False) -> dict:
+    def _tester_scan_one(self, name: str, *, resync: bool = False) -> dict:
         node = self._require_node("tester", name)
         extra = dict(node.get("extra") or {})
-        cur_hash = self._test_hash(node)
-        spec = self._test_spec(node)
+        cur_hash = self._tester_hash(node)
+        spec = self._tester_spec(node)
         version_before = node.get("version", 0)
         # 幂等仅当节点有效：上游变化置脏（valid=False）后 update 必须强制重建
         if not resync and node.get("valid") \
@@ -1918,7 +1918,7 @@ class GraphService:
                     "version_after": version_before, "materialized": True,
                     "changed": False, "rows": 0, "quantiles": spec.quantiles,
                     "periods": list(spec.periods)}
-        out_dir = self.data_dir / "factor_test" / name
+        out_dir = self.data_dir / "factor_tester" / name
         keys = list(self._factor_meta_dict(
             node.get("factor", "").split(":", 1)[1])["keys"])
         dt = keys[-1] if keys else ""
@@ -1935,7 +1935,7 @@ class GraphService:
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
             lo, hi = scope
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
-            inc = self._test_build(node, dt_range=(lo, hi))
+            inc = self._tester_build(node, dt_range=(lo, hi))
             if pkeys:
                 old = pl.read_parquet(out_dir, hive_partitioning=True)
                 df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt)
@@ -1946,7 +1946,7 @@ class GraphService:
                                ).unique(subset=keys, keep="last").sort(keys)
                 df.write_parquet(out_path)
         else:
-            df = self._test_build(node)
+            df = self._tester_build(node)
             self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
         cols = [{"name": c, "display_name": c, "data_type": str(t)}
                 for c, t in zip(df.columns, df.dtypes)]

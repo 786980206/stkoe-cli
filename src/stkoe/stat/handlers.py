@@ -41,10 +41,10 @@ def _target(ctx, *, tester_only: bool = False) -> tuple[str, str]:
         return pos[0], pos[1]
     if len(pos) == 1:
         kind = (parse_flags(ctx.args).get("kind") or "coverage")
-        from ..factor_test.tester import TESTER_KINDS
+        from ..factor_tester.tester import TESTER_KINDS
 
         if not tester_only or kind in TESTER_KINDS:
-            return "test", pos[0]
+            return "tester", pos[0]
     raise ValueError("stat 命令需要 target 类型和名字（如 panel <name>，"
                      "或 test <name> --kind <tester>）")
 

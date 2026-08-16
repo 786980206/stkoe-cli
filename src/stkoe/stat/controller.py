@@ -93,27 +93,27 @@ class StatController:
             svc.close()
         raise StatTargetError(f"unsupported stat target: {target_type}")
 
-    # ---------- test 目标（因子测试器） ----------
+    # ---------- tester 目标（因子测试器） ----------
 
-    def _scan_test_sync(self, target_name: str, kind: str,
+    def _scan_tester_sync(self, target_name: str, kind: str,
                         on_progress=None) -> StatScanReport:
         """因子测试器扫描：运行 tester kind 并把命名产物写入
-        ``stats/test/<name>/<kind>/<output>.parquet``（数据源走 GraphService）。"""
-        from ..factor_test.spec import FactorTesterSpec
-        from ..factor_test.tester import run_tester
+        ``stats/tester/<name>/<kind>/<output>.parquet``（数据源走 GraphService）。"""
+        from ..factor_tester.spec import FactorTesterSpec
+        from ..factor_tester.tester import run_tester
         from ..graph.errors import AssetNotFoundError
 
         svc = self._graph_service()
         try:
-            tm = svc.test_meta(target_name)
-            data = svc.test_data(target_name)
+            tm = svc.tester_meta(target_name)
+            data = svc.tester_data(target_name)
         except AssetNotFoundError:
-            raise StatNotFoundError(f"test 未注册: {target_name}") from None
+            raise StatNotFoundError(f"tester 未注册: {target_name}") from None
         finally:
             svc.close()
         spec = FactorTesterSpec.from_dict(tm.get("spec") or {})
         outputs = run_tester(kind, data, spec)
-        out_dir = self.root / "test" / target_name / kind
+        out_dir = self.root / "tester" / target_name / kind
         out_dir.mkdir(parents=True, exist_ok=True)
         files: list[StatFile] = []
         total = len(outputs)
@@ -127,7 +127,7 @@ class StatController:
                                   rows=df.height, size=p.stat().st_size))
         files = list(_ordered(tuple(files)))
         return StatScanReport(
-            target_type="test", target_name=target_name, kind=kind,
+            target_type="tester", target_name=target_name, kind=kind,
             partitions=tuple(f.partition for f in files), files=tuple(files))
 
     # ---------- scan ----------
@@ -143,8 +143,8 @@ class StatController:
         """
         if kind == "storage":
             return self._scan_storage_sync(target_type, target_name, on_progress)
-        if target_type == "test":
-            return self._scan_test_sync(target_name, kind, on_progress)
+        if target_type == "tester":
+            return self._scan_tester_sync(target_name, kind, on_progress)
         parts = self._partitions(target_type, target_name)
         lf = self._select_lf(target_type, target_name)
         out_dir = self._kind_dir(target_type, target_name, kind)

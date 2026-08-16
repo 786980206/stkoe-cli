@@ -2,7 +2,7 @@
 
 协议约定请求为 ``stkoe <source> <action> <args...>`` 位置参数形态：
 - source：table / index / panel / fieldset / sample / feature /
-  factor / test / stat / config / task / mock / graph / version
+  factor / tester / stat / config / task / mock / graph / version
 - action：add / get / del / set / list / meta / check / test / update / ... 等子命令动词
 - args：action 之后的位置参数
 
@@ -10,7 +10,7 @@
 ``Result`` 携带 name + kind（json/table），由 gRPC 层分别序列化为
 ``JsonData`` / ``ArrowTable``。
 
-V3.0：table/index/panel/fieldset/sample/feature/factor/test 全部走 ``GraphService``
+V3.0：table/index/panel/fieldset/sample/feature/factor/tester 全部走 ``GraphService``
 （登记/依赖/版本进 graph，物理数据走 graph.db 指纹 + polars）；SubmitTask 任务版
 （task/handlers.py 的 TaskHandler）行为对齐（同走 GraphService）。
 """
@@ -320,16 +320,16 @@ def _stat_scan(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     if not pos:
         raise CommandError("stat scan 需要 target 类型和名字（如 panel <name>）")
-    from ..factor_test.tester import TESTER_KINDS
+    from ..factor_tester.tester import TESTER_KINDS
 
     kind = flags.get("kind") or "coverage"
     if len(pos) == 1 and kind in TESTER_KINDS:
-        target_type, target_name = "test", pos[0]
+        target_type, target_name = "tester", pos[0]
     elif len(pos) >= 2:
         target_type, target_name = pos[0], pos[1]
     else:
         raise CommandError("stat scan 需要 target 类型和名字（如 panel <name>，"
-                           "或 test <name> --kind <tester>）")
+                           "或 tester <name> --kind <tester>）")
     ctl = _stat_controller(data_dir)
     report = asyncio.run(ctl.scan(target_type, target_name, kind=kind))
     return [Result.json("stat", report.to_dict())]
@@ -345,7 +345,7 @@ def _stat_get(args: list[str], data_dir=None) -> list[Result]:
     kind = flags.get("kind") or "coverage"
     partition_by = flags.get("partition_by") or flags.get("partition-by")
     if len(pos) == 1:
-        target_type, target_name = "test", pos[0]
+        target_type, target_name = "tester", pos[0]
     elif len(pos) >= 2:
         target_type, target_name = pos[0], pos[1]
     else:
@@ -380,7 +380,7 @@ def _stat_meta(args: list[str], data_dir=None) -> list[Result]:
     ctl = _stat_controller(data_dir)
     kind = flags.get("kind") or "coverage"
     if len(pos) == 1:
-        target_type, target_name = "test", pos[0]
+        target_type, target_name = "tester", pos[0]
     elif len(pos) >= 2:
         target_type, target_name = pos[0], pos[1]
     else:
@@ -405,7 +405,7 @@ def _stat_delete(args: list[str], data_dir=None) -> list[Result]:
     flags = parse_flags(args)
     ctl = _stat_controller(data_dir)
     if len(pos) == 1:
-        target_type, target_name = "test", pos[0]
+        target_type, target_name = "tester", pos[0]
     elif len(pos) >= 2:
         target_type, target_name = pos[0], pos[1]
     else:
@@ -1052,19 +1052,19 @@ def _factor_update(args: list[str], data_dir=None) -> list[Result]:
 
 
 # ---------------------------------------------------------------------------
-# test 同步处理器（graph 登记；get/check 实时构造，scan 物化落盘）
+# tester 同步处理器（graph 登记；get/check 实时构造，scan 物化落盘）
 # ---------------------------------------------------------------------------
 
-@handler("test", "add")
-def _test_add(args: list[str], data_dir=None) -> list[Result]:
+@handler("tester", "add")
+def _tester_add(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("test add 需要测试集名")
+        raise CommandError("tester add 需要测试集名")
     flags = parse_flags(args)
     if not flags.get("factor"):
-        raise CommandError("test add 需要 --factor <因子名>")
+        raise CommandError("tester add 需要 --factor <因子名>")
     svc = _graph_service(data_dir)
-    from ..factor_test.spec import FactorTesterSpec
+    from ..factor_tester.spec import FactorTesterSpec
 
     spec = FactorTesterSpec(
         by_group=bool(flags.get("by_group")),
@@ -1075,7 +1075,7 @@ def _test_add(args: list[str], data_dir=None) -> list[Result]:
                          (flags.get("date_range") or "2023-01-01,2026-01-01").split(",")),
         rolling_window=int(flags["rolling_window"]) if flags.get("rolling_window") else 252,
     )
-    tm = svc.test_add(
+    tm = svc.tester_add(
         pos[0], flags["factor"],
         returns=flags.get("returns") or "r",
         groupby=flags.get("groupby") or "ic",
@@ -1086,24 +1086,24 @@ def _test_add(args: list[str], data_dir=None) -> list[Result]:
                                              "marketcap", "factor_col",
                                              "by_group", "quantiles", "periods",
                                              "date_range", "rolling_window")})
-    return [Result.json("test", tm)]
+    return [Result.json("tester", tm)]
 
 
-@handler("test", "get")
-def _test_get(args: list[str], data_dir=None) -> list[Result]:
+@handler("tester", "get")
+def _tester_get(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("test get 需要测试集名")
+        raise CommandError("tester get 需要测试集名")
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
-    df, total = svc.test_get(
+    df, total = svc.tester_get(
         pos[0],
         where=flags.get("where"),
         limit=int(flags["limit"]) if flags.get("limit") else None,
         offset=int(flags["offset"]) if flags.get("offset") else None,
         count_total=True,
     )
-    tm = svc.test_meta(pos[0])
+    tm = svc.tester_meta(pos[0])
     buf = io.BytesIO()
     if df.height:
         df.write_ipc_stream(buf)
@@ -1111,69 +1111,69 @@ def _test_get(args: list[str], data_dir=None) -> list[Result]:
                          meta=_arrow_meta(pos[0], df, total, tm.get("columns") or []))]
 
 
-@handler("test", "meta")
-def _test_meta(args: list[str], data_dir=None) -> list[Result]:
+@handler("tester", "meta")
+def _tester_meta(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("test meta 需要测试集名")
+        raise CommandError("tester meta 需要测试集名")
     svc = _graph_service(data_dir)
-    return [Result.json("test", svc.test_meta(pos[0]))]
+    return [Result.json("tester", svc.tester_meta(pos[0]))]
 
 
-@handler("test", "list")
-@handler("test", "")
-def _test_list(args: list[str], data_dir=None) -> list[Result]:
+@handler("tester", "list")
+@handler("tester", "")
+def _tester_list(args: list[str], data_dir=None) -> list[Result]:
     svc = _graph_service(data_dir)
-    return [Result.json("tests", svc.test_list())]
+    return [Result.json("testers", svc.tester_list())]
 
 
-@handler("test", "set")
-def _test_set(args: list[str], data_dir=None) -> list[Result]:
+@handler("tester", "set")
+def _tester_set(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
     if not pos:
-        raise CommandError("test set 需要测试集名")
+        raise CommandError("tester set 需要测试集名")
     if not flags:
-        raise CommandError("test set 需要至少一个 --key value")
+        raise CommandError("tester set 需要至少一个 --key value")
     svc = _graph_service(data_dir)
     kw = dict(flags)
     if "spec" in kw and isinstance(kw["spec"], str):
         kw["spec"] = {"periods": [int(p) for p in kw["spec"].split(",")]}
-    return [Result.json("test", svc.test_set(pos[0], **kw))]
+    return [Result.json("tester", svc.tester_set(pos[0], **kw))]
 
 
-@handler("test", "del")
-@handler("test", "delete")
-def _test_delete(args: list[str], data_dir=None) -> list[Result]:
+@handler("tester", "del")
+@handler("tester", "delete")
+def _tester_delete(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("test delete 需要测试集名")
+        raise CommandError("tester delete 需要测试集名")
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
-    return [Result.json("test", svc.test_delete(pos[0], force=bool(flags.get("force"))))]
+    return [Result.json("tester", svc.tester_delete(pos[0], force=bool(flags.get("force"))))]
 
 
-@handler("test", "check")
-def _test_check(args: list[str], data_dir=None) -> list[Result]:
+@handler("tester", "check")
+def _tester_check(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     if not pos:
-        raise CommandError("test check 需要测试集名")
+        raise CommandError("tester check 需要测试集名")
     svc = _graph_service(data_dir)
-    return [Result.json("test", svc.test_check(pos[0]))]
+    return [Result.json("tester", svc.tester_check(pos[0]))]
 
 
-@handler("test", "update")
-def _test_update(args: list[str], data_dir=None) -> list[Result]:
+@handler("tester", "update")
+def _tester_update(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
     flags = parse_flags(args)
     svc = _graph_service(data_dir)
     if flags.get("all"):
-        reports = svc.test_update(all=True, resync=bool(flags.get("resync")))
-        return [Result.json("tests", reports)]
+        reports = svc.tester_update(all=True, resync=bool(flags.get("resync")))
+        return [Result.json("testers", reports)]
     if not pos:
-        raise CommandError("test update 需要测试集名（或 --all）")
-    report = svc.test_update(pos[0], resync=bool(flags.get("resync")))
-    return [Result.json("test", report)]
+        raise CommandError("tester update 需要测试集名（或 --all）")
+    report = svc.tester_update(pos[0], resync=bool(flags.get("resync")))
+    return [Result.json("tester", report)]
 
 
 # ---------------------------------------------------------------------------

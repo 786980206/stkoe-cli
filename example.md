@@ -9,7 +9,7 @@
 
 - **update 主推**：`update` 为 V3 语义名，源头 update=重扫对账，
   物化资产 update=校验+落盘；上游就绪检查（全链 valid）不通过会报错提示先 update 上游
-- **物化按 index 的 `materialize_partition` 时间桶分区**：panel/fieldset/factor/test 统一
+- **物化按 index 的 `materialize_partition` 时间桶分区**：panel/fieldset/factor/tester 统一
   继承其 index 的物化粒度（`yearly` 默认 / `monthly` / `daily`），落盘
   `part=<YYYY>[/<YYYY-MM>[/<YYYY-MM-DD>]]/data.parquet`（文件内保留 part 列；与 index
   物理是否分区无关）
@@ -130,13 +130,13 @@ uv run -m stkoe factor get fac1 --partition 2025 --limit 5  # 只读 2025 年桶
 uv run -m stkoe factor meta fac1                            # partition_by=["part"]、partition_gran="yearly"
 ```
 
-## 8. 因子测试数据集（test：要求 sample 视图含 date/sym/returns/groupby/marketcap 列）
+## 8. 因子测试数据集（tester：要求 sample 视图含 date/sym/returns/groupby/marketcap 列）
 
 ```bash
-uv run -m stkoe test add t1 --factor fac1 --returns r --groupby ic --marketcap fv
-uv run -m stkoe test check t1                               # 构造成功 + 含必需列 + 行数 > 0
-uv run -m stkoe test update t1                              # 物化 → factor_test/t1/part=2024/ + 2025/
-uv run -m stkoe test get t1 --limit 5                       # 测试面板（d{no}/factor_quantile 等）
+uv run -m stkoe tester add t1 --factor fac1 --returns r --groupby ic --marketcap fv
+uv run -m stkoe tester check t1                               # 构造成功 + 含必需列 + 行数 > 0
+uv run -m stkoe tester update t1                              # 物化 → factor_tester/t1/part=2024/ + 2025/
+uv run -m stkoe tester get t1 --limit 5                       # 测试面板（d{no}/factor_quantile 等）
 ```
 
 ## 9. 增量更新演示（上游变化 → 沿链增量物化）
@@ -155,7 +155,7 @@ uv run -m stkoe fieldset update fs1
 uv run -m stkoe sample update sp1         # 无物化资产：传导就绪标记有效
 uv run -m stkoe feature update ma5        # 同上
 uv run -m stkoe factor update fac1
-uv run -m stkoe test update t1
+uv run -m stkoe tester update t1
 
 # 9.3 观察新桶出现、旧桶仍在（yearly：part=2024 / 2025 / 2026）
 find example-data/factor/fac1 -name data.parquet
@@ -169,19 +169,19 @@ find example-data/factor/fac1 -name data.parquet
 ## 10. 因子测试器（stat 集成，最终测试）
 
 ```bash
-# 单因子 IC 测试（单位置参数简写 → test 目标）
+# 单因子 IC 测试（单位置参数简写 → tester 目标）
 uv run -m stkoe stat scan t1 --kind ic
-# 分组收益 / 分位换手率 / 自相关 / 因子加权多空 等测试器（显式 test 目标）
-uv run -m stkoe stat scan test t1 --kind bucket_returns
-uv run -m stkoe stat scan test t1 --kind bucket_turnover
-uv run -m stkoe stat scan test t1 --kind autocorrelation
-uv run -m stkoe stat scan test t1 --kind factor_returns
-uv run -m stkoe stat scan test t1 --kind coverage
+# 分组收益 / 分位换手率 / 自相关 / 因子加权多空 等测试器（显式 tester 目标）
+uv run -m stkoe stat scan tester t1 --kind bucket_returns
+uv run -m stkoe stat scan tester t1 --kind bucket_turnover
+uv run -m stkoe stat scan tester t1 --kind autocorrelation
+uv run -m stkoe stat scan tester t1 --kind factor_returns
+uv run -m stkoe stat scan tester t1 --kind coverage
 # 读取某个测试产物（--partition_by <output>）
 uv run -m stkoe stat get t1 --kind ic --partition_by ic_d1
 ```
 
-产物落在 `stat/test/t1/<kind>/<output>.parquet`（`ic_d{no}` / `rtn_date` / `fr_d{no}` 等）。
+产物落在 `stat/tester/t1/<kind>/<output>.parquet`（`ic_d{no}` / `rtn_date` / `fr_d{no}` 等）。
 
 ## 11.（可选）任务版后台路径 + 血缘可视化
 
@@ -196,7 +196,7 @@ uv run python gclient.py
 stkoe> s:mock                        # 任务版示例：5 步进度 + 日志 + 落盘结果
 stkoe> s:mock demo                   # 任务版 mock 造数（写 index/index + table/m1）
 stkoe> s:mock gen mytable --kind klday --n-syms 20   # 任务版参数化生成
-stkoe> s:test update t1              # 后台物化测试数据集（订阅到终态）
+stkoe> s:tester update t1              # 后台物化测试数据集（订阅到终态）
 stkoe> s:stat scan t1 --kind ic      # 后台跑 IC 测试器（单位置简写同样可用）
 stkoe> t:<task_id>                   # 回放订阅某任务事件流
 ```

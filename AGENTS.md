@@ -65,11 +65,11 @@ src/stkoe/
 ├── factor/            # 最终因子（走 GraphService）
 │   ├── engine.py      # 算子注册表（FactorOperator/NothingOperator）+ pipeline 解析 + 公式引擎
 │   └── handlers.py    # 任务版 Handler（source="factor"，注册进 TaskRegistry）
-├── factor_test/       # 因子测试数据集（走 GraphService）
+├── factor_tester/     # 因子测试数据集（走 GraphService）
 │   ├── spec.py        # FactorTesterSpec dataclass
 │   ├── tester.py      # 测试数据集准备 + 六类测试器（bucket_returns/factor_returns/
 │   │                  #   bucket_turnover/autocorrelation/ic/coverage，纯 polars）
-│   └── handlers.py    # 任务版 Handler（source="test"，注册进 TaskRegistry）
+│   └── handlers.py    # 任务版 Handler（source="tester"，注册进 TaskRegistry）
 ├── stat/              # 数据统计资产（StatController，async 接口）
 │   ├── spec.py        # StatFile/StatMeta/StatScanReport dataclass
 │   ├── calc.py        # calc_stats：按 dtype 分桶算覆盖率统计（ALL_COLS 输出）
@@ -83,7 +83,7 @@ src/stkoe/
 │   ├── store.py       # GraphStore：节点/边 CRUD + 血缘遍历（BFS，带环保护）+ 物理指纹普通表
 │   ├── events.py      # 事件合并（symbol/datetime 并集、field 交集）与积累（水位线）
 │   ├── controller.py  # GraphController：资产 CRUD + 依赖约束 + notify_change/resolve(_all)
-│   ├── service.py     # GraphService：table/index/panel/fieldset/sample/feature/factor/test
+│   ├── service.py     # GraphService：table/index/panel/fieldset/sample/feature/factor/tester
 │   │                  #   统一服务（登记/依赖/版本走 graph；实时视图 + 物化落盘）
 │   ├── handlers.py    # 各资产 Handler（V3.0 设计形态：table/index/panel/fieldset/…/graph）
 │   └── errors.py      # AssetNotFound/Exists、DependencyError、CycleError 等
@@ -128,7 +128,7 @@ src/stkoe/
 7. **resolve 收口**：update 成功后走 `graph.resolve` → 铸版本 + 合并事件入 version_list +
    出边 required_version 对齐 + valid/materialized；`set(self_invalidate=...)` 定义键变更
    置脏自身（fieldset check 写回 validated 用 `self_invalidate=False` 例外）
-8. 目录单数：`table/ index/ panel/ fieldset/ factor/ factor_test/ stat/ task/`
+8. 目录单数：`table/ index/ panel/ fieldset/ factor/ factor_tester/ stat/ task/`
 
 实测结论（graphqlite / 版本 / 幂等 / polars）：
 - graphqlite 变长路径 `-[:DEPENDS*1..N]->` 可用但 `length(p)` 对多跳恒返回 1（不可靠）；
@@ -222,7 +222,7 @@ src/stkoe/
 
 ## 当前状态与下一步
 
-**当前**：V3.0 图重构完成——table/index/panel/fieldset/sample/feature/factor/test
+**当前**：V3.0 图重构完成——table/index/panel/fieldset/sample/feature/factor/tester
 全部基于 graph 实现（`graph/service.py` 的 GraphService），Execute 与 SubmitTask 三路径统一；
 旧 catalog.db 废弃（登记/依赖/版本进 graph 节点/边，物理指纹表迁入 catalog.db 普通表；
 tasks.db 独立保留）；`graph lineage/nodes/stats` 已接入 gRPC Execute 通道，
@@ -233,6 +233,27 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 refactor: 资产概念统一——test 全面改为 tester（对齐新版概念）
+
+- **背景**：新版定义资产为 **tester**（图类型/Handler 已是 tester），但命令层/方法层
+  仍用 test：Execute source（`e:test`）、SubmitTask source（`s:test`）、CLI 子命令
+  （`stkoe test`）、stat 目标（`stat scan test`）、service 方法（`test_add` 等）、
+  模块目录（`factor_test/`）、物理目录（`factor_test/`、`stat/test/`）——概念混用
+- **改动**：
+  - service：`test_add/get/meta/list/set/delete/check/update/data` → `tester_*`，
+    `_test_*` 私有方法 → `_tester_*`；物化目录 `factor_test/` → `factor_tester/`
+  - 命令层：`@handler("test", ...)` → `@handler("tester", ...)`；`registry.register("test"...)`
+    → `"tester"`；CLI `stkoe tester`；`Result.json("test"...)` → `"tester"`；
+    stat 目标/物理目录 `stat/test/` → `stat/tester/`（`_scan_tester_sync`）
+  - 模块/测试文件：`src/stkoe/factor_test/` → `factor_tester/`、
+    `tests/test_factor_test.py` → `test_factor_tester.py`；任务版类名
+    `TestXxxHandler` → `TesterXxxHandler`
+  - **保留**：`fieldset test` / `feature test`（即时求值**动词**，非资产名）、
+    pytest 测试语义、`FactorTesterSpec`/`TESTER_KINDS`（已是 tester）
+- 测试：全部用例适配（svc.tester_*、s:tester、e:tester、stat tester 目标）；全量 222 用例绿
+- 文档：README（§1.1/§6.1 命令表/§6.6 stat 目标/§6.12/§10 布局/§12 工作流/§13 portal）、
+  example.md、AGENTS.md 目录结构、stkoe.proto 注释；历史变更记录保留原 test 表述
 
 ### 2026-08 feat: window_size 回归——fieldset 字段 / feature 定义的滚动窗口用于 data change event 范围展开
 

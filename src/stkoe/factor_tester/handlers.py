@@ -1,4 +1,4 @@
-"""factor_test TaskHandler：把 GraphService 的 test 资产接进任务框架（source="test"）"""
+"""factor_tester TaskHandler：把 GraphService 的 tester 资产接进任务框架（source="tester"）"""
 from __future__ import annotations
 
 import asyncio
@@ -45,7 +45,7 @@ def _spec_flags(flags: dict):
     )
 
 
-class TestAddHandler(TaskHandler):
+class TesterAddHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         if not pos:
@@ -56,7 +56,7 @@ class TestAddHandler(TaskHandler):
         spec = _spec_flags(flags)
         svc = _service(ctx)
         tm = await asyncio.to_thread(
-            svc.test_add, pos[0], flags["factor"],
+            svc.tester_add, pos[0], flags["factor"],
             returns=flags.get("returns") or "r",
             groupby=flags.get("groupby") or "ic",
             marketcap=flags.get("marketcap") or "fv",
@@ -69,7 +69,7 @@ class TestAddHandler(TaskHandler):
         return TaskResult(data=dumps_str(tm))
 
 
-class TestGetHandler(TaskHandler):
+class TesterGetHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         if not pos:
@@ -77,7 +77,7 @@ class TestGetHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         svc = _service(ctx)
         df, total = await asyncio.to_thread(
-            svc.test_get, pos[0],
+            svc.tester_get, pos[0],
             where=flags.get("where"),
             limit=int(flags["limit"]) if flags.get("limit") else None,
             offset=int(flags["offset"]) if flags.get("offset") else None,
@@ -94,24 +94,24 @@ class TestGetHandler(TaskHandler):
         )
 
 
-class TestMetaHandler(TaskHandler):
+class TesterMetaHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("test meta 需要测试集名")
         svc = _service(ctx)
-        tm = await asyncio.to_thread(svc.test_meta, pos[0])
+        tm = await asyncio.to_thread(svc.tester_meta, pos[0])
         return TaskResult(data=dumps_str(tm))
 
 
-class TestListHandler(TaskHandler):
+class TesterListHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         svc = _service(ctx)
-        tms = await asyncio.to_thread(svc.test_list)
+        tms = await asyncio.to_thread(svc.tester_list)
         return TaskResult(data=dumps_str(tms))
 
 
-class TestSetHandler(TaskHandler):
+class TesterSetHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         if not pos:
@@ -123,37 +123,37 @@ class TestSetHandler(TaskHandler):
         if "spec" in kw and isinstance(kw["spec"], str):
             kw["spec"] = {"periods": [int(p) for p in kw["spec"].split(",")]}
         svc = _service(ctx)
-        tm = await asyncio.to_thread(svc.test_set, pos[0], **kw)
+        tm = await asyncio.to_thread(svc.tester_set, pos[0], **kw)
         return TaskResult(data=dumps_str(tm))
 
 
-class TestCheckHandler(TaskHandler):
+class TesterCheckHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         if not pos:
             raise ValueError("test check 需要测试集名")
         svc = _service(ctx)
-        res = await asyncio.to_thread(svc.test_check, pos[0])
+        res = await asyncio.to_thread(svc.tester_check, pos[0])
         return TaskResult(data=dumps_str(res))
 
 
-class TestUpdateHandler(TaskHandler):
+class TesterUpdateHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         flags = parse_flags(ctx.args)
         svc = _service(ctx)
         if flags.get("all"):
             reports = await asyncio.to_thread(
-                svc.test_update, all=True, resync=bool(flags.get("resync")))
+                svc.tester_update, all=True, resync=bool(flags.get("resync")))
             return TaskResult(data=dumps_str(reports))
         if not pos:
             raise ValueError("test update 需要测试集名（或 --all）")
         report = await asyncio.to_thread(
-            svc.test_update, pos[0], resync=bool(flags.get("resync")))
+            svc.tester_update, pos[0], resync=bool(flags.get("resync")))
         return TaskResult(data=dumps_str(report))
 
 
-class TestDeleteHandler(TaskHandler):
+class TesterDeleteHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
         if not pos:
@@ -161,18 +161,18 @@ class TestDeleteHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         svc = _service(ctx)
         out = await asyncio.to_thread(
-            svc.test_delete, pos[0], force=bool(flags.get("force")))
+            svc.tester_delete, pos[0], force=bool(flags.get("force")))
         return TaskResult(data=dumps_str(out))
 
 
 def register(registry) -> None:
-    registry.register("test", "add", TestAddHandler())
-    registry.register("test", "get", TestGetHandler())
-    registry.register("test", "meta", TestMetaHandler())
-    registry.register("test", "list", TestListHandler())
-    registry.register("test", "", TestListHandler())
-    registry.register("test", "set", TestSetHandler())
-    registry.register("test", "check", TestCheckHandler())
-    registry.register("test", "update", TestUpdateHandler())
-    registry.register("test", "delete", TestDeleteHandler())
-    registry.register("test", "del", TestDeleteHandler())
+    registry.register("tester", "add", TesterAddHandler())
+    registry.register("tester", "get", TesterGetHandler())
+    registry.register("tester", "meta", TesterMetaHandler())
+    registry.register("tester", "list", TesterListHandler())
+    registry.register("tester", "", TesterListHandler())
+    registry.register("tester", "set", TesterSetHandler())
+    registry.register("tester", "check", TesterCheckHandler())
+    registry.register("tester", "update", TesterUpdateHandler())
+    registry.register("tester", "delete", TesterDeleteHandler())
+    registry.register("tester", "del", TesterDeleteHandler())

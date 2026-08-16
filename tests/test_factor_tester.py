@@ -85,15 +85,15 @@ def test_stat_scan_test_target(tmp_path):
     from stkoe.stat import StatController
 
     svc = GraphService(data_dir=tmp_path / "data")
-    svc.test_add("t1", "fac1")
-    svc.test_update("t1")  # stat 消费物化（get 三态）
+    svc.tester_add("t1", "fac1")
+    svc.tester_update("t1")  # stat 消费物化（get 三态）
     svc.close()
     st = StatController(data_dir=tmp_path / "data")
-    report = _run(st.scan("test", "t1", kind="ic"))
-    assert report.target_type == "test"
+    report = _run(st.scan("tester", "t1", kind="ic"))
+    assert report.target_type == "tester"
     assert report.target_name == "t1"
     assert set(report.partitions) == {"ic_d1", "ic_d5", "ic_d10"}
-    out_dir = tmp_path / "data" / "stat" / "test" / "t1" / "ic"
+    out_dir = tmp_path / "data" / "stat" / "tester" / "t1" / "ic"
     assert (out_dir / "ic_d1.parquet").exists()
 
 
@@ -103,29 +103,29 @@ def test_stat_get_test_partition(tmp_path):
     from stkoe.stat import StatController
 
     svc = GraphService(data_dir=tmp_path / "data")
-    svc.test_add("t1", "fac1")
-    svc.test_update("t1")
+    svc.tester_add("t1", "fac1")
+    svc.tester_update("t1")
     svc.close()
     st = StatController(data_dir=tmp_path / "data")
-    _run(st.scan("test", "t1", kind="ic"))
-    df = _run(st.get("test", "t1", kind="ic", partition_by="ic_d1"))
+    _run(st.scan("tester", "t1", kind="ic"))
+    df = _run(st.get("tester", "t1", kind="ic", partition_by="ic_d1"))
     assert "IC(d1)" in df.columns
     assert "RankIC(d1)" in df.columns
 
 
 def test_stat_all_testers(tmp_path):
     _gsetup(tmp_path)
-    from stkoe.factor_test.tester import TESTER_KINDS
+    from stkoe.factor_tester.tester import TESTER_KINDS
     from stkoe.graph.service import GraphService
     from stkoe.stat import StatController
 
     svc = GraphService(data_dir=tmp_path / "data")
-    svc.test_add("t1", "fac1")
-    svc.test_update("t1")
+    svc.tester_add("t1", "fac1")
+    svc.tester_update("t1")
     svc.close()
     st = StatController(data_dir=tmp_path / "data")
     for kind in TESTER_KINDS:
-        report = _run(st.scan("test", "t1", kind=kind))
+        report = _run(st.scan("tester", "t1", kind=kind))
         assert report.files, f"{kind} 应产出文件"
         assert all((tmp_path / "data" / "stat" / f.rel_path).exists()
                    for f in report.files)
@@ -137,7 +137,7 @@ def test_stat_scan_test_unregistered(tmp_path):
 
     st = StatController(data_dir=tmp_path / "data")
     with pytest.raises(StatNotFoundError):
-        _run(st.scan("test", "nope", kind="ic"))
+        _run(st.scan("tester", "nope", kind="ic"))
 
 
 def test_stat_get_unknown_partition(tmp_path):
@@ -146,13 +146,13 @@ def test_stat_get_unknown_partition(tmp_path):
     from stkoe.stat import StatController, StatNotFoundError
 
     svc = GraphService(data_dir=tmp_path / "data")
-    svc.test_add("t1", "fac1")
-    svc.test_update("t1")
+    svc.tester_add("t1", "fac1")
+    svc.tester_update("t1")
     svc.close()
     st = StatController(data_dir=tmp_path / "data")
-    _run(st.scan("test", "t1", kind="ic"))
+    _run(st.scan("tester", "t1", kind="ic"))
     with pytest.raises(StatNotFoundError):
-        _run(st.get("test", "t1", kind="ic", partition_by="nope"))
+        _run(st.get("tester", "t1", kind="ic", partition_by="nope"))
 
 
 # ---------- 任务框架 ----------
@@ -163,7 +163,7 @@ def _task_result(mgr, task):
 
 def test_task_add(mgr, tmp_path):
     _gsetup(tmp_path)
-    t = _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1",
+    t = _await(mgr, mgr.submit("tester", "add", ["t1", "--factor", "fac1",
                                                "--returns", "r", "--groupby", "ic",
                                                "--marketcap", "fv"]))
     tm = _task_result(mgr, t)
@@ -173,8 +173,8 @@ def test_task_add(mgr, tmp_path):
 
 def test_task_update(mgr, tmp_path):
     _gsetup(tmp_path)
-    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    t = _await(mgr, mgr.submit("test", "update", ["t1"]))
+    _await(mgr, mgr.submit("tester", "add", ["t1", "--factor", "fac1"]))
+    t = _await(mgr, mgr.submit("tester", "update", ["t1"]))
     rep = _task_result(mgr, t)
     assert rep["materialized"] is True
     assert rep["changed"] is True
@@ -182,42 +182,42 @@ def test_task_update(mgr, tmp_path):
 
 def test_task_update_idempotent(mgr, tmp_path):
     _gsetup(tmp_path)
-    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    _await(mgr, mgr.submit("test", "update", ["t1"]))
-    t = _await(mgr, mgr.submit("test", "update", ["t1"]))
+    _await(mgr, mgr.submit("tester", "add", ["t1", "--factor", "fac1"]))
+    _await(mgr, mgr.submit("tester", "update", ["t1"]))
+    t = _await(mgr, mgr.submit("tester", "update", ["t1"]))
     rep = _task_result(mgr, t)
     assert rep["changed"] is False
 
 
 def test_task_check(mgr, tmp_path):
     _gsetup(tmp_path)
-    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    t = _await(mgr, mgr.submit("test", "check", ["t1"]))
+    _await(mgr, mgr.submit("tester", "add", ["t1", "--factor", "fac1"]))
+    t = _await(mgr, mgr.submit("tester", "check", ["t1"]))
     res = _task_result(mgr, t)
     assert res["ok"] is True
 
 
 def test_task_list(mgr, tmp_path):
     _gsetup(tmp_path)
-    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    t = _await(mgr, mgr.submit("test", "list", []))
+    _await(mgr, mgr.submit("tester", "add", ["t1", "--factor", "fac1"]))
+    t = _await(mgr, mgr.submit("tester", "list", []))
     out = _task_result(mgr, t)
     assert any(x["name"] == "t1" for x in out)
 
 
 def test_task_delete(mgr, tmp_path):
     _gsetup(tmp_path)
-    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    _await(mgr, mgr.submit("test", "delete", ["t1"]))
-    t = _await(mgr, mgr.submit("test", "list", []))
+    _await(mgr, mgr.submit("tester", "add", ["t1", "--factor", "fac1"]))
+    _await(mgr, mgr.submit("tester", "delete", ["t1"]))
+    t = _await(mgr, mgr.submit("tester", "list", []))
     out = _task_result(mgr, t)
     assert out == []
 
 
 def test_task_meta(mgr, tmp_path):
     _gsetup(tmp_path)
-    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    t = _await(mgr, mgr.submit("test", "meta", ["t1"]))
+    _await(mgr, mgr.submit("tester", "add", ["t1", "--factor", "fac1"]))
+    t = _await(mgr, mgr.submit("tester", "meta", ["t1"]))
     tm = _task_result(mgr, t)
     assert tm["name"] == "t1"
     assert tm["keys"] == ["sym", "date"]
@@ -226,8 +226,8 @@ def test_task_meta(mgr, tmp_path):
 def test_task_set_spec_shortcut(mgr, tmp_path):
     """任务版 test set --spec <csv>：逗号串 → periods（与 Execute 对齐）"""
     _gsetup(tmp_path)
-    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    t = _await(mgr, mgr.submit("test", "set", ["t1", "--spec", "1,2"]))
+    _await(mgr, mgr.submit("tester", "add", ["t1", "--factor", "fac1"]))
+    t = _await(mgr, mgr.submit("tester", "set", ["t1", "--spec", "1,2"]))
     tm = _task_result(mgr, t)
     assert tm["spec"]["periods"] == [1, 2]
 
@@ -235,20 +235,20 @@ def test_task_set_spec_shortcut(mgr, tmp_path):
 def test_task_stat_single_positional_test(mgr, tmp_path):
     """任务版 stat 单位置参数简写 → test 目标（scan 需 --kind 测试器，get/meta/delete 无条件）"""
     _gsetup(tmp_path)
-    _await(mgr, mgr.submit("test", "add", ["t1", "--factor", "fac1"]))
-    _await(mgr, mgr.submit("test", "update", ["t1"]))
+    _await(mgr, mgr.submit("tester", "add", ["t1", "--factor", "fac1"]))
+    _await(mgr, mgr.submit("tester", "update", ["t1"]))
 
     t = _await(mgr, mgr.submit("stat", "scan", ["t1", "--kind", "ic"]))
     rep = _task_result(mgr, t)
-    assert rep["target_type"] == "test" and rep["target_name"] == "t1"
+    assert rep["target_type"] == "tester" and rep["target_name"] == "t1"
 
     t2 = _await(mgr, mgr.submit("stat", "get", ["t1", "--kind", "ic"]))
     g = _task_result(mgr, t2)
-    assert g["target"] == "test:t1"
+    assert g["target"] == "tester:t1"
 
     t3 = _await(mgr, mgr.submit("stat", "meta", ["t1", "--kind", "ic"]))
     m = _task_result(mgr, t3)
-    assert m["target_type"] == "test" and m["target_name"] == "t1"
+    assert m["target_type"] == "tester" and m["target_name"] == "t1"
 
 
 # ---------- 任务框架助手 ----------

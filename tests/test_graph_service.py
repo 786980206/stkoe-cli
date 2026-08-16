@@ -796,56 +796,56 @@ class TestTesterGraph:
     def test_test_add_requires_columns(self, svc):
         self._chain(svc, with_test_cols=False)
         with pytest.raises(ValueError):
-            svc.test_add("t1", "fac1")
+            svc.tester_add("t1", "fac1")
 
     def test_test_add_get_check_scan_data_delete(self, svc):
         self._chain(svc)
-        tm = svc.test_add("t1", "fac1")
+        tm = svc.tester_add("t1", "fac1")
         assert tm["name"] == "t1"
         assert tm["factor"] == "fac1"
         assert tm["sample"] == "sp1"
         assert tm["keys"] == ["sym", "date"]
 
-        r = svc.test_check("t1")
+        r = svc.tester_check("t1")
         assert r["ok"] is True
         # get 三态：未物化 → 报错提示先 update
         with pytest.raises(ValueError, match="未物化"):
-            svc.test_get("t1")
+            svc.tester_get("t1")
 
-        s1 = svc.test_update("t1")
+        s1 = svc.tester_update("t1")
         assert s1["changed"] is True
         assert s1["rows"] == 2
-        s2 = svc.test_update("t1")  # 幂等
+        s2 = svc.tester_update("t1")  # 幂等
         assert s2["changed"] is False
-        assert svc.test_meta("t1")["curated"] is True
-        assert (svc.data_dir / "factor_test" / "t1" / "part=2024").exists()
+        assert svc.tester_meta("t1")["curated"] is True
+        assert (svc.data_dir / "factor_tester" / "t1" / "part=2024").exists()
 
         # 物化后 get/data 读物化
-        df, total = svc.test_get("t1", count_total=True)
+        df, total = svc.tester_get("t1", count_total=True)
         assert df.height == 2 and total == 2
         assert "factor_quantile" in df.columns
         assert "d1" in df.columns
-        d = svc.test_data("t1")
+        d = svc.tester_data("t1")
         assert d.height == 2
 
-        svc.test_delete("t1")
+        svc.tester_delete("t1")
         assert svc.store.get_node("tester:t1") is None
 
     def test_test_update_incremental_by_scope(self, svc, monkeypatch):
         """P0-2：源头新增日期 → factor/test 链增量重算（test_build 带 dt_range）"""
         self._chain(svc)
-        svc.test_add("t1", "fac1")
-        svc.test_update("t1")  # 首次全量（2 行）
-        assert svc.test_data("t1").height == 2
+        svc.tester_add("t1", "fac1")
+        svc.tester_update("t1")  # 首次全量（2 行）
+        assert svc.tester_data("t1").height == 2
 
         calls: list = []
-        orig = GraphService._test_build
+        orig = GraphService._tester_build
 
         def spy(self, node, **kw):
             calls.append(kw.get("dt_range"))
             return orig(self, node, **kw)
 
-        monkeypatch.setattr(GraphService, "_test_build", spy)
+        monkeypatch.setattr(GraphService, "_tester_build", spy)
 
         # 源头追加新日期（含测试必需列；dtype 与现有文件一致）→ 链置脏 → 依次 update
         pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "code": [3],
@@ -855,11 +855,11 @@ class TestTesterGraph:
         for t, n in [("panel", "ds1"), ("fieldset", "fs1"), ("sample", "sp1"),
                      ("feature", "f1"), ("factor", "fac1")]:
             getattr(svc, f"{t}_update")(n)
-        svc.test_update("t1")
+        svc.tester_update("t1")
 
         assert calls and calls[-1] == ("2023-12-24", "2024-01-02"), \
             f"增量应带 dt_range（d{{no}} 前向窗口向后展开 9 天），实际 {calls}"
-        d = svc.test_data("t1")
+        d = svc.tester_data("t1")
         assert d.height == 3
         assert sorted(d["date"].to_list()) == ["2024-01-01", "2024-01-01", "2024-01-02"]
 
@@ -887,7 +887,7 @@ class TestColumnLineage:
         svc.feature_add("f1", "code * 2")
         svc.factor_add("fac1", "f1", "sp1")
         if with_test:
-            svc.test_add("tt1", "fac1")
+            svc.tester_add("tt1", "fac1")
 
     def test_source_columns_registered(self, svc):
         """源头（table/index）登记即建列节点（带元数据）。"""
@@ -933,7 +933,7 @@ class TestColumnLineage:
                    st.deps_of("column:fieldset:fs1.x2", rel_type="DERIVES")}
         assert targets == {"column:panel:ds1.price"}
 
-    def test_sample_factor_test_chain_derives(self, svc):
+    def test_sample_factor_tester_chain_derives(self, svc):
         """sample 视图透传 + index 键映射；factor_col → 公式引用列；test 跨依赖引用。"""
         self._chain(svc)
         st = svc.store
@@ -973,7 +973,7 @@ class TestColumnLineage:
         """资产删除 → 其列节点级联删除（DERIVES 边随之清除）。"""
         self._chain(svc)
         st = svc.store
-        svc.test_delete("tt1")
+        svc.tester_delete("tt1")
         assert st.columns_of("tester:tt1") == []
         svc.factor_delete("fac1")
         assert st.columns_of("factor:fac1") == []
@@ -1136,18 +1136,18 @@ class TestWindowScope:
         """test 的 d{no} 前向窗口：增量重算区间按 max(periods)-1 向后展开 lo。"""
         self._chain(svc)
         self._seed(svc)
-        svc.test_add("t1", "fac1")
-        svc.test_update("t1")  # 首次全量
+        svc.tester_add("t1", "fac1")
+        svc.tester_update("t1")  # 首次全量
         calls: list = []
-        orig = GraphService._test_build
+        orig = GraphService._tester_build
 
         def spy(self, node, **kw):
             calls.append(kw.get("dt_range"))
             return orig(self, node, **kw)
 
-        monkeypatch.setattr(GraphService, "_test_build", spy)
+        monkeypatch.setattr(GraphService, "_tester_build", spy)
         self._append_new_day(svc)
         svc.factor_update("fac1")
-        svc.test_update("t1")
+        svc.tester_update("t1")
         assert calls and calls[-1] == ("2023-12-24", "2024-01-02"), \
             f"test 增量应向后展开 lo，实际 {calls}"

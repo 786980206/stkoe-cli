@@ -1,4 +1,4 @@
-"""factor_test 公共数据类型：FactorTesterSpec（测试器配置）
+"""factor_tester 公共数据类型：FactorTesterSpec（测试器配置）
 
 V2.0 的 FactorTestMeta/ScanReport/CheckResult 已随 FactorTestController 废弃
 （业务统一走 graph/service.py 的 GraphService，`test meta` 输出为 dict 形态）。

@@ -22,7 +22,7 @@ stkoe 数据服务（gRPC）：管理**表 / 索引 / 数据集 / 衍生指标 /
 | `sample` | 样本池（fieldset 视图 ∩ 指定 index 键集合，无物化，实时构造） |
 | `feature` | 因子定义库（命名公式，纯定义），`feature test` 在样本视图即时求值 |
 | `factor` | 最终因子（feature 公式 + sample 视图 + pipeline 算子链），物化、幂等 |
-| `test` | 因子测试数据集（factor_test）+ 六类测试器（stat 集成） |
+| `tester` | 因子测试数据集（factor_tester）+ 六类测试器（stat 集成） |
 | `stat` | 覆盖率 / 存续统计（storage），输出 parquet 产物（不进 graph） |
 | `mock` | 演示数据生成（`stkoe mock demo`/`gen`） |
 | `task` | 后台任务框架（SubmitTask/SubscribeTask/TaskControl，协作式取消） |
@@ -200,7 +200,7 @@ DataChangeEvent {
 ## 3. 路线图
 
 已完成（详见 AGENTS.md 变更记录）：
-- ✅ **panel/fieldset/factor/test 物化**（update 落盘，按 index.materialize_partition
+- ✅ **panel/fieldset/factor/tester 物化**（update 落盘，按 index.materialize_partition
   时间桶分区）+ index 唯一性校验等物理细节（P1/P2）
 - ✅ **V2.0 清理**：V2.0 controller 死代码删除（业务只剩 GraphService 一份）、
   任务版 handler 全面切 graph、dataset 旧别名 / scan 旧名清理
@@ -254,7 +254,7 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 
 所有业务命令统一为 `<source> <action> <args...>` 位置参数形态，等价于 `stkoe <source> <action> <args...>`。
 
-- **source**：`version` / `config` / `table` / `index` / `panel` / `fieldset` / `sample` / `feature` / `factor` / `test` / `stat` / `task` / `mock` / `graph`
+- **source**：`version` / `config` / `table` / `index` / `panel` / `fieldset` / `sample` / `feature` / `factor` / `tester` / `stat` / `task` / `mock` / `graph`
 - **action**：`add` / `get` / `list` / `meta` / `set` / `col` / `update` / `check` / `test` / `delete`（`del` 别名）
 - **参数解析**：`--key value`、`--key=value`、`--flag`（无值 → True）；键名保持用户输入形态
   （含连字符）；位置参数写在 flags 之前
@@ -335,14 +335,14 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 | factor | `check` | `<name>` | — | JsonData（FactorCheckResult） |
 | factor | `update` | `<name>` | `--all` `--resync` | JsonData（FactorScanReport 或 []；显式物化，幂等；传导检查上游 sample/feature 全链就绪，未就绪拒绝更新） |
 | factor | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| test | `add` | `<name>` | `--factor <f>`（必选，已注册因子） `--returns <col>`（默认 `r`） `--groupby <col>`（默认 `ic`） `--marketcap <col>`（默认 `fv`） `--factor_col <col>`（默认 = factor 的 factor_col） `--by_group` `--quantiles N`（默认 5） `--periods p1,p2,..`（默认 `1,5,10`） `--date_range start,end`（默认 `2023-01-01,2026-01-01`） `--rolling_window N`（默认 252） + 元数据键 | JsonData（FactorTestMeta）；sample 缺 date/sym/returns/groupby/marketcap 列 → 报错 |
-| test | `get` | `<name>` | `--where <谓词>` `--limit N` `--offset N` | **ArrowTable**（测试数据集：date/sym/sample/returns/group/marketcap/factor/d{no}/factor_quantile） |
-| test | `set` | `<name>` | `--returns/--groupby/--marketcap/--factor_col/--by_group/--quantiles/--periods/--date_range/--rolling_window + 元数据键`；`--spec <p1,p2,..>`（简写，等价于 `--periods`）；改配置 → 物化失效 | JsonData（FactorTestMeta） |
-| test | `meta` | `<name>` | — | JsonData（FactorTestMeta） |
-| test | `list` | — | — | JsonData（FactorTestMeta[]） |
-| test | `check` | `<name>` | — | JsonData（FactorTestCheckResult） |
-| test | `update` | `<name>` | `--all` `--resync` | JsonData（FactorTestScanReport 或 []；显式物化，幂等；传导检查上游 factor 全链就绪） |
-| test | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
+| tester | `add` | `<name>` | `--factor <f>`（必选，已注册因子） `--returns <col>`（默认 `r`） `--groupby <col>`（默认 `ic`） `--marketcap <col>`（默认 `fv`） `--factor_col <col>`（默认 = factor 的 factor_col） `--by_group` `--quantiles N`（默认 5） `--periods p1,p2,..`（默认 `1,5,10`） `--date_range start,end`（默认 `2023-01-01,2026-01-01`） `--rolling_window N`（默认 252） + 元数据键 | JsonData（FactorTesterMeta）；sample 缺 date/sym/returns/groupby/marketcap 列 → 报错 |
+| tester | `get` | `<name>` | `--where <谓词>` `--limit N` `--offset N` | **ArrowTable**（测试数据集：date/sym/sample/returns/group/marketcap/factor/d{no}/factor_quantile） |
+| tester | `set` | `<name>` | `--returns/--groupby/--marketcap/--factor_col/--by_group/--quantiles/--periods/--date_range/--rolling_window + 元数据键`；`--spec <p1,p2,..>`（简写，等价于 `--periods`）；改配置 → 物化失效 | JsonData（FactorTesterMeta） |
+| tester | `meta` | `<name>` | — | JsonData（FactorTesterMeta） |
+| tester | `list` | — | — | JsonData（FactorTesterMeta[]） |
+| tester | `check` | `<name>` | — | JsonData（FactorTesterCheckResult） |
+| tester | `update` | `<name>` | `--all` `--resync` | JsonData（FactorTesterScanReport 或 []；显式物化，幂等；传导检查上游 factor 全链就绪） |
+| tester | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | graph | `lineage` | — | `--node <type:name>` `--depth N` | JsonData（Cytoscape elements payload，见 §6.13；缺 `--node` 为全图） |
 | graph | `nodes` | — | `--type <t>` | JsonData（节点摘要列表：id/type/name/display_name/version/valid/materialized） |
 | graph | `stats` | — | — | JsonData `{"node_count","edge_count"}` |
@@ -388,7 +388,7 @@ ISO 日期 `YYYY-MM-DD`、字符串字面量。其余写法报错。
 
 ### 6.5 物化分区策略（继承 index.materialize_partition）
 
-panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partition`**（`yearly` 默认 /
+panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_partition`**（`yearly` 默认 /
 `monthly` / `daily`）按**时间桶**分桶落盘：`part=<YYYY>`（yearly）/ `part=<YYYY-MM>`（monthly）/
 `part=<YYYY-MM-DD>`（daily），桶目录 `part=<v>/data.parquet`（文件内保留 `part` 列，
 读取 hive 分区还原后**对外剔除**——get 返回列集合与实时视图一致）。与 index 物理是否分区无关；
@@ -426,9 +426,9 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
 - **FactorScanReport**：`name, version_before, version_after, materialized, changed, partition_by, rebuilt_partitions[]`
 - **FactorCheckResult**：`factor, ok, rows, columns[], message`（`ok` 条件：计算成功、含全部索引列、因子列恰好 1 列、行数 > 0）
 - **FactorTesterSpec**：`by_group, quantiles, periods[], date_range[]（start,end）, rolling_window`
-- **FactorTestMeta**：`name, version, factor, sample, returns, groupby, marketcap, factor_col, spec[FactorTesterSpec], keys[]（date/sym）, materialized, materialized_at, curated, columns[ColumnMeta]（sample 视图列 + 测试必需列）, extra, display_name, description, tags[], source, created_at, updated_at`
-- **FactorTestScanReport**：`name, version_before, version_after, materialized, changed, rows, quantiles, periods[]`
-- **FactorTestCheckResult**：`test, ok, rows, columns[], message`（`ok` 条件：构造成功、含全部必需列、行数 > 0）
+- **FactorTesterMeta**：`name, version, factor, sample, returns, groupby, marketcap, factor_col, spec[FactorTesterSpec], keys[]（date/sym）, materialized, materialized_at, curated, columns[ColumnMeta]（sample 视图列 + 测试必需列）, extra, display_name, description, tags[], source, created_at, updated_at`
+- **FactorTesterScanReport**：`name, version_before, version_after, materialized, changed, rows, quantiles, periods[]`
+- **FactorTesterCheckResult**：`tester, ok, rows, columns[], message`（`ok` 条件：构造成功、含全部必需列、行数 > 0）
 
 ### 6.8 fieldset 衍生指标集（公式引擎）
 
@@ -490,17 +490,17 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
   （feature/sample/pipeline/factor_col）后物化失效（`materialized=False`、`curated=False`），
   读取自动回退实时计算
 
-### 6.12 factor_test 因子测试数据集（`test` 源 + `stat scan ... --kind <测试器>`）
+### 6.12 factor_tester 因子测试数据集（`tester` 源 + `stat scan ... --kind <测试器>`）
 
 - **测试数据集（test）** = 在 **factor 关联的 sample** 视图上，结合测试必需列
   （`date/sym` + returns/groupby/marketcap 列）生成的一份因子测试面板；注册于 graph
-  （type='factor_test'）。`test add` 时若 sample 视图缺少这些列 → **报错拒绝创建**
+  （tester 资产）。`tester add` 时若 sample 视图缺少这些列 → **报错拒绝创建**
 - **Schema**：`date / sym / sample(1观测/0非观测/-1因子空剔除) / returns / group /
   marketcap / factor / d{no}（sym 内前向累计收益）/ factor_quantile（截面分位，by_group
   时组内）`
 - **测试列命名**：`--returns/--groupby/--marketcap`（默认 `r/ic/fv`）指定 sample 视图中的
   收益/分组/市值列名；因子列名取 factor 的 `factor_col`
-- **物化**：`test update` 落盘 `factor_test/<name>/part=<v>/`（时间桶，见 §6.5）；**幂等**——
+- **物化**：`tester update` 落盘 `factor_tester/<name>/part=<v>/`（时间桶，见 §6.5）；**幂等**——
   依赖签名（factor 依赖 hash + spec + 测试列名）不变则跳过；`--resync` 强制重建
 - **读取**：物化且 curated 读 parquet，否则实时构造（不隐式物化）；`set` 改配置
   （returns/groupby/marketcap/spec 键）后物化失效自动回退实时
@@ -508,7 +508,7 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
 - **依赖**：test → factor（删除 factor 需 `--force`）
 - **测试器（stat 集成）**：`stat scan test <name> --kind <kind>` 或
   `stat scan <name> --kind <kind>`（单位置参数简写）运行测试器并把各命名产物写入
-  `stat/test/<name>/<kind>/<output>.parquet`；`stat get` 用 `--partition_by <output>` 读单产物。
+  `stat/tester/<name>/<kind>/<output>.parquet`；`stat get` 用 `--partition_by <output>` 读单产物。
   单位置简写在 Execute 与 SubmitTask 两条路径均可用（`s:stat scan <name> --kind <kind>`）
   - `coverage` → `cvg_date`（`date/SF2S/F2T/S2T/X2S` 覆盖率）
   - `ic` → `ic_d{no}`（`IC(d{no})/RankIC(d{no})/GIC(d{no})/RankGIC(d{no})`，按 `date`）
@@ -674,7 +674,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 ├── table/<name>/             # 表（table 资产）parquet（只读，绝不写/删）
 ├── index/<name>/             # 索引（index 资产）parquet，独立目录（只读，绝不写/删）
 ├── factor/<name>/            # factor 物化产物（样本索引 + 1 因子列，时间桶 part=<v>/，见 §6.5）
-├── factor_test/<name>/       # 因子测试数据集物化产物（时间桶 part=<v>/，见 §6.5）
+├── factor_tester/<name>/       # 因子测试数据集物化产物（时间桶 part=<v>/，见 §6.5）
 ├── panel/<name>/             # panel 物化产物（join 视图，时间桶 part=<v>/，见 §6.5）
 ├── fieldset/<name>/          # fieldset 物化产物（keys + 已校验字段，时间桶 part=<v>/，见 §6.5）
 └── stat/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 graph）
@@ -691,8 +691,8 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 - **feature 纯定义**：只登记于 graph，无任何磁盘产物
 - **factor 物化产物**：`factor/<name>/part=<v>/`（仅索引列 + 因子列，时间桶见 §6.5）；
   幂等——上游 feature/sample 版本 + pipeline/factor_col 签名不变则跳过；删除 factor 时一并清理
-- **factor_test 物化产物**：`factor_test/<name>/part=<v>/`（测试数据集面板，时间桶见 §6.5）；
-  测试器产物 `stat/test/<name>/<kind>/<output>.parquet`（stat 命名输出）；删除 test 时一并清理
+- **factor_tester 物化产物**：`factor_tester/<name>/part=<v>/`（测试数据集面板，时间桶见 §6.5）；
+  测试器产物 `stat/tester/<name>/<kind>/<output>.parquet`（stat 命名输出）；删除 tester 时一并清理
 
 ### 10.1 统计输出列
 
@@ -709,7 +709,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 | **panel** | join 视图**物化落盘**（增量：按积累区间重算受影响时间桶）+ 铸版本 + 水位对齐 | `panel/<name>/part=<v>/`（时间桶，见 §6.5） |
 | **fieldset** | 衍生字段（keys + 已校验字段）**物化落盘**（增量同上）+ 铸版本 | `fieldset/<name>/part=<v>/` |
 | **factor** | **增量物化**：按源头积累事件区间只重算该区间（受影响桶）并合并写回；`--resync` 全量 | `factor/<name>/part=<v>/` |
-| **test** | **增量物化**（同 factor） | `factor_test/<name>/part=<v>/` |
+| **tester** | **增量物化**（同 factor） | `factor_tester/<name>/part=<v>/` |
 | **sample / feature** | 无物化，update 只**铸版本**（消费事件入 version_list）+ 出边水位对齐 | 无（实时构造） |
 | **stat** | 不进 graph，纯文件产物（手动 `stat scan` 触发） | `stat/<target>/<name>/<kind>/*.parquet` |
 
@@ -742,7 +742,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
      `version > consumed` 的积累事件，得 datetime 区间；已有物化且区间明确 →
      读旧物化删区间（受影响桶）+ **仅重算区间内行**合并写回；无区间 / 首次 / `--resync` →
      全量重算；成功后记录各源头水位（`extra.consumed_versions`）；
-   - `test update`：同 factor（在 sample 视图上按区间构造）。
+   - `tester update`：同 factor（在 sample 视图上按区间构造）。
 3. **幂等**：update 时节点 valid 且依赖签名一致 → 直接返回 `changed=False` 跳过重建；
    上游变化已把 valid 置 False，因此再次 update 必然重建（保证不数据过期）。
 4. **读取**：`get` 时物化且 curated 读物化；curated 失效（签名变化）自动回退实时，
@@ -787,13 +787,13 @@ stkoe sample update sp1
 stkoe feature add ma5 --formula "x * 2.0"
 stkoe feature test ma5 --sample sp1
 stkoe feature update ma5
-# 最终因子（物化 factor/fac1/part=<v>/）+ 测试数据集（物化 factor_test/t1/part=<v>/）
+# 最终因子（物化 factor/fac1/part=<v>/）+ 测试数据集（物化 factor_tester/t1/part=<v>/）
 stkoe factor add fac1 --feature ma5 --sample sp1 --pipeline "nothing()"
 stkoe factor check fac1
 stkoe factor update fac1
-stkoe test add t1 --factor fac1 --returns r --groupby ic --marketcap fv
-stkoe test check t1
-stkoe test update t1
+stkoe tester add t1 --factor fac1 --returns r --groupby ic --marketcap fv
+stkoe tester check t1
+stkoe tester update t1
 # 因子测试器（stat 集成；单位置简写 → test 目标）
 stkoe stat scan t1 --kind ic
 # gRPC 读取（物化且 curated 读物化 parquet，对外列不含 part）
@@ -801,7 +801,7 @@ gclient> e:panel get ds1 --where "date >= 2024-01-01" --limit 100
 gclient> e:fieldset get fs1 --limit 100
 gclient> e:sample get sp1 --limit 100
 gclient> e:factor get fac1 --limit 100
-gclient> e:test get t1 --limit 100
+gclient> e:tester get t1 --limit 100
 gclient> e:stat get t1 --kind ic --partition_by ic_d1
 # 后台物化 + 订阅进度（任务版）
 gclient> s:fieldset update fs1
@@ -835,7 +835,7 @@ gclient> t:<task_id>
 #### B. 资产浏览（列表页 / 详情）
 1. 源头：`e:table list` / `e:index list`（JSON 数组）；
 2. 派生：`e:panel list` / `e:fieldset list` / `e:sample list` / `e:feature list` /
-   `e:factor list` / `e:test list`；
+   `e:factor list` / `e:tester list`；
 3. 单个详情：`e:<source> meta <name>`（完整元数据：列、版本、valid、
    materialized/curated 等）。
 
@@ -848,7 +848,7 @@ gclient> t:<task_id>
 
 #### D. 数据读取（详情表格）
 - `e:table get` / `e:index get` / `e:panel get` / `e:fieldset get` / `e:sample get` /
-  `e:factor get` / `e:test get` → **ArrowTable（IPC）**，meta 含 rows/total/columns
+  `e:factor get` / `e:tester get` → **ArrowTable（IPC）**，meta 含 rows/total/columns
   列说明；`--where` / `--limit` / `--offset` / `--columns` 分页过滤。
 
 #### E. 资产创建（向导/表单）
@@ -862,14 +862,14 @@ gclient> t:<task_id>
 - 样本：`e:sample add <name> <fieldset> <index>`（样本池 = fieldset 视图 ∩ index 键集合）；
 - 因子：`e:feature add <name> --formula <expr>`；
   `e:factor add <name> --feature <f> --sample <s> [--pipeline <链>]`；
-- 测试集：`e:test add <name> --factor <fac> [--returns/--groupby/--marketcap]`。
+- 测试集：`e:tester add <name> --factor <fac> [--returns/--groupby/--marketcap]`。
 
 #### F. 更新 / 就绪（数据变化后刷新）
 1. **源头变化**：`e:table update <name>`（或 `e:index update`）
    → 重扫对账；内部自动把变化写入版本事件并**置脏整条下游链**；
 2. **链路就绪**：按依赖顺序依次
    `e:panel update <name>` → `e:fieldset update <name>` → `e:sample update` /
-   `e:feature update` → `e:factor update` → `e:test update`；
+   `e:feature update` → `e:factor update` → `e:tester update`；
    **顺序不可乱**：上游未就绪时 `update` 报 `DependencyError`（message 会指出先 update 谁）；
 3. 之后重拉 `e:graph lineage` / `e:<source> meta` 即可看到新版本与新数据。
 
@@ -944,7 +944,7 @@ uv run pytest -q        # 默认全量 211 用例（graph 模块 + gRPC/资产�
 src/stkoe/
 ├── cli.py / args.py / jsonutil.py / logutil.py / settings.py / dbt.py
 ├── grpc/               # stkoe.proto + 编译产物 + dispatch.py（Execute 分发）+ server.py
-├── table/ index/ panel/ fieldset/ sample/ feature/ factor/ factor_test/ stat/ mock/
+├── table/ index/ panel/ fieldset/ sample/ feature/ factor/ factor_tester/ stat/ mock/
 ├── graph/              # V3.0 资产血缘图（graphqlite）+ GraphService
 │   ├── model.py        # DataChangeEvent / AssetMeta / DependencyEdge / 列元数据
 │   ├── store.py        # GraphStore：节点/边 CRUD + BFS 血缘遍历 + txn 事务

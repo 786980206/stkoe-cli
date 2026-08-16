@@ -1,4 +1,4 @@
-"""factor_test tester：测试数据集准备 + 六类测试器（纯 polars 计算，无绘图）
+"""factor_tester tester：测试数据集准备 + 六类测试器（纯 polars 计算，无绘图）
 
 对话 v1.0 ``factor/core/tester.py``（数据准备 + 前向收益 + 分位）与
 ``factor/testers/``（bucket_returns / factor_returns / bucket_turnover /

@@ -538,7 +538,7 @@ class TestFieldsetSampleGraph:
         self._chain(svc)
         svc.panel_update("ds1")
         svc.fieldset_update("fs1")
-        svc.sample_add("sp1", "fs1")
+        svc.sample_add("sp1", "fs1", "index")
         svc.sample_update("sp1")
         v0 = svc.store.get_node("sample:sp1")["version"]
 
@@ -641,7 +641,7 @@ class TestFactorGraph:
         svc.fieldset_add("fs1", "ds1")
         svc.fieldset_add_field("fs1", "x2", "code * 2")
         svc.fieldset_check("fs1", "x2")
-        svc.sample_add("sp1", "fs1")
+        svc.sample_add("sp1", "fs1", "index")
         svc.feature_add("f1", "code * 2")
         if with_ready:
             # update 语义：上游依次就绪（panel → fieldset → sample → feature）
@@ -784,7 +784,7 @@ class TestTesterGraph:
         svc.fieldset_add("fs1", "ds1")
         svc.fieldset_add_field("fs1", "x2", "code * 2")
         svc.fieldset_check("fs1", "x2")
-        svc.sample_add("sp1", "fs1")
+        svc.sample_add("sp1", "fs1", "index")
         svc.feature_add("f1", "code * 2")
         svc.factor_add("fac1", "f1", "sp1")
         if with_ready:

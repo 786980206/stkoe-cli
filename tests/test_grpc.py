@@ -452,12 +452,21 @@ def _seed_panel_chain(client, srv, x2_formula="x*2"):
 
 
 def test_execute_sample_add_check_get_delete(client, srv):
-    """Execute 路径 sample add/check/get/delete/list 全链路（graph 语义：依赖 fieldset）"""
+    """Execute 路径 sample add/check/get/delete/list 全链路（graph 语义：依赖 fieldset + index）"""
     _seed_panel_chain(client, srv)
+    # 造第二个 index（idx2）作为样本筛选参照：只含 b 的键 → sample 过滤后仅 1 行
+    root = Path(srv.data_dir)
+    d2 = root / "index" / "idx2"
+    d2.mkdir(parents=True)
+    import polars as pl
+
+    pl.DataFrame({"sym": ["b"], "date": ["2026-01-02"]}).write_parquet(d2 / "data.parquet")
+    header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="index", action="add", args=["idx2"])))
+    assert header.code == 0
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="sample", action="add",
-        args=["sp1", "--fieldset", "fs1", "--formula", "(x>=2.0)"])))
+        source="sample", action="add", args=["sp1", "fs1", "idx2"])))
     assert header.code == 0
     assert _json(datas, "sample")["name"] == "sp1"
 
@@ -472,7 +481,7 @@ def test_execute_sample_add_check_get_delete(client, srv):
     tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
     assert len(tables) == 1
     meta = json.loads(tables[0].table.meta)
-    assert meta["rows"] == 1  # 仅 x>=2.0 → b
+    assert meta["rows"] == 1  # 仅 idx2 含有的键（b）→ b 行
     assert [c["name"] for c in meta["columns"]] == ["sym", "x", "date", "y", "x2"]
     assert meta["total"] == 1
 
@@ -531,7 +540,7 @@ def test_execute_feature_add_test_list_delete(client, srv):
     _seed_panel_chain(client, srv)
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="sample", action="add",
-        args=["sp1", "--fieldset", "fs1"])))
+        args=["sp1", "fs1", "idx"])))
     assert header.code == 0
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
@@ -598,7 +607,7 @@ def _seed_factor_chain(client, srv, ready=True):
     assert _json(datas, "fieldset")[0]["ok"] is True
 
     for src, action, args in [
-        ("sample", "add", ["sp1", "--fieldset", "fs1"]),
+        ("sample", "add", ["sp1", "fs1", "idx"]),
         ("feature", "add", ["f1", "--formula", "x*2"]),
     ]:
         header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(

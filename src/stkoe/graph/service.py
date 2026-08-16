@@ -1015,20 +1015,37 @@ class GraphService:
         return {"ok": True, "rows": df.height, "columns": list(df.columns)}, df
 
     # =====================================================================
-    # sample（样本池：graph 登记，依赖 fieldset；get/check 实时过滤）
+    # sample（样本池：graph 登记，依赖 fieldset + index；get/check 实时过滤）
     # =====================================================================
 
-    def _sample_view_lf(self, name: str, *, where=None) -> pl.LazyFrame:
-        node = self._require_node("sample", name)
-        fset = node.get("fieldset", "").split(":", 1)[1]
-        lf, _ = self._fieldset_view_lf(fset, where=where)
-        engine = get_sample_engine(node.get("engine") or "polars")
-        return engine.filter(lf, node.get("formula") or "")
+    def _sample_index_keys(self, node: dict) -> tuple[str, str]:
+        """sample 的筛选 index 键：symbol_col + datetime_col（缺省 sym/date）。"""
+        idx = node.get("index", "").split(":", 1)[-1]
+        inode = self._require_node("index", idx)
+        return (inode.get("symbol_col") or "sym",
+                inode.get("datetime_col") or "date")
 
-    def sample_add(self, name: str, fieldset: str, *, formula: str = "",
-                   engine: str = "polars", **kw) -> dict:
-        return SampleHandler.add(self.graph, name, fieldset, formula=formula,
-                                 engine=engine, **kw)
+    def _sample_view_lf(self, name: str, *, where=None) -> pl.LazyFrame:
+        """sample 视图：fieldset 视图 ∩ 指定 index 的键集合（semi join）。
+
+        只保留 (symbol, datetime) 键存在于该 index 数据中的行；index 键列名与
+        视图 keys 不同名时按位置映射（symbol → keys[0]，datetime → keys[-1]）。
+        """
+        node = self._require_node("sample", name)
+        fset = node.get("fieldset", "").split(":", 1)[-1]
+        lf, keys = self._fieldset_view_lf(fset, where=where)
+        sym, dt = self._sample_index_keys(node)
+        key_sym = sym if sym in keys else (keys[0] if keys else sym)
+        key_dt = dt if dt in keys else (keys[-1] if len(keys) > 1 else dt)
+        idx_lf = pl.scan_parquet(self._index_root(node.get("index", "").split(":", 1)[-1]),
+                                 hive_partitioning=True)
+        idx_lf = idx_lf.select([sym, dt]).unique()
+        if sym != key_sym or dt != key_dt:
+            idx_lf = idx_lf.rename({sym: key_sym, dt: key_dt})
+        return lf.join(idx_lf, on=[key_sym, key_dt], how="semi")
+
+    def sample_add(self, name: str, fieldset: str, index: str, **kw) -> dict:
+        return SampleHandler.add(self.graph, name, fieldset, index, **kw)
 
     def sample_get(self, name: str, *, columns=None, where=None, limit=None,
                    offset=None, count_total: bool = False):
@@ -1038,9 +1055,9 @@ class GraphService:
 
     def _sample_keys(self, node: dict) -> list[str]:
         """sample 的索引列 = 其 fieldset 底层 panel 的 keys。"""
-        fset = node.get("fieldset", "").split(":", 1)[1]
+        fset = node.get("fieldset", "").split(":", 1)[-1]
         fnode = self._require_node("fieldset", fset)
-        return self._panel_keys(fnode.get("dataset", "").split(":", 1)[1])
+        return self._panel_keys(fnode.get("dataset", "").split(":", 1)[-1])
 
     def sample_check(self, name: str) -> dict:
         node = self._require_node("sample", name)
@@ -1062,10 +1079,10 @@ class GraphService:
         return {
             "name": name,
             "version": node.get("version", 0),
-            "fieldset": node.get("fieldset", "").split(":", 1)[1]
+            "fieldset": node.get("fieldset", "").split(":", 1)[-1]
             if node.get("fieldset") else "",
-            "engine": node.get("engine", "polars"),
-            "formula": node.get("formula", ""),
+            "index": node.get("index", "").split(":", 1)[-1]
+            if node.get("index") else "",
             "keys": self._sample_keys(node),
             "valid": bool(node.get("valid")),
             "materialized": False,  # sample 无物化，恒实时构造
@@ -1083,10 +1100,15 @@ class GraphService:
 
     def sample_set(self, name: str, **kw) -> dict:
         self._require_node("sample", name)
+        # 定义键规范化：set --index/--fieldset 存 node_id 形态（与 add 一致）
+        if "index" in kw:
+            kw["index"] = node_id("index", kw["index"])
+        if "fieldset" in kw:
+            kw["fieldset"] = node_id("fieldset", kw["fieldset"])
         return self.graph.set("sample", name, **kw)
 
     def sample_update(self, name: str) -> dict:
-        """sample 更新：传导检查上游（fieldset 链）就绪 → 过滤视图可构造 → 铸版本。
+        """sample 更新：传导检查上游（fieldset 链 + 筛选 index）就绪 → 视图可构造 → 铸版本。
 
         sample 无物化；update = 确认上游就绪并铸版本（消费的积累事件入 version_list，
         无新事件不空 bump），出边水位对齐。
@@ -1159,9 +1181,9 @@ class GraphService:
         node = self._require_node("sample", sample)
         lf = self._sample_view_lf(sample)
         schema = lf.collect_schema()
-        fset = node.get("fieldset", "").split(":", 1)[1]
+        fset = node.get("fieldset", "").split(":", 1)[-1]
         fnode = self._require_node("fieldset", fset)
-        panel = fnode.get("dataset", "").split(":", 1)[1]
+        panel = fnode.get("dataset", "").split(":", 1)[-1]
         panel_cols = {c["name"]: c for c in
                       self._panel_columns(self._require_node("panel", panel))}
         fs_fields = {f: FieldMeta.from_dict(fd)
@@ -1766,12 +1788,6 @@ class GraphService:
 
 def get_fieldset_engine(name: str):
     from ..fieldset.engine import get_engine
-
-    return get_engine(name)
-
-
-def get_sample_engine(name: str):
-    from ..sample.engine import get_engine
 
     return get_engine(name)
 

@@ -18,6 +18,9 @@
   `<type> update <name>`；sample/feature 恒实时
 - **增量物化**：上游变化 → 沿链 update 只重算受影响时间桶（桶粒度粗于增量区间时保留
   桶内区间外旧行合并写回，不丢数据）；上游无变化时 update 幂等跳过
+- **样本池 = fieldset ∩ index**：`sample add <name> <fieldset> <index>`——样本池是
+  fieldset 视图按指定 index 的 (symbol, datetime) 键集合裁剪的动态产物（semi join，
+  不再支持公式过滤）
 
 ## 0. 准备：独立数据目录 + mock 造数
 
@@ -95,13 +98,18 @@ uv run -m stkoe fieldset update fs1                         # 物化 → fieldse
 uv run -m stkoe fieldset get fs1 --limit 5                  # panel 视图 + 已校验指标
 ```
 
-## 5. 样本池（sample：基于 fieldset 视图的过滤，无物化）
+## 5. 样本池（sample：fieldset 视图 ∩ 指定 index 键集合，无物化）
 
 ```bash
-uv run -m stkoe sample add sp1 --fieldset fs1 --formula "(date >= '2024-01-02') & (x > 1.0)"
-uv run -m stkoe sample check sp1                            # 过滤后含全部索引列且行数 > 0
-uv run -m stkoe sample update sp1                           # 传导就绪标记有效（无物化资产，供下游 factor 使用）
+uv run -m stkoe mock gen idx2 --kind index --n-syms 300 --n-days 100   # 样本筛选参照 index（2024 年起前 100 个交易日）
+uv run -m stkoe index add idx2 --symbol-col sym --datetime-col date
+uv run -m stkoe sample add sp1 fs1 idx2          # 样本池 = fieldset 视图 ∩ idx2 的 (sym, date) 键集合（不再按公式过滤）
+uv run -m stkoe sample check sp1                 # 过滤后含全部索引列且行数 > 0
+uv run -m stkoe sample update sp1                # 传导就绪标记有效（无物化资产，供下游 factor 使用）
 ```
+
+> 样本池只保留键存在于筛选 index 数据中的行（semi join）：本例取 idx2 的 100 个交易日
+> 作为样本区间，sp1 ≈ 300 只 × 100 日（而非全量 500 日）。
 
 ## 6. 因子定义库（feature：命名公式，纯定义无物化）
 
@@ -204,7 +212,8 @@ python tools/graph-viewer/export.py example-data/catalog.db --output example-dat
 # 然后 python -m http.server 打开 tools/graph-viewer/index.html 或拖入 JSON
 ```
 
-本案例血缘链：`index/index + table/m1 → panel:ds1 → fieldset:fs1 → sample:sp1 → factor:fac1 → tester:t1`。
+本案例血缘链：`index/index + table/m1 → panel:ds1 → fieldset:fs1 → sample:sp1（+ index:idx2
+筛选参照）→ factor:fac1 → tester:t1`。
 
 ## 清理
 

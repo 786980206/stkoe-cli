@@ -57,7 +57,7 @@ def lineage(ctrl):
                      keys=["sym", "date"])
     FieldsetHandler.add(ctrl, "fs1", "ds1")
     FieldsetHandler.add_field(ctrl, "fs1", "ma5", "price.rolling_mean(5)")
-    SampleHandler.add(ctrl, "sp1", "fs1", formula="(date >= '2024-01-01')")
+    SampleHandler.add(ctrl, "sp1", "fs1", "index")
     FeatureHandler.add(ctrl, "ma5f", "price.rolling_mean(5)")
     FactorHandler.add(ctrl, "fac1", "ma5f", "sp1", pipeline="nothing()")
     ctrl.resolve_all()  # settle：派生节点全部 valid/materialized，无积累事件不空 bump
@@ -347,8 +347,11 @@ class TestEventFlow:
         assert acc["upsert"] is not None
         assert acc["upsert"].symbol_scope == ["a"]
         assert acc["delete"] is None
-        # 链式：fs1 重算后 sp1 才能看到
-        assert lineage.accumulated("sample", "sp1")["upsert"] is None
+        # index 是 sp1 的直接上游（筛选参照）：index 事件对 sp1 立即可见（不沿 fieldset 链）
+        acc0 = lineage.accumulated("sample", "sp1")
+        assert acc0["upsert"] is not None
+        assert acc0["upsert"].symbol_scope == ["a"]
+        # fs1 重算后 fieldset 链事件也积累（两上游事件并集仍为 ["a"]）
         FieldsetHandler.materialize(lineage, "fs1")
         acc2 = lineage.accumulated("sample", "sp1")
         assert acc2["upsert"].symbol_scope == ["a"]
@@ -425,8 +428,9 @@ class TestEventFlow:
             IndexHandler.notify_change(lineage, "index",
                                        event=DataChangeEvent(action="upsert"))
         assert len(lineage.store.get_node("index:index")["version_list"]) == 3
-        # ds1 消费：出边 required_version 对齐 index 当前版本
+        # ds1 消费：出边 required_version 对齐 index 当前版本；sp1 直接依赖 index 也消费
         PanelHandler.update(lineage, "ds1")
+        lineage.resolve("sample", "sp1")
         for _ in range(3):
             IndexHandler.notify_change(lineage, "index",
                                        event=DataChangeEvent(action="upsert"))
@@ -445,7 +449,7 @@ class TestEventFlow:
             ctrl.resolve_all()
 
     def test_stale_and_stats(self, lineage):
-        assert lineage.stats() == {"node_count": 7, "edge_count": 6}
+        assert lineage.stats() == {"node_count": 7, "edge_count": 7}
         IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(action="upsert"))
         assert len(lineage.stale()) == 4
 
@@ -466,7 +470,7 @@ class TestHandlers:
         assert f["fields"]["ma5"]["validated"] is False
         s = SampleHandler.meta(lineage, "sp1")
         assert s["fieldset"] == "fieldset:fs1"  # sample 基于 fieldset 衍生
-        assert s["formula"] == "(date >= '2024-01-01')"
+        assert s["index"] == "index:index"  # 样本筛选参照 index
         fa = FactorHandler.meta(lineage, "fac1")
         assert fa["feature"] == "feature:ma5f"
         assert fa["sample"] == "sample:sp1"
@@ -528,7 +532,7 @@ class TestHandlers:
         IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
             action="upsert", symbol_scope=["a"]))
         assert len(GraphHandler.stale(lineage)) == 4
-        assert GraphHandler.scan(lineage) == {"node_count": 7, "edge_count": 6}
+        assert GraphHandler.scan(lineage) == {"node_count": 7, "edge_count": 7}
 
     def test_delete_leaf_then_parent(self, lineage):
         # 逐层删叶子（新链顺序：fac1 → sp1 → fs1 → ma5f → ds1 → m1 → index）
@@ -577,7 +581,7 @@ def _make_graph_db(base_dir: str) -> GraphController:
     TableHandler.add(ctrl, "m1", columns=[{"name": "sym"}, {"name": "price"}])
     PanelHandler.add(ctrl, "ds1", "index", tables={"m1": "left_join"}, keys=["sym"])
     FieldsetHandler.add(ctrl, "fs1", "ds1")
-    SampleHandler.add(ctrl, "sp1", "fs1", formula="x > 0")
+    SampleHandler.add(ctrl, "sp1", "fs1", "index")
     FeatureHandler.add(ctrl, "ma5f", "price.rolling_mean(5)")
     FactorHandler.add(ctrl, "fac1", "ma5f", "sp1")
     ctrl.resolve_all()
@@ -597,7 +601,7 @@ class TestGraphDispatch:
             results = dispatch("graph", "lineage", [], data_dir=base)
             payload = json.loads(results[0].data)
             assert payload["graph"]["node_count"] == 7
-            assert payload["graph"]["edge_count"] == 6
+            assert payload["graph"]["edge_count"] == 7
             ids = {n["data"]["id"] for n in payload["elements"]["nodes"]}
             assert ids == {"index:index", "table:m1", "panel:ds1", "fieldset:fs1",
                            "sample:sp1", "feature:ma5f", "factor:fac1"}
@@ -632,7 +636,7 @@ class TestGraphDispatch:
             by_type = [n for n in nodes if n["type"] == "panel"]
             assert by_type[0]["name"] == "ds1"
             stats = json.loads(dispatch("graph", "stats", [], data_dir=base)[0].data)
-            assert stats == {"node_count": 7, "edge_count": 6}
+            assert stats == {"node_count": 7, "edge_count": 7}
         finally:
             import shutil
             shutil.rmtree(base, ignore_errors=True)
@@ -671,7 +675,7 @@ class TestGraphDispatch:
             assert payload["graph"]["node_count"] == 7
             assert dispatch("graph", "nodes", [], data_dir="~")[0].data != "[]"
             stats = json.loads(dispatch("graph", "stats", [], data_dir="~")[0].data)
-            assert stats == {"node_count": 7, "edge_count": 6}
+            assert stats == {"node_count": 7, "edge_count": 7}
         finally:
             import shutil
             shutil.rmtree(base, ignore_errors=True)
@@ -752,7 +756,7 @@ class TestGraphGrpcExecute:
         assert [n["name"] for n in nodes] == ["ds1"]
         header, datas = self._collect(client.Execute(
             stkoe_pb2.ExecuteRequest(source="graph", action="stats")))
-        assert json.loads(datas[0].json.data) == {"node_count": 7, "edge_count": 6}
+        assert json.loads(datas[0].json.data) == {"node_count": 7, "edge_count": 7}
 
     def test_execute_graph_bad_depth(self, client):
         from stkoe.grpc import stkoe_pb2

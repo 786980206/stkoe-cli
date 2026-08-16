@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """sample 任务版链路测试（graph 语义）：add→check→get→set→del 全链路。
 
+新语义：`sample add <name> <fieldset> <index>` —— 样本池 = fieldset 视图 ∩ 指定
+index 键集合（semi join，不再支持公式过滤；公式引擎已删除）。
 V2.0 死代码 SampleController 直测已移入 V2.0/tests/test_sample.py（默认全量不收集）。
 """
 import polars as pl
@@ -31,12 +33,15 @@ def _write_idx(root, name, rows):
 
 
 def _gsetup(root):
-    """graph 语义造数：idx/mem 表 → index(sym/date) → panel ds → fieldset fs1(x2 校验通过)"""
+    """graph 语义造数：idx/mem 表 → index(sym/date) → panel ds → fieldset fs1(x2 校验通过)
+    + 筛选参照 index idx2（只含 b/c 的键 → sample 过滤后 2 行）"""
     _write_idx(root, "idx", pl.DataFrame({
         "sym": ["a", "b", "c"],
         "x": [1.0, 2.0, 3.0],
         "date": ["2026-01-01", "2026-01-02", "2026-01-03"],
     }))
+    _write_idx(root, "idx2", pl.DataFrame({
+        "sym": ["b", "c"], "date": ["2026-01-02", "2026-01-03"]}))
     _write(root, "mem", pl.DataFrame({
         "sym": ["a", "b", "c"], "date": ["2026-01-01", "2026-01-02", "2026-01-03"]}))
     from stkoe.graph.service import GraphService
@@ -44,6 +49,7 @@ def _gsetup(root):
     svc = GraphService(data_dir=root)
     svc.table_add("mem")
     svc.index_add("idx")
+    svc.index_add("idx2")
     svc.panel_add("ds", "idx", ["mem"])  # keys 由 index 推断 [sym, date]
     svc.fieldset_add("fs1", "ds")
     svc.fieldset_add_field("fs1", "x2", "x*2")
@@ -53,10 +59,10 @@ def _gsetup(root):
 
 
 def test_task_framework_sample_handlers(mgr):
-    """任务版：sample add → check → get（含 fieldset 衍生列 + result 落盘）→ delete（graph 语义）"""
+    """任务版：sample add（位置参数 fieldset+index）→ check → get → set → delete"""
     _gsetup(mgr.data_dir)
 
-    t_add = mgr.submit("sample", "add", ["s1", "--fieldset", "fs1", "--formula", "x>=2.0"])
+    t_add = mgr.submit("sample", "add", ["s1", "fs1", "idx2"])
     _await(mgr, t_add)
     assert _mgr_result(mgr, t_add)["name"] == "s1"
 
@@ -68,11 +74,12 @@ def test_task_framework_sample_handlers(mgr):
     _await(mgr, t_get)
     get_res = _mgr_result(mgr, t_get)
     assert get_res["columns"] == ["sym", "x", "date", "x2"]
+    assert get_res["rows"] == 2  # 仅 idx2 含有的键（b/c）
     assert get_res["result_ref"]
 
-    t_set = mgr.submit("sample", "set", ["s1", "--formula", "x==1.0"])
+    t_set = mgr.submit("sample", "set", ["s1", "--index", "idx"])
     _await(mgr, t_set)
-    assert _mgr_result(mgr, t_set)["formula"] == "x==1.0"
+    assert _mgr_result(mgr, t_set)["index"] == "index:idx"
 
     t_del = mgr.submit("sample", "del", ["s1"])
     _await(mgr, t_del)

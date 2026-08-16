@@ -34,18 +34,14 @@ def _service(ctx):
 class SampleAddHandler(TaskHandler):
     async def run(self, ctx) -> TaskResult:
         pos = _positional(ctx.args)
-        if not pos:
-            raise ValueError("sample add 需要样本池名")
+        if len(pos) < 3:
+            raise ValueError("sample add 需要 <样本池名> <fieldset 名> <index 名>")
         flags = parse_flags(ctx.args)
-        if not flags.get("fieldset"):
-            raise ValueError("sample add 需要 --fieldset <fieldset 名>")
         svc = _service(ctx)
         sm = await asyncio.to_thread(
-            svc.sample_add, pos[0], flags["fieldset"],
-            engine=flags.get("engine") or "polars",
-            formula=flags.get("formula") or "", **{
+            svc.sample_add, pos[0], pos[1], pos[2], **{
                 k: v for k, v in flags.items()
-                if k not in ("fieldset", "engine", "formula")})
+                if k not in ("fieldset", "index")})
         return TaskResult(data=dumps_str(sm))
 
 

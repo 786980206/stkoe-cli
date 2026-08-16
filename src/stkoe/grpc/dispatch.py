@@ -783,17 +783,12 @@ def _fieldset_scan(args: list[str], data_dir=None) -> list[Result]:
 @handler("sample", "add")
 def _sample_add(args: list[str], data_dir=None) -> list[Result]:
     pos = _positional(args)
-    if not pos:
-        raise CommandError("sample add 需要样本池名")
+    if len(pos) < 3:
+        raise CommandError("sample add 需要 <样本池名> <fieldset 名> <index 名>")
     flags = parse_flags(args)
-    if not flags.get("fieldset"):
-        raise CommandError("sample add 需要 --fieldset <fieldset 名>")
     svc = _graph_service(data_dir)
-    sm = svc.sample_add(pos[0], flags["fieldset"],
-                        engine=flags.get("engine") or "polars",
-                        formula=flags.get("formula") or "", **{
-                            k: v for k, v in flags.items()
-                            if k not in ("fieldset", "engine", "formula")})
+    sm = svc.sample_add(pos[0], pos[1], pos[2], **{
+        k: v for k, v in flags.items() if k not in ("fieldset", "index")})
     return [Result.json("sample", sm)]
 
 

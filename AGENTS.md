@@ -58,8 +58,7 @@ src/stkoe/
 │   ├── spec.py        # FieldMeta dataclass
 │   ├── engine.py      # 公式引擎插件（CalcEngine + register/get；仅 polars）
 │   └── handlers.py    # 任务版 Handler（source="fieldset"，注册进 TaskRegistry）
-├── sample/            # 样本池（走 GraphService；无物化）
-│   ├── engine.py      # 过滤引擎插件（SampleEngine + register/get；仅 polars）
+├── sample/            # 样本池（fieldset 视图 ∩ 指定 index 键集合，无物化）
 │   └── handlers.py    # 任务版 Handler（source="sample"，注册进 TaskRegistry）
 ├── feature/           # 因子定义库（走 GraphService；纯定义，无物化）
 │   ├── engine.py      # 公式引擎插件（复用 CalcEngine 注册表；仅 polars）
@@ -232,6 +231,25 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 feat(sample): 样本池改为 fieldset 视图 ∩ 指定 index 键集合（去除公式过滤）
+
+- **参数格式**：`sample add <name> <fieldset> <index>`（位置参数；原
+  `--fieldset/--formula/--engine` 移除，`sample set` 改 `--index` 为定义键）
+- **筛选逻辑**：样本池 = fieldset 视图（panel 全列 + 已校验指标）按筛选 index 的
+  (symbol, datetime) 键集合 semi join——只保留键存在于该 index 数据中的行；index 键列名
+  与视图 keys 不同名时按位置映射（symbol → keys[0]、datetime → keys[-1]）
+- **血缘/定义键**：sample 新增 DEPENDS 边 → index（role=index，筛选参照）；
+  `DEFINITION_KEYS["sample"] = {fieldset, index}`；`sample set --index` 改筛选参照置脏
+- **清理**：`sample/engine.py`（SampleEngine 公式引擎插件）随公式过滤废弃删除、
+  `get_sample_engine` 死函数移除；sample_meta 输出 index 字段（去掉 engine/formula）
+- **事件语义**：index 成为 sample 直接上游——index 变化事件对 sample 立即可见
+  （accumulated/version_list 裁剪按两上游边水位）
+- 测试：test_sample.py 重写（idx2 键过滤 + set --index）+ test_grpc Execute 三参数
+  （新增 idx2 造数）+ 各 _gsetup 补 index 参数 + test_graph 边数 6→7、事件流断言适配；
+  全量 202 用例绿
+- 文档：api.md §3.1/§3.9/§3.11/§8/§9/gclient 速查、example.md §5 + 血缘链、
+  graph-design.md §2.1（sample → index 边）、AGENTS.md 目录结构
 
 ### 2026-08 docs: example.md 更新为 v0.7.1 全量模拟案例 + 文档残留清理
 

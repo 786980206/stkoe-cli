@@ -306,24 +306,27 @@ class FieldsetHandler:
 # =====================================================================
 
 class SampleHandler:
-    """样本池：基于 Fieldset（衍生指标集）的过滤产物（无物化，读取动态构造）。
+    """样本池：fieldset 视图 ∩ 指定 index 键集合（无物化，读取动态构造）。
 
-    血缘链：table/index → panel → fieldset → **sample** → factor。
+    血缘链：table/index → panel → fieldset → **sample** → factor；
+    sample 另依赖一个 index（role=index）作为样本筛选参照（只保留键存在于
+    该 index 数据中的行，不再按公式过滤）。
     """
 
     @classmethod
-    def add(cls, ctrl: GraphController, name: str, fieldset: str, *,
-            engine: str = "polars", formula: str = "",
+    def add(cls, ctrl: GraphController, name: str, fieldset: str, index: str, *,
             display_name: str | None = None, description: str = "",
             tags: list | tuple | None = None, source: str = "local",
             **kw: Any) -> dict:
-        """创建一个 Sample 节点和一条边（→ Fieldset）。"""
+        """创建一个 Sample 节点和两条边（→ Fieldset、→ Index）。"""
         return ctrl.add(
             "sample", name, display_name=display_name, description=description,
             tags=tags, source=source,
-            deps=[("fieldset", fieldset, {"role": "fieldset"})],
+            deps=[("fieldset", fieldset, {"role": "fieldset"}),
+                  ("index", index, {"role": "index"})],
             fieldset=node_id("fieldset", fieldset),
-            engine=engine, formula=formula, **kw,
+            index=node_id("index", index),
+            **kw,
         )
 
     @classmethod

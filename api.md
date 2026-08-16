@@ -124,12 +124,12 @@ HealthRequest {}                                   HealthResponse { status, vers
 | fieldset | `scan`/`update` | `<name>` | `--all` `--resync` | JsonData（FieldsetScanReport 或 []）；（update 为 V3 语义名，scan 旧名别名；传导检查上游 panel 就绪） |
 | fieldset | `check` | `<name> <field>` | `--all` | JsonData（FieldsetCheckResult[]） |
 | fieldset | `test` | `<name>` | `--formula <表达式>`（必选） | JsonData `{"ok",...}` + ArrowTable（成功时） |
-| sample | `add` | `<name>` | `--fieldset <f>`（必选，已注册 fieldset） `--engine <e>`（默认 polars） `--formula <表达式>`（可为空） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（SampleMeta） |
+| sample | `add` | `<name> <fieldset> <index>` | `--display_name/--description/--tags/--source <v>` + 任意键（fieldset 为已注册 fieldset；index 为**样本筛选参照**——样本池 = fieldset 视图 ∩ 该 index 的 (symbol, datetime) 键集合，不再支持公式过滤） | JsonData（SampleMeta） |
 | sample | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | sample | `meta` | `<name>` | — | JsonData（SampleMeta） |
 | sample | `list` | — | — | JsonData（SampleMeta[]） |
-| sample | `set` | `<name>` | `--engine <e>` `--formula <表达式>` `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（SampleMeta） |
-| sample | `update` | `<name>` | — | JsonData（SampleMeta；传导检查上游 fieldset 链就绪后标记有效，无物化） |
+| sample | `set` | `<name>` | `--index <index 名>`（改筛选参照 → 定义键变更置脏） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（SampleMeta） |
+| sample | `update` | `<name>` | — | JsonData（SampleMeta；传导检查上游 fieldset 链 + 筛选 index 就绪后标记有效，无物化） |
 | sample | `check` | `<name>` | — | JsonData（SampleCheckResult） |
 | sample | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | feature | `add` | `<name>` | `--engine <e>`（默认 polars） `--formula <表达式>`（必填） `--display_name/--description/--unit/--tags/--source <v>` + 任意键 | JsonData（FeatureMeta） |
@@ -265,23 +265,24 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
   公式编译/执行失败或行数不一致 → 校验失败（保持未校验）
 - **读取**：`get` **默认返回 panel 视图 + fieldset 已校验指标 join 拼接后的完整视图**
   （left join on keys，panel 为左表）；`--fields-only` 只返回衍生数据（keys + 已校验指标）
-- **血缘**：table/index → panel → fieldset → sample → factor；删除上游需 `--force`
+- **血缘**：table/index → panel → fieldset → sample → factor（sample 另依赖筛选 index）；删除上游需 `--force`
 - **生命周期**：指标 add/set 后 `validated=False`；`set --formula` 会复位校验位；
   `fieldset test --formula` 即时求值返回成功/失败 + 结果数据
 
-### 3.9 sample 样本池（基于 fieldset 的过滤产物，无物化）
+### 3.9 sample 样本池（fieldset 视图 ∩ 指定 index 键集合，无物化）
 
-- 样本池 = 作用在 **fieldset 视图**（panel 全列 + 已校验衍生指标）上施加过滤 `--formula`
-  之后的**动态产物**，**没有物化概念**：不落盘、不 scan，`get`/`check` 每次读取时实时构造
-- **构造**（get / check 共用）：读 fieldset 视图 → 取已校验指标 join 出衍生列 → 按公式过滤
-- **过滤公式**：列作用域 polars 布尔表达式（如
-  `(date>='2026-01-01')&(sym.is_in(['000001.SZ','000002.SZ']))`），经
-  `sample/engine.py` 引擎插件 eval 后 `filter`；引擎当前仅 `polars`（`--engine`）
-- **formula 为空** → 直接返回整个 fieldset 视图
-- **`sample check`**：过滤后结果集**包含全部索引列（fieldset 底层 panel keys）且行数 > 0** 才算有效；
-  公式编译/执行失败 → 不有效（message 含原因）
-- **依赖**：sample → fieldset（删除上游需 `--force`）；`set` 可改 formula/engine 及元数据
-  （版本递增），读取无需重新校验
+- 样本池 = 在 **fieldset 视图**（panel 全列 + 已校验衍生指标）上按**指定 index 的
+  (symbol, datetime) 键集合**做 semi join 的**动态产物**：只保留键存在于该 index 数据中
+  的行；**没有物化概念**，不落盘、不 scan，`get`/`check` 每次读取时实时构造
+- **`sample add <name> <fieldset> <index>`**：fieldset 为已注册 fieldset（样本内容），
+  index 为已注册 index 资产（样本筛选参照——通常是目标研究区间/标的范围的索引表）；
+  index 键列名与视图 keys 不同名时按位置映射（symbol → keys[0]，datetime → keys[-1]）
+- **构造**（get / check 共用）：读 fieldset 视图 → semi join 该 index 的键列（去重）→
+  只保留命中行；不再支持公式过滤（原 `--formula`/`--engine` 与 sample/engine.py 已移除）
+- **`sample check`**：过滤后结果集**包含全部索引列（fieldset 底层 panel keys）且行数 > 0**
+  才算有效（如筛选 index 与 fieldset 无交集 → 行数 0 → 不有效）
+- **依赖**：sample → fieldset、sample → index（删除上游需 `--force`）；
+  `set --index` 改筛选参照（定义键变更置脏，版本递增），读取无需重新校验
 
 ### 3.10 feature 因子定义库（纯定义，无物化）
 
@@ -289,9 +290,9 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
   **没有物化概念**、不依赖具体表/panel：`add` 只记录 `engine + formula + 元数据`
 - **公式语言**：与 fieldset/样本过滤一致，用 `feature/engine.py` 引擎插件（当前仅 `polars`）
   在样本视图列作用域里 eval，逐行计算
-- **`feature test <name> --sample <s>`**：在指定样本池的 fieldset 视图（panel 全列 + 已校验
-  指标 + 过滤）上即时求值 —— 公式执行成功且结果行数 == 样本行数 → `valid=True` 并返回结果
-  ArrowTable（单列 `field`）；聚合公式或执行失败 → `valid=False` / `ok=False`
+- **`feature test <name> --sample <s>`**：在指定样本池视图（panel 全列 + 已校验指标 +
+  筛选 index 键集合）上即时求值 —— 公式执行成功且结果行数 == 样本行数 → `valid=True`
+  并返回结果 ArrowTable（单列 `field`）；聚合公式或执行失败 → `valid=False` / `ok=False`
 - **`add` 必须提供 `--formula <表达式>`**（空 formula 会被拒绝，见 §3.1）；`feature test` 在
   样本视图上即时求值
 - **依赖**：feature 是**纯定义、不依赖任何资产**，删除上游 panel/fieldset/sample 不影响 feature
@@ -299,7 +300,7 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
 
 ### 3.11 factor 最终因子（feature 公式 + sample 视图 + pipeline 算子链 + 物化）
 
-- **因子（factor）** = 在 **sample**（fieldset 视图 + filter 动态视图）上
+- **因子（factor）** = 在 **sample**（fieldset 视图 ∩ index 键集合的动态视图）上
   经 **feature**（命名公式）逐行算出因子列，再经 **pipeline**（算子链）变换后的**最终产物**；
   输出结构恒为「样本索引列 + 一列因子列」（列名 = `--factor_col`，默认取 feature 名）
 - **pipeline 算子链**：`|` 分隔的算子调用（如 `nothing()|standardlize()`），每段为 `name()`；
@@ -529,7 +530,8 @@ t:<task_id>
   stkoe_data_files/stkoe_file_stats 迁入 catalog.db 普通表（同文件同事务可回滚）
 - **表删除只删登记（graph 节点/指纹），绝不删用户 parquet**（可重新 `add` 发现）；index 资产物理目录为 `index/`（与 table 的 `table/` 分离）
 - **stat 资产不进 graph**：文件夹存在即已扫描，`meta`/`list` 读目录
-- **sample 无物化产物**：只登记于 graph（依赖 fieldset），读取动态构造 fieldset 视图 + 过滤
+- **sample 无物化产物**：只登记于 graph（依赖 fieldset + 筛选 index），读取动态构造
+  fieldset 视图 ∩ index 键集合
 - **feature 纯定义**：只登记于 graph，无任何磁盘产物
 - **factor 物化产物**：`factor/<name>/part=<v>/`（仅索引列 + 因子列，时间桶见 §3.5）；
   幂等——上游 feature/sample 版本 + pipeline/factor_col 签名不变则跳过；删除 factor 时一并清理
@@ -565,7 +567,7 @@ stkoe fieldset add fs1 x2 --formula "x * 2.0"
 stkoe fieldset check fs1 x2
 stkoe fieldset update fs1
 # 样本池（基于 fieldset 视图过滤，无物化）+ 因子定义库（命名公式，无物化）
-stkoe sample add sp1 --fieldset fs1 --formula "(date >= '2024-01-02') & (x > 1.0)"
+stkoe sample add sp1 fs1 idx2
 stkoe sample check sp1
 stkoe sample update sp1
 stkoe feature add ma5 --formula "x * 2.0"
@@ -645,7 +647,7 @@ gclient> t:<task_id>
 - 衍生：`e:fieldset add <name> --dataset <panel>` →
   `e:fieldset add <name> <field> --formula <expr>` → `e:fieldset check <name> <field>`
   （check 通过才参与物化）；
-- 样本：`e:sample add <name> --fieldset <fs> [--formula <过滤式>]`；
+- 样本：`e:sample add <name> <fieldset> <index>`（样本池 = fieldset 视图 ∩ index 键集合）；
 - 因子：`e:feature add <name> --formula <expr>`；
   `e:factor add <name> --feature <f> --sample <s> [--pipeline <链>]`；
 - 测试集：`e:test add <name> --factor <fac> [--returns/--groupby/--marketcap]`。

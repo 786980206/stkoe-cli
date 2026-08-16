@@ -85,6 +85,7 @@ Index:index ──DEPENDS(role=index)──────────────�
 Table:m1  ───DEPENDS(role=member, join=asof_join)─▶ Panel:ds1
 Panel:ds1 ───DEPENDS(role=panel)──────────────────▶ Fieldset:fs1
 Fieldset:fs1 ─DEPENDS(role=fieldset)──────────────▶ Sample:sp1
+Index:idx2 ──DEPENDS(role=index)──────────────────▶ Sample:sp1   ← 样本筛选参照
 Sample:sp1 ──DEPENDS(role=sample)─────────────────▶ Factor:fac1
 Feature:ma5f ─DEPENDS(role=feature)───────────────▶ Factor:fac1
 ```
@@ -94,7 +95,9 @@ Feature:ma5f ─DEPENDS(role=feature)──────────────�
   仅 ``role=member`` 边带 ``detail.join``（``asof_join`` 缺省 / ``left_join``）；
   ``role=index`` 边**不带 join**。成员表 join 方式在 ``panel add`` 时按
   ``member:asof``/``member:left`` 指定（缺省 asof）。
-- **sample 基于 fieldset 衍生**（在 fieldset 的衍生指标集视图上过滤），不直接依赖 panel。
+- **sample 基于 fieldset 衍生 + 按筛选 index 键集合裁剪**（`sample add <name> <fieldset>
+  <index>`：只保留 (symbol, datetime) 键存在于该 index 数据中的行，不再支持公式过滤），
+  不直接依赖 panel；sample → index 边 role=index（**筛选参照**，无 join）。
 - Panel 建节点时**同时建边**：`Panel → Index`（role=index）、`Panel → 每张成员表`（role=member）；
   边的 `required_version` 初始 = 被依赖方当前版本。
 - 删除约束：**节点存在入边（下游依赖）时禁止删除**（除非 `--force`，force 时先删下游边/节点）。

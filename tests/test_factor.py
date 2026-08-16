@@ -45,7 +45,7 @@ def _gsetup(root):
     svc.index_add("idx")
     svc.panel_add("ds", "idx", ["mem"])  # keys 由 index 推断 [sym, date]
     svc.fieldset_add("fs1", "ds")
-    svc.sample_add("sp1", "fs1")
+    svc.sample_add("sp1", "fs1", "idx")
     svc.feature_add("f1", "x*2")
     for t, n in [("panel", "ds"), ("fieldset", "fs1"),
                  ("sample", "sp1"), ("feature", "f1")]:

@@ -101,14 +101,14 @@ class StatController:
         ``stats/test/<name>/<kind>/<output>.parquet``（数据源走 GraphService）。"""
         from ..factor_test.spec import FactorTesterSpec
         from ..factor_test.tester import run_tester
-        from ..table.errors import TableNotFoundError
+        from ..graph.errors import AssetNotFoundError
 
         svc = self._graph_service()
         try:
             tm = svc.test_meta(target_name)
             data = svc.test_data(target_name)
-        except TableNotFoundError:
-            raise StatNotFoundError(f"test 未注册: {target_name}")
+        except AssetNotFoundError:
+            raise StatNotFoundError(f"test 未注册: {target_name}") from None
         finally:
             svc.close()
         spec = FactorTesterSpec.from_dict(tm.get("spec") or {})

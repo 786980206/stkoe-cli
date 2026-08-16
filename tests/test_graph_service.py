@@ -39,6 +39,17 @@ def svc():
 
 
 class TestTableGraph:
+    def test_unregistered_raises_asset_not_found(self, svc):
+        """§8 错误体系统一：未注册资产抛 AssetNotFoundError（不再抛 TableNotFoundError）"""
+        from stkoe.graph.errors import AssetNotFoundError
+
+        with pytest.raises(AssetNotFoundError):
+            svc.panel_meta("nope")
+        with pytest.raises(AssetNotFoundError):
+            svc.fieldset_check("nope", "f1")
+        with pytest.raises(AssetNotFoundError):
+            svc.table_get("nope")
+
     def test_add_creates_node_and_fingerprint(self, svc):
         r = svc.table_add("m1")
         assert r["implicit_registered"] is True

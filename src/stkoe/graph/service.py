@@ -23,15 +23,11 @@ from ..factor_test.spec import FactorTesterSpec
 from ..factor_test.tester import prepare_factor_data
 from ..jsonutil import dumps_str, loads
 from ..settings import load_config
+from ..table.errors import DEFAULT_IGNORE_COLS, TableExistsError
 from ..table import util as T
 from ..table.query import prune_files, to_expr
-from ..table.errors import (
-    DEFAULT_IGNORE_COLS,
-    DependencyError,
-    TableExistsError,
-    TableNotFoundError,
-)
 from .controller import GraphController
+from .errors import AssetNotFoundError
 from .events import DataChangeEvent
 from .handlers import (
     FactorHandler,
@@ -120,7 +116,7 @@ class GraphService:
     def _require_node(self, asset_type: str, name: str) -> dict:
         node = self.store.get_node(node_id(asset_type, name))
         if node is None:
-            raise TableNotFoundError(f"{asset_type} not registered: {name}")
+            raise AssetNotFoundError(f"{asset_type} not registered: {name}")
         return node
 
     @staticmethod
@@ -185,7 +181,7 @@ class GraphService:
         """
         root = self._asset_root(asset_type, name)
         if not root.exists():
-            raise TableNotFoundError(f"table dir not found: {root}")
+            raise AssetNotFoundError(f"{asset_type} dir not found: {root}")
         disk = T.disk_files(root)
         nid = node_id(asset_type, name)
         node = self.store.get_node(nid)
@@ -409,7 +405,7 @@ class GraphService:
             raise ValueError("add 需要表名（或 --all 批量发现）")
         root = self._root(name)
         if not root.exists():
-            raise TableNotFoundError(f"table dir not found: {root}")
+            raise AssetNotFoundError(f"table dir not found: {root}")
         if self.store.get_node(node_id("table", name)) is not None:
             raise TableExistsError(f"table already registered: {name} (use scan to refresh)")
         return self._scan_disk("table", name, meta=meta)
@@ -519,7 +515,7 @@ class GraphService:
             raise ValueError("add 需要 index 名（或 --all 批量发现）")
         root = self._index_root(name)
         if not root.exists():
-            raise TableNotFoundError(f"index dir not found: {root}")
+            raise AssetNotFoundError(f"index dir not found: {root}")
         if self.store.get_node(node_id("index", name)) is not None:
             raise TableExistsError(f"index already registered: {name}")
         self._check_index_unique(name, symbol_col=symbol_col, datetime_col=datetime_col)
@@ -910,7 +906,7 @@ class GraphService:
         node = self._require_node("fieldset", name)
         fields = node.get("fields") or {}
         if field not in fields:
-            raise TableNotFoundError(f"field not found: {field}")
+            raise AssetNotFoundError(f"field not found: {field}")
         base, keys = self._panel_lazy(node.get("dataset", "").split(":", 1)[1])
         engine = get_fieldset_engine(node.get("engine") or "polars")
         ok, message = engine.check(base, FieldMeta.from_dict(fields[field]))

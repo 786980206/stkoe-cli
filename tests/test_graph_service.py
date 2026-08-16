@@ -1165,7 +1165,7 @@ class TestColumnLineage:
         assert targets == {"column:panel:ds1.price"}
 
     def test_sample_factor_tester_chain_derives(self, svc):
-        """sample 视图透传 + index 键映射；factor_col → 公式引用列；test 跨依赖引用。"""
+        """sample 视图透传 + index 键映射；factor 只留因子列映射；tester 不做列级血缘。"""
         self._chain(svc)
         st = svc.store
         # sample：视图列透传 fieldset（含已校验字段 x2）+ 键映射 index
@@ -1179,26 +1179,37 @@ class TestColumnLineage:
         date_srcs = {e["target"] for e in
                      st.deps_of("column:sample:sp1.date", rel_type="DERIVES")}
         assert date_srcs == {"column:fieldset:fs1.date", "column:index:index.date"}
-        # factor：keys 透传 sample + factor_col → feature 公式引用列
-        assert {c["name"] for c in st.columns_of("factor:fac1")} == {"sym", "date", "f1"}
+        # factor：**只留因子列**——factor_col → feature 公式引用列；
+        # keys（sym/date 索引透传）不建字段级映射（对资产血缘无信息量）
+        assert {c["name"] for c in st.columns_of("factor:fac1")} == {"f1"}
         assert st.deps_of("column:factor:fac1.f1", rel_type="DERIVES")[0]["target"] \
             == "column:sample:sp1.code"
-        assert st.deps_of("column:factor:fac1.sym", rel_type="DERIVES")[0]["target"] \
-            == "column:sample:sp1.sym"
-        # test：factor 列（factor/factor_quantile/keys）+ 跨依赖 sample 列（returns/group/...）
-        assert st.deps_of("column:tester:tt1.factor", rel_type="DERIVES")[0]["target"] \
-            == "column:factor:fac1.f1"
-        assert st.deps_of("column:tester:tt1.factor_quantile",
-                          rel_type="DERIVES")[0]["target"] == "column:factor:fac1.f1"
-        assert {e["target"] for e in
-                st.deps_of("column:tester:tt1.returns", rel_type="DERIVES")} \
-            == {"column:sample:sp1.r"}
-        assert st.deps_of("column:tester:tt1.group", rel_type="DERIVES")[0]["target"] \
-            == "column:sample:sp1.ic"
-        assert st.deps_of("column:tester:tt1.marketcap",
-                          rel_type="DERIVES")[0]["target"] == "column:sample:sp1.fv"
-        assert st.deps_of("column:tester:tt1.d1", rel_type="DERIVES")[0]["target"] \
-            == "column:sample:sp1.r"
+        assert st.columns_of("factor:fac1")[0].get("asset") == "factor:fac1"
+        # tester：**不做列级血缘**（无列节点/DERIVES/BELONGS_TO）——测试面板的
+        # 派生字段（returns/group/marketcap/d{no}/factor_quantile）对资产血缘无
+        # 信息量；资产级 DEPENDS → factor 已表达因子数据来源
+        assert st.columns_of("tester:tt1") == []
+        assert st.asset_of("column:tester:tt1.factor") is None
+
+    def test_fieldset_derives_resync_on_update(self, svc):
+        """血缘对账：历史字段缺 DERIVES 边/required_fields → fieldset update 自动补齐。"""
+        self._chain(svc, with_test=False)
+        st = svc.store
+        # 模拟旧库状态：字段 x2 的 DERIVES 边与 required_fields 缺失（升级前登记）
+        svc.graph.clear_derives("fieldset", "fs1", "x2")
+        node = svc.store.get_node("fieldset:fs1")
+        fields = dict(node.get("fields") or {})
+        fields["x2"] = {**fields["x2"], "required_fields": []}
+        svc.store.patch_node("fieldset:fs1", fields=fields)
+        assert st.deps_of("column:fieldset:fs1.x2", rel_type="DERIVES") == []
+        # update → 对账重派发（字段 → panel 源字段的关系恢复）
+        svc.panel_update("ds1")
+        svc.fieldset_update("fs1")
+        targets = {e["target"] for e in
+                   st.deps_of("column:fieldset:fs1.x2", rel_type="DERIVES")}
+        assert targets == {"column:panel:ds1.code"}
+        assert "code" in svc.store.get_node("fieldset:fs1")["fields"]["x2"] \
+            ["required_fields"]
 
     def test_delete_cascades_column_nodes(self, svc):
         """资产删除 → 其列节点级联删除（DERIVES 边随之清除）。"""
@@ -1207,7 +1218,7 @@ class TestColumnLineage:
         svc.tester_delete("tt1")
         assert st.columns_of("tester:tt1") == []
         svc.factor_delete("fac1")
-        assert st.columns_of("factor:fac1") == []
+        assert st.columns_of("factor:fac1") == []  # 删除前只剩 factor_col 列
         svc.sample_delete("sp1")
         assert st.columns_of("sample:sp1") == []
         svc.fieldset_delete("fs1")

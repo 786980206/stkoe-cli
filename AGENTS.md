@@ -236,6 +236,30 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 列级血缘粒度收敛——tester 去列级血缘 / factor 只留因子列 / fieldset 字段血缘对账自愈
+
+- **背景**：血缘图（`graph lineage --columns`）在 tester/factor 上信息冗余——
+  tester 测试面板的派生字段（keys/returns/group/marketcap/d{no}/factor_quantile）
+  对资产血缘无信息量（核心只有从 factor 来的因子字段，资产级 DEPENDS → factor
+  已表达）；factor 的 keys（sym/date）是索引透传，同样无信息量
+- **① tester 不做列级血缘**：`tester_add` 不再传 `column_maps`、不再
+  `sync_derives`——tester 无列节点（DERIVES/BELONGS_TO 均不建）；字段 schema
+  在 tester meta（columns）展示，不进入列节点图；资产级 `DEPENDS → factor` 保留
+- **② factor 只留因子列**：`factor_add` 的 column_maps 只含
+  `{factor_col: feature 公式引用的 sample 视图列}`（一条或多条边）；
+  keys（sym/date）不建字段级映射——"因子列 → 它使用的 sample 数据字段"即表达
+  factor 的数据来源
+- **③ fieldset 字段血缘对账自愈**：字段 DERIVES 只在 `add_field`/`set_field` 时
+  派发——旧库/升级前登记的字段可能缺边或缺 `required_fields`（血缘图上字段与
+  panel 源字段之间没有关系）。新增 `_sync_fieldset_derives_all`：`fieldset update`
+  时按当前公式全量对账（引用集合与登记不一致 → 清旧边重派发 + 写回
+  required_fields，幂等不置脏）
+- 测试：`test_sample_factor_tester_chain_derives` 改断言（factor 只剩 f1 列 /
+  tester 无列节点）/ `test_delete_cascades_column_nodes` 适配 / 新增
+  `test_fieldset_derives_resync_on_update`（删边+清 required_fields → update 恢复）；
+  全量 276 用例绿
+- 文档：README §2.2/§2.3（映射来源按信息量收敛粒度 + 对账说明）、AGENTS.md
+
 ### 2026-08 feat(graph): BELONGS_TO 边——列级血缘与资产级血缘接成一张图（跨层一致性校验）
 
 - **背景**：列→资产此前只是列节点上的 `asset` **属性**（`MATCH (c:Column {asset: $id})`），

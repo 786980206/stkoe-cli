@@ -1213,6 +1213,24 @@ class GraphService:
                            self_invalidate=False, propagate=False)
         return refs
 
+    def _sync_fieldset_derives_all(self, name: str) -> None:
+        """对账字段列级血缘（历史字段自愈）：按当前公式重算 required_fields 与 DERIVES。
+
+        字段 DERIVES 只在 ``add_field``/``set_field`` 时派发——旧库/升级前登记的
+        字段可能缺边或缺 ``required_fields``（血缘图上字段与 panel 源字段之间
+        没有关系）。``fieldset update`` 时全量对账：引用集合与已登记不一致 →
+        清旧边重派发 + 写回 required_fields（幂等，无变化不动作；不置脏）。
+        """
+        node = self._require_node("fieldset", name)
+        pcols, ffields = self._fieldset_ref_cols(name)
+        for field, fd in (node.get("fields") or {}).items():
+            formula = (fd or {}).get("formula") or ""
+            refs = _formula_refs(formula, pcols | ffields)
+            cur = list((fd or {}).get("required_fields") or ())
+            if cur != refs:
+                self.graph.clear_derives("fieldset", name, field)
+                self._sync_fieldset_field_derives(name, field, formula)
+
     def fieldset_meta_field(self, name: str, field: str) -> dict:
         return FieldsetHandler.meta_field(self.graph, name, field)
 
@@ -1275,6 +1293,7 @@ class GraphService:
         """
         self.graph.assert_ready("fieldset", name)
         node = self._require_node("fieldset", name)
+        self._sync_fieldset_derives_all(name)  # 血缘对账：历史字段缺边/引用变化自愈
         panel = node.get("panel", "").split(":", 1)[1]
         keys = self._panel_keys(panel)
         fields = [FieldMeta.from_dict(f) for f in (node.get("fields") or {}).values()
@@ -1800,8 +1819,10 @@ class GraphService:
                    factor_col: str | None = None, **kw) -> dict:
         """创建最终因子：校验 feature/sample 已注册 + pipeline/engine 合法。
 
-        列级血缘：factor keys 透传 sample keys；factor_col DERIVES → feature
-        公式引用的 sample 视图列（DEPENDS 边 detail.columns）。
+        列级血缘**只保留因子列**：factor_col DERIVES → feature 公式引用的
+        sample 视图列（一条或多条边，DEPENDS 边 detail.columns）——keys
+        （sym/date）是索引透传，不建字段级映射（对资产血缘无信息量，因子列
+        指向 sample 数据字段已表达"因子用了哪些字段"）。
         """
         if not feature:
             raise ValueError("factor add 需要 --feature <feature 名>")
@@ -1811,14 +1832,11 @@ class GraphService:
         snode = self._require_node("sample", sample)
         parse_pipeline(pipeline)
         get_factor_engine(engine)
-        keys = self._sample_keys(snode)
         fcol = factor_col or feature
-        col_maps = {"sample": {k: k for k in keys}}
         view = set(self._fieldset_view_col_names(
             snode.get("fieldset", "").split(":", 1)[-1]))
         refs = _formula_refs(fnode.get("formula") or "", view)
-        if refs:
-            col_maps["sample"][fcol] = refs
+        col_maps = {"sample": {fcol: refs}} if refs else None
         FactorHandler.add(self.graph, name, feature, sample, engine=engine,
                           pipeline=pipeline, factor_col=factor_col,
                           column_maps=col_maps, **kw)
@@ -2238,20 +2256,16 @@ class GraphService:
             {"quantiles": 5, "periods": [1, 5, 10],
              "date_range": ["2023-01-01", "2026-01-01"], "rolling_window": 252}
         keys = list(fm["keys"])
-        fcol = factor_col or fm["factor_col"] or factor
-        # 列级血缘（factor 依赖）：keys 透传 + factor/factor_quantile → factor.factor_col
-        factor_map = {k: k for k in keys}
-        factor_map.update({"factor": fcol, "factor_quantile": fcol})
+        # tester **不做列级血缘**（列节点/DERIVES/BELONGS_TO 均不建）：tester 是
+        # 测试面板（keys/returns/group/marketcap/d{no}/factor_quantile 等派生字段
+        # 对资产血缘无信息量），其资产级 DEPENDS → factor 已表达"因子数据来源"；
+        # 字段 schema 在 tester meta（columns）里展示，不进入列节点图
         TesterHandler.add(
             self.graph, name, factor,
             returns=returns, groupby=groupby, marketcap=marketcap,
             factor_col=factor_col or fm["factor_col"] or factor,
             spec=spec_d, sample=node_id("sample", sample),
-            keys=keys, column_maps={"factor": factor_map}, **kw)
-        # 列级血缘（跨依赖引用）：returns/group/marketcap/d{no} ← sample 视图列
-        sample_map = {"returns": returns, "group": groupby, "marketcap": marketcap}
-        sample_map.update({f"d{no}": returns for no in spec_d.get("periods", [])})
-        self.graph.sync_derives("tester", name, "sample", sample, sample_map)
+            keys=keys, **kw)
         return self._tester_meta_dict(name)
 
     def tester_get(self, name: str, *, where=None, limit=None, offset=None,

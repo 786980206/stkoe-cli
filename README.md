@@ -81,7 +81,8 @@ as_index, is_tool, source_table, source_field`。**列级血缘**：DEPENDS 边 
 的字段映射（`{派生列: 源列 | [源列...]}`）物化为**独立列节点图**——每列一个 `Column`
 节点（id = `column:<资产 id>.<列名>`），派生列与源列之间建 `(column) -[:DERIVES]-> (column)`
 边（方向与 DEPENDS 一致：派生列 → 源列）；源头列（table/index）随登记/重扫对账，
-字段/公式变更（fieldset `add_field/set_field`）自动重派发。
+字段/公式变更（fieldset `add_field/set_field`）自动重派发，`fieldset update` 时全量
+对账重派发（历史/旧库字段缺边自动补齐，见 §2.3）。
 
 ### 2.3 边模型（DEPENDS + DERIVES + BELONGS_TO）
 
@@ -100,13 +101,17 @@ as_index, is_tool, source_table, source_field`。**列级血缘**：DEPENDS 边 
   连续遍历（如「因子列 → 所属因子 → DEPENDS 链 → 源头表 → 其列」一条路径走通）；
   `graph analyze` 的 **`consistency`** 用它对两层血缘做交叉校验：跨资产 DERIVES 边
   的所属资产之间必须存在 DEPENDS 路径，不一致即报告（抓列级与资产级漂移）
-- **列级血缘映射来源**：
+- **列级血缘映射来源**（**按信息量收敛粒度**：透传索引键不建字段映射，只保留
+  "衍生字段 → 数据字段"的有意义关系）：
   - panel 列 → index/成员表列（同名透传；与 index 同名的成员列不重复映射）
-  - fieldset keys → panel keys；字段列 → 公式引用的 panel 列（标识符 ∩ panel 视图列）
+  - fieldset keys → panel keys；**字段列 → 公式引用的 panel 列**（标识符 ∩ panel
+    视图列；`fieldset update` 时全量对账重派发——历史/旧库字段缺边自动补齐）
   - sample 视图列 → fieldset 列（透传）；sample keys → 筛选 index 的 symbol/datetime 列
-  - factor keys → sample keys；`factor_col` → feature 公式引用的 sample 视图列
-  - tester：keys/factor/factor_quantile → factor 列；returns/group/marketcap/d{no} →
-    sample 视图列（跨依赖引用，同步建 DERIVES 边）
+  - factor：**只留因子列**——`factor_col` DERIVES → feature 公式引用的 sample 视图列
+    （一条或多条边）；keys（sym/date 索引透传）不建字段级映射
+  - tester：**不做列级血缘**（无列节点）——测试面板的派生字段（keys/returns/
+    group/marketcap/d{no}/factor_quantile）对资产血缘无信息量，资产级
+    `DEPENDS → factor` 已表达"因子数据来源"；字段 schema 在 tester meta 展示
 
 典型血缘子图：
 

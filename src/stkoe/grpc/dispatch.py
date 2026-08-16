@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -174,11 +175,30 @@ def _arrow_meta(name: str, df, total: int, col_metas) -> str:
                       "columns": cols})
 
 
-def _graph_service(data_dir=None):
-    """V3.0 GraphService（登记/依赖/版本走 graph；物理指纹 graph.db 普通表）。"""
-    from ..graph.service import GraphService
+_thread_local = threading.local()
 
-    return GraphService(data_dir=data_dir)
+
+def _graph_service(data_dir=None):
+    """V3.0 GraphService（登记/依赖/版本走 graph；物理指纹 graph.db 普通表）。
+
+    按**线程本地**缓存（key = data_dir 真实路径）：gRPC worker / CLI 主线程内
+    顺序复用同一服务——连接数有界（线程数 × 目录数）、不再每次 Execute 泄漏一个
+    SQLite 连接；跨线程仍各自独立连接（SQLite 文件锁 + WAL/busy_timeout 兜底）。
+    """
+    from ..graph.service import GraphService
+    from ..settings import load_config
+
+    import os
+
+    base = os.path.realpath(os.path.expanduser(data_dir or load_config().data_dir))
+    cache = getattr(_thread_local, "services", None)
+    if cache is None:
+        cache = _thread_local.services = {}
+    svc = cache.get(base)
+    if svc is None:
+        svc = GraphService(data_dir=base)
+        cache[base] = svc
+    return svc
 
 
 @handler("table", "add")

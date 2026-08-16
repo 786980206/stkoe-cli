@@ -199,6 +199,17 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 优化：GraphStore WAL/busy_timeout + dispatch 线程本地 GraphService 缓存
+
+- **GraphStore 补 SQLite pragma**：`journal_mode=WAL` + `synchronous=NORMAL`（对齐
+  task/store.py 与旧 catalog 的 fsync 提速结论）+ 显式 `busy_timeout=10000`——
+  多连接并发（多任务并行 / Execute 与任务同库）时等锁而非立刻报 locked
+- **修 Execute 连接泄漏**：`dispatch._graph_service` 原每次调用新建 GraphService 且
+  从不 close（每个 Execute 泄漏一个 SQLite 连接，WAL 下持锁影响 checkpoint）；
+  改为**线程本地缓存**（key = data_dir 真实路径）：worker 线程内顺序复用同一服务，
+  连接数有界（线程数 × 目录数），跨线程各自独立连接（文件锁 + busy_timeout 兜底）
+- 测试：graph/grpc/config 相关 116 例绿
+
 ### 2026-08 fix: resolve 自身变更事件记录语义（E5）+ upsert/delete 各记一条
 
 - **E5-1 upsert/delete 同存只记一条**：`resolve` 原实现

@@ -78,6 +78,11 @@ class GraphStore:
         # check_same_thread=False：任务版 handler 在 run 线程建连接、to_thread 线程顺序使用
         self._conn: sqlite3.Connection = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row  # 物理指纹查询按列名访问
+        # WAL + synchronous=NORMAL：减少 fsync（对齐 task/store.py 与旧 catalog 的提速结论）；
+        # busy_timeout 显式给足，多连接并发（多任务并行）时等锁而非立刻报 locked
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA busy_timeout=10000")
         graphqlite.load(self._conn)
         self._conn.executescript(_FP_SCHEMA)  # 物理指纹普通表（幂等）
         self._txn_depth = 0

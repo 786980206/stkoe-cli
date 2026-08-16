@@ -20,13 +20,19 @@ def _print_json(obj) -> None:
 
 def _cmd_serve(raw: list[str]) -> int:
     from .grpc.server import serve
+    from .logutil import LOG
 
     kv = parse_flags(raw)
     host = kv.get("host")
     port = int(kv["port"]) if kv.get("port") else None
     srv = serve(host=host, port=port)
     print(f"stkoe gRPC listening on {srv.host}:{srv.port}")
-    srv.wait()
+    try:
+        srv.wait()
+    except KeyboardInterrupt:
+        LOG.info("收到 Ctrl+C，正在停止服务...")
+    finally:
+        srv.stop()  # 优雅退出：停 gRPC + TaskManager（幂等）
     return 0
 
 

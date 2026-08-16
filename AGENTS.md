@@ -199,6 +199,13 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 优化：`stkoe serve` Ctrl+C 优雅退出
+
+- `_cmd_serve` 原 `srv.wait()` 裸奔——Ctrl+C 直接抛 KeyboardInterrupt，`srv.stop()`
+  从不调用（TaskManager 不清理、WAL 不落 checkpoint）；改为 try/except/finally
+  收口：收到中断打 INFO 后统一 `srv.stop()`（幂等：停 gRPC + TaskManager）
+- 测试：test_config/test_grpc 相关 42 例绿
+
 ### 2026-08 优化：GraphStore WAL/busy_timeout + dispatch 线程本地 GraphService 缓存
 
 - **GraphStore 补 SQLite pragma**：`journal_mode=WAL` + `synchronous=NORMAL`（对齐

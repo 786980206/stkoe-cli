@@ -1,13 +1,12 @@
 # stkoe
 
-stkoe 数据服务（gRPC）：管理**表 / 索引 / 数据集 / 衍生指标 / 样本池 / 因子 / 统计**等数据资产。
+stkoe 数据服务（gRPC）：管理**表 / 索引 / 面板 / 衍生指标集 / 样本池 / 因子 / 因子测试集 / 统计**等数据资产。
 
-- **V2.0 基线**：gRPC 服务 + SQLite catalog + polars 计算，代码已备份至 `V2.0/`
-- **V3.0 已落地**：`src/stkoe/graph/` 图模块（graphqlite 嵌入式图库，节点/边/版本/事件响应）
-  + `GraphService`（table/index/panel/fieldset/sample/feature/factor/test 三路径统一，
-  catalog.db 废弃）。**本文档是唯一入口文档**：数据资产与图设计、对外 API 全量说明、
-  配置、存储布局、设计对照、测试与路线图都在这里（原 `api.md` / `graph-design.md` /
-  `graph-v3-gap.md` 已并入）。
+- **图资产模型**：`src/stkoe/graph/` 图模块（graphqlite 嵌入式图库，节点/边/版本/事件响应）
+  + `GraphService` 统一服务（table/index/panel/fieldset/sample/feature/factor/tester
+  三路径统一，资产登记/依赖/版本/血缘全部走图）。
+- **本文档是唯一入口文档**：数据资产与图设计、对外 API 全量说明、配置、存储布局、
+  测试与路线图都在这里。
 
 ## 1. 数据资产（做了什么）
 
@@ -27,7 +26,7 @@ stkoe 数据服务（gRPC）：管理**表 / 索引 / 数据集 / 衍生指标 /
 | `mock` | 演示数据生成（`stkoe mock demo`/`gen`） |
 | `task` | 后台任务框架（SubmitTask/SubscribeTask/TaskControl，协作式取消） |
 
-血缘链：`table/index → panel → fieldset → sample（+ 筛选 index）→ factor → test`（另有 feature → factor）。
+血缘链：`table/index → panel → fieldset → sample（+ 筛选 index）→ factor → tester`（另有 feature → factor）。
 
 ### 1.2 三路径统一（Execute / SubmitTask / CLI）
 
@@ -43,24 +42,17 @@ stkoe 数据服务（gRPC）：管理**表 / 索引 / 数据集 / 衍生指标 /
 - **单侧动词例外**：`mock`（空 action）仅 SubmitTask（示例任务，见 §7.5）；`task` 仅 Execute；
   `graph` 仅 Execute + CLI（无任务版，见 §6.13）
 
-## 2. 图设计（V3.0 血缘关系图）
+## 2. 图设计（资产血缘关系图）
 
 > 用**嵌入式图数据库 graphqlite**（[colliery-io/graphqlite](https://github.com/colliery-io/graphqlite)，
 > SQLite 扩展，Cypher 查询 + 图算法）记录资产之间的**血缘关系**。实现代码在 `src/stkoe/graph/`。
 
-### 2.1 背景与目标
+### 2.1 设计目标
 
-V2.0 用 SQLite catalog 的 `stkoe_depends` 表记录**一跳**依赖，无法回答：全链路血缘
-（某个表影响了哪些下游？某个因子依赖哪些上游？）、版本级更新事件积累与增量传播。
-
-| V2.0 概念 | V3.0 图概念 |
-|---|---|
-| `stkoe_objects`（type+name 登记） | **节点**（label = 资产类型，`id = "<type>:<name>"`） |
-| `stkoe_depends` 出边（obj→dep） | **DEPENDS 边**（依赖方 → 被依赖方，带 `required_version` + detail） |
-| `deps_of(obj)` 出边查询 | 上游遍历：`MATCH (n)-[:DEPENDS*1..N]->(m)` |
-| `dependents(obj)` 入边查询 | 下游遍历：`MATCH (n)<-[:DEPENDS*1..N]-(m)` |
-| 版本（int，元数据变更递增） | 节点 `version` + `version_list`（version → DataChangeEvent） |
-| 物化失效（materialized=False） | `valid/materialized` 标记 + 边 `required_version` 漂移检测 |
+资产血缘记录在图中：**节点** = 资产（label = 资产类型，`id = "<type>:<name>"`），
+**DEPENDS 边** = 依赖关系（依赖方 → 被依赖方，带 `required_version` + detail）。由此
+支持：全链路血缘查询（某个表影响了哪些下游？某个因子依赖哪些上游？）、版本级更新
+事件积累与沿链增量传播（边 `required_version` 即消费水位，见 §2.4）。
 
 ### 2.2 节点模型
 
@@ -194,36 +186,14 @@ DataChangeEvent {
   文件型持久化 ✅。
 - **存储布局**：`<data-dir>/catalog.db`（单文件 SQLite + graphqlite 扩展，节点/边由扩展内部表
   承载，应用层只经 Cypher 访问）；`GraphStore` 封装 txn / 节点 ops / 边 ops / 上下游遍历。
-- **与既有代码关系**：`graph/` 全面接管资产登记（GraphService）；Execute/SubmitTask/CLI 三路径
-  已对齐；物理数据读取/物化由 GraphService 直接做（parquet + 指纹），stat 数据源亦走 graph。
+- **与既有代码关系**：`graph/` 全面接管资产登记（GraphService）；Execute/SubmitTask/CLI
+  三路径行为对齐；物理数据读取/物化由 GraphService 直接做（parquet + 指纹），
+  stat 数据源亦走 graph。
 
 ## 3. 路线图
 
-已完成（详见 AGENTS.md 变更记录）：
-- ✅ **panel/fieldset/factor/tester 物化**（update 落盘，按 index.materialize_partition
-  时间桶分区）+ index 唯一性校验等物理细节（P1/P2）
-- ✅ **V2.0 清理**：V2.0 controller 死代码删除（业务只剩 GraphService 一份）、
-  任务版 handler 全面切 graph、dataset 旧别名 / scan 旧名清理
-- ✅ **版本/事件沉淀**：version_list 过期裁剪（按 consumed 水位）、事件合并
-  （upsert/delete 各记一条 + 自身变更事件 own_event，E5）
-- ✅ **增量物化闭环**：范围化事件（datetime 区间 + delete）+ 沿链增量重算 + get 三态
-- ✅ **gRPC Execute 通道输出**：`graph lineage/nodes/stats` + portal 血缘模块（Cytoscape.js）
-- ✅ **dbt 集成**：`dbt-manifest-file` 配置 + table/index add 自动应用模型元数据
-- ✅ **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
-  （`(column) -[:DERIVES]-> (column)`，`graph lineage --columns/--column` + `graph columns`）
-- ✅ **沿链级联 update**：`graph update`（`--node` 目标 + 下游闭包 / `--all` 全图），
-  按拓扑序一次更新整条依赖链（上游传导就绪检查的收口，见 §6.13）
-- ✅ **图算法 + 影响分析**：`graph analyze`（PageRank / 度中心性 / 弱连通分量，
-  纯 Python）+ `graph impact`（资产 DEPENDS / 列 DERIVES 下游闭包，见 §6.13）
-- ✅ **symbol_scope 提取**：源头事件带变化标的集合，下游增量按「datetime 区间 ×
-  symbol 集合」裁剪（未变化标的不重算，见 §11.1）
-- ✅ **因子批量抽象**：`FactorEngine.fields` 批量求值接口（polars 单 select 一次
-  算齐）+ `factor update --all` 同 sample 多因子**共享视图计算、分别物化**
-  （每组一次视图构建/collect，见 §6.11）
-
 剩余规划：
-1. **可选 P2**：stat 是否纳入图资产（G9 设计决策，当前保持不进图）；
-   ModelNode 资产（G10 后续规划）
+1. **ModelNode 资产**：ASSET_TYPES 含 `model`（预留节点），暂无 add/update 实现
 2. **测试**：图模块更多边界用例 + gRPC 全链路回归（持续）
 
 ## 4. 环境要求与安装
@@ -247,7 +217,7 @@ uv run pytest -q        # 全量测试
 |---|---|---|
 | `grpc-host` | `127.0.0.1` | gRPC 监听地址 |
 | `grpc-port` | `9569` | gRPC 监听端口 |
-| `data-dir` | `~/.stkoe` | 数据目录（表/数据集/统计/catalog/任务库） |
+| `data-dir` | `~/.stkoe` | 数据目录（表/索引/物化产物/统计/任务库，含 catalog.db 图库） |
 | `dbt-manifest-file` | `""` | dbt 编译产物 `target/manifest.json` 路径（expanduser，相对路径按当前工作目录解析）。配置后 **table/index add 时先应用 manifest 元数据**（按 name/alias 匹配 model/source 节点：资产级 `description` + `meta.display_name/source/tags`，列级 `description` + `meta.display_name/unit/tags`），**add 参数显式指定的值覆盖 manifest**；文件缺失/解析失败 → add 报错；无匹配节点 → 静默 |
 
 - 任意自定义键保留在 `extra`（`config get` 透出，`config set` 原样写入）
@@ -279,7 +249,7 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 | task | （空）/ `list` | — | `--state <state>` | JsonData `{"tasks": [...]}`（按创建时间倒序） |
 | mock | `demo` | — | `--n-syms N`（默认 300） `--n-days N`（默认 500，交易日数，从 2024-01-01 起） | JsonData（写入清单：`[{name, path, rows, columns}]`，写 `index/index`（index 资产目录）+ `table/m1`，不注册） |
 | mock | `gen` | `<name>` | `--kind <kind>`（默认 index；`tdcal/common/index/feature/klday/m1`） `--n-syms N` `--n-days N` `--start S` `--end E` `--seed N` `--col C` | JsonData（单表写入清单） |
-| table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键（`--type` 为旧概念，进 extra；类型由 label 承载，table 恒 "table"） | JsonData（TableScanReport） |
+| table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键（类型由 label 承载，table 恒 "table"；`--type` 等分类键进 extra） | JsonData（TableScanReport） |
 | table | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
 | table | `update` | `<name>` | `--all` | JsonData（TableScanReport 或 []；显式重扫对账，幂等） |
 | table | `list` | — | `--candidate` | JsonData（TableMeta[] 或 候选名[]） |
@@ -302,11 +272,11 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 | panel | `set` | `<name>` | `--display_name/--description/--tags <v>` + 任意键 | JsonData（PanelMeta） |
 | panel | `update` | `<name>` | — | JsonData（PanelMeta；传导检查上游 index/成员表就绪后**物化 join 视图**——按 index 的 `materialize_partition` 时间桶分区落盘 `panel/<name>/part=<v>/`，见 §6.5；增量按积累区间只重算受影响时间桶） |
 | panel | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| stat | `scan` | `<table\|panel\|test> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic`）；`<name>` 单位置 + `--kind <测试器>` 简写 → test 目标 | JsonData（StatScanReport） |
-| stat | `get` | `<table\|panel\|test> <name>` | `--partition_by <p>` `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData + ArrowTable（§6.6） |
-| stat | `meta` | `<table\|panel\|test> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData（StatMeta） |
+| stat | `scan` | `<table\|panel\|tester> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic`）；`<name>` 单位置 + `--kind <测试器>` 简写 → tester 目标 | JsonData（StatScanReport） |
+| stat | `get` | `<table\|panel\|tester> <name>` | `--partition_by <p>` `--kind <kind>`；单位置 `<name>` 简写 → tester 目标 | JsonData + ArrowTable（§6.6） |
+| stat | `meta` | `<table\|panel\|tester> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → tester 目标 | JsonData（StatMeta） |
 | stat | `list` | — | — | JsonData（StatMeta[]） |
-| stat | `delete`/`del` | `<table\|panel\|test> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → test 目标 | JsonData `{"deleted"}` |
+| stat | `delete`/`del` | `<table\|panel\|tester> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → tester 目标 | JsonData `{"deleted"}` |
 | fieldset | `add` | `<name>` | `--panel <panel 名>`（必选，已注册 panel） `--engine <e>`（默认 polars） `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
 | fieldset | `add` | `<name> <field>` | `--formula <表达式>`（必选） `--window_size <N>`（滚动窗口回看宽度，默认 0；用于事件范围展开） `--display_name/--description/--unit/--tags <v>` | JsonData（FieldsetMeta，指标 validated=False） |
 | fieldset | `set` | `<name>` | `--display_name/--description/--tags/--source <v>` + 任意键 | JsonData（FieldsetMeta） |
@@ -351,9 +321,13 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 | tester | `check` | `<name>` | — | JsonData（FactorTesterCheckResult） |
 | tester | `update` | `<name>` | `--all` `--resync` | JsonData（FactorTesterScanReport 或 []；显式物化，幂等；传导检查上游 factor 全链就绪） |
 | tester | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| graph | `lineage` | — | `--node <type:name>` `--depth N` | JsonData（Cytoscape elements payload，见 §6.13；缺 `--node` 为全图） |
+| graph | `lineage` | — | `--node <type:name>` `--columns` `--column <type:name.col>` `--depth N` | JsonData（Cytoscape elements payload，见 §6.13；缺 `--node` 为全图） |
 | graph | `nodes` | — | `--type <t>` | JsonData（节点摘要列表：id/type/name/display_name/version/valid/materialized） |
-| graph | `stats` | — | — | JsonData `{"node_count","edge_count"}` |
+| graph | `columns` | — | `--node <type:name>` | JsonData（列节点清单，见 §6.13） |
+| graph | `update` | — | `--node <type:name>` `--all` | JsonData（沿链级联更新报告，见 §6.13） |
+| graph | `analyze` | — | `--node <type:name>[,<type:name>...]` | JsonData（page_rank/degree/components，见 §6.13） |
+| graph | `impact` | — | `--node <type:name>` `--column <type:name.col>` `--depth N` | JsonData（下游影响，见 §6.13） |
+| graph | `stats` | — | — | JsonData `{"node_count","edge_count","column_count","derives_count"}` |
 
 > `table update` 为显式重扫对账（幂等）：无文件差异不 bump 版本；`--all` 批量重扫全部已注册表。
 > 内容刷新也可由 `add` 与读取前快检（`_ensure_fresh`）隐式完成。
@@ -361,8 +335,8 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 > 配置了 `dbt-manifest-file`（§5）时 add 先应用 manifest 元数据，参数显式指定覆盖。
 > `index add` 同语义：`--all` 批量发现 `index/` 下未登记且含 parquet 的目录（已登记/空目录跳过），
 > 返回 `indexes` 数组；批量时 `--symbol-col/--datetime-col` 等参数对全部新发现统一生效。
-> V3.0 起类型由节点 label 承载：table 恒 "table"，index 是独立资产（`index add`）；
-> 旧 `--type` 参数仅作分类标识进 extra（如 `--type=index` 不再约束 panel 注册）。
+> 类型由节点 label 承载：table 恒 "table"，index 是独立资产（`index add`）；
+> `--type` 参数仅作分类标识进 extra（如 `--type=index` 不再约束 panel 注册）。
 
 ### 6.2 `table get` / `index get` / `panel get` 的 ArrowTable.meta
 
@@ -439,7 +413,7 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
 - **FactorScanReport**：`name, version_before, version_after, materialized, changed, partition_by, rebuilt_partitions[]`
 - **FactorCheckResult**：`factor, ok, rows, columns[], message`（`ok` 条件：计算成功、含全部索引列、因子列恰好 1 列、行数 > 0）
 - **FactorTesterSpec**：`by_group, quantiles, periods[], date_range[]（start,end）, rolling_window`
-- **FactorTesterMeta**：`name, version, factor, sample, returns, groupby, marketcap, factor_col, spec[FactorTesterSpec], keys[]（date/sym）, materialized, materialized_at, curated, columns[ColumnMeta]（sample 视图列 + 测试必需列）, extra, display_name, description, tags[], source, created_at, updated_at`
+- **FactorTesterMeta**：`name, version, factor, sample, returns, groupby, marketcap, factor_col, spec[FactorTesterSpec], keys[]（样本索引键）, materialized, materialized_at, curated, columns[ColumnMeta]（sample 视图列 + 测试必需列）, extra, display_name, description, tags[], source, created_at, updated_at`
 - **FactorTesterScanReport**：`name, version_before, version_after, materialized, changed, rows, quantiles, periods[]`
 - **FactorTesterCheckResult**：`tester, ok, rows, columns[], message`（`ok` 条件：构造成功、含全部必需列、行数 > 0）
 
@@ -467,7 +441,7 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
   index 为已注册 index 资产（样本筛选参照——通常是目标研究区间/标的范围的索引表）；
   index 键列名与视图 keys 不同名时按位置映射（symbol → keys[0]，datetime → keys[-1]）
 - **构造**（get / check 共用）：读 fieldset 视图 → semi join 该 index 的键列（去重）→
-  只保留命中行；不再支持公式过滤（原 `--formula`/`--engine` 与 sample/engine.py 已移除）
+  只保留命中行；样本筛选仅支持按 index 键集合（无公式过滤）
 - **`sample check`**：过滤后结果集**包含全部索引列（fieldset 底层 panel keys）且行数 > 0**
   才算有效（如筛选 index 与 fieldset 无交集 → 行数 0 → 不有效）
 - **依赖**：sample → fieldset、sample → index（删除上游需 `--force`）；
@@ -511,7 +485,7 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
 
 ### 6.12 factor_tester 因子测试数据集（`tester` 源 + `stat scan ... --kind <测试器>`）
 
-- **测试数据集（test）** = 在 **factor 关联的 sample** 视图上，结合测试必需列
+- **测试数据集（tester）** = 在 **factor 关联的 sample** 视图上，结合测试必需列
   （`date/sym` + returns/groupby/marketcap 列）生成的一份因子测试面板；注册于 graph
   （tester 资产）。`tester add` 时若 sample 视图缺少这些列 → **报错拒绝创建**
 - **Schema**：`date / sym / sample(1观测/0非观测/-1因子空剔除) / returns / group /
@@ -523,9 +497,9 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
   依赖签名（factor 依赖 hash + spec + 测试列名）不变则跳过；`--resync` 强制重建
 - **读取**：物化且 curated 读 parquet，否则实时构造（不隐式物化）；`set` 改配置
   （returns/groupby/marketcap/spec 键）后物化失效自动回退实时
-- **校验**：`test check` 实时构造——成功、含全部必需列、行数 > 0 才算 `ok=True`
-- **依赖**：test → factor（删除 factor 需 `--force`）
-- **测试器（stat 集成）**：`stat scan test <name> --kind <kind>` 或
+- **校验**：`tester check` 实时构造——成功、含全部必需列、行数 > 0 才算 `ok=True`
+- **依赖**：tester → factor（删除 factor 需 `--force`）
+- **测试器（stat 集成）**：`stat scan tester <name> --kind <kind>` 或
   `stat scan <name> --kind <kind>`（单位置参数简写）运行测试器并把各命名产物写入
   `stat/tester/<name>/<kind>/<output>.parquet`；`stat get` 用 `--partition_by <output>` 读单产物。
   单位置简写在 Execute 与 SubmitTask 两条路径均可用（`s:stat scan <name> --kind <kind>`）
@@ -596,7 +570,7 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
 
 `SubmitTask(source, action, args)` 立即返回 `header + task_id`（`code=0` 成功）。任务在独立
 事件循环线程执行。支持的 `source/action` 与 Execute 命令表（§6.1）对齐（table/index/panel/
-fieldset/sample/feature/factor/test/stat/mock 全部动作；`task` 仅 Execute、`graph` 仅
+fieldset/sample/feature/factor/tester/stat/mock 全部动作；`task` 仅 Execute、`graph` 仅
 Execute/CLI，见 §1.2），结果放在**终态事件的 `data`**（JSON 字符串）。
 
 ```
@@ -637,13 +611,13 @@ pending → running → succeeded
 ### 7.4 任务元操作
 
 - `e:task list`：按创建时间倒序，`--state` 过滤。任务项：`task_id, source, action, args, state, progress, created_at, started_at, finished_at, error, result_ref`
-- **大结果落盘**：`table/index/panel/fieldset/sample/stat/factor/test get` 用 `ctx.put_result` 写 `task/<task_id>/<name>`（Arrow IPC / parquet），任务项只存 `result_ref`；`s:... get` 的 `data` 含 `{"name","rows","total","columns","result_ref"}`
+- **大结果落盘**：`table/index/panel/fieldset/sample/stat/factor/tester get` 用 `ctx.put_result` 写 `task/<task_id>/<name>`（Arrow IPC / parquet），任务项只存 `result_ref`；`s:... get` 的 `data` 含 `{"name","rows","total","columns","result_ref"}`
 - `stop`（服务停止）：先在跑任务统一收尾为 `cancelled`，DB 不遗留 orphan
 
 ### 7.5 `mock` 示例任务与造数
 
 - `s:mock`（空 action）：分 5 步推进进度（progress 0.2~1.0）+ 写日志 + 落盘结果 `{"steps":5}`；支持取消与暂停。可作为协议联调样例。
-- `s:mock demo` / `s:mock gen <name> --kind <kind>`：任务版 mock 造数，把 parquet 写到 `index/` + `table/`（与 Execute 行为一致，见 §6.1），不注册 catalog。
+- `s:mock demo` / `s:mock gen <name> --kind <kind>`：任务版 mock 造数，把 parquet 写到 `index/` + `table/`（与 Execute 行为一致，见 §6.1），只写盘不注册。
 
 ## 8. gRPC 协议
 
@@ -689,7 +663,7 @@ HealthRequest {}                                   HealthResponse { status, vers
   **进程内新代码不生效**：修改代码后必须重启 `stkoe serve`
 - **读前快检**：table/index `get`/lazy 读取前比对磁盘签名
   （sha256(rel_path|size|mtime_ns)）与登记指纹——一致直接读；不一致**自动重扫对账**
-  （铸版本 + 下游置脏）；未登记目录**隐式注册**（见 §14.2）
+  （铸版本 + 下游置脏）；未登记目录**隐式注册**
 - **update 幂等**：`table update`/`index update`/下游物化 update 依赖签名不变 →
   `changed=False` 跳过重建（物化资产另要求 curated 哈希一致，见 §6.11/§6.12）
 - **物化读取**：panel/fieldset/factor/tester `get` 在物化且 curated 时读 `part=<v>/`
@@ -720,8 +694,8 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 ```
 <data-dir>/
 ├── stkoe.json                 # 配置（可放 cwd）
-├── catalog.db                   # V3.0 资产库：图节点/边（登记/依赖/版本/血缘）+ 物理指纹普通表
-│                              #   （stkoe_data_files / stkoe_file_stats，原 catalog.db 表迁移至此）
+├── catalog.db                   # 资产库：图节点/边（登记/依赖/版本/血缘）+ 物理指纹普通表
+│                              #   （stkoe_data_files / stkoe_file_stats）
 ├── tasks.db                   # 任务库（TaskStore / EventStore），独立保留
 ├── task/<task_id>/           # 任务日志 task.log + 结果文件（ResultStore）
 ├── table/<name>/             # 表（table 资产）parquet（只读，绝不写/删）
@@ -735,8 +709,6 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 
 - **catalog.db vs tasks.db 分离**：catalog.db 管资产（图节点/边 + 物理指纹表，单文件同事务），
   tasks.db 管任务与事件流（高频写与资产低频强一致分开，避免写锁竞争与 WAL checkpoint 干扰）
-- **catalog.db 已废弃**：不再产生；原 stkoe_objects/stkoe_depends 由 graph 节点/边承载，
-  stkoe_data_files/stkoe_file_stats 迁入 catalog.db 普通表（同文件同事务可回滚）
 - **表删除只删登记（graph 节点/指纹），绝不删用户 parquet**（可重新 `add` 发现）；index 资产物理目录为 `index/`（与 table 的 `table/` 分离）
 - **stat 进图登记**：`stat scan` 成功后登记图内 `Stat` 节点
   （`stat:<target_type>/<target_name>/<kind>`，含目标引用/分区/文件清单/时间）+
@@ -757,7 +729,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 - **覆盖率（ALL_COLS）**：`group | field | data_type | count | null_count | nunique | min | q25 | q50 | q75 | max | mean | min_date | max_date`
 - **存续（STORAGE_COLS，`--kind storage`）**：`partition_by | partition_value | storage_size | file_no`
 
-## 11. 增量更新与物化语义（V3 graph 事件驱动）
+## 11. 增量更新与物化语义（graph 事件驱动）
 
 ### 11.1 资产分类：哪些资产会触发物化
 
@@ -771,7 +743,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
 | **sample / feature** | 无物化，update 只**铸版本**（消费事件入 version_list）+ 出边水位对齐 | 无（实时构造） |
 | **stat** | scan 后登记 `Stat` 节点 + `(Stat)-[:DEPENDS]->目标` 边（无物化/版本语义，手动 `stat scan` 触发） | `stat/<target>/<name>/<kind>/*.parquet` |
 
-读取端（panel/fieldset/factor/test `get`）：**物化且 curated 读物化 parquet，否则实时计算**
+读取端（panel/fieldset/factor/tester `get`）：**物化且 curated 读物化 parquet，否则实时计算**
 （curated = 已物化且依赖签名 == 当前签名；上游版本变化 → curated 失效自动回退实时）。
 
 ### 11.2 遇到新数据变更事件时，分别如何处理
@@ -799,7 +771,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
      **窗口展开**：字段带 `window_size`（滚动回看窗口 w）时，输入在 `[lo, hi]` 变化
      会让输出 `[lo, hi+w-1]` 都受影响——增量重算区间与自身事件 `datetime_scope`
      都按最大窗口向前展开（fieldset 字段 / feature 公式的 `window_size` 同理：
-     factor 增量重算与自身事件按 feature 窗口展开；test 的 `d{no}` 是前向收益
+     factor 增量重算与自身事件按 feature 窗口展开；tester 的 `d{no}` 是前向收益
      窗口，按 `max(periods)-1` 向后展开 lo）；窗口只影响时间维度，symbol 集合
      沿链原样透传（自身事件带 symbol_scope）；
    - `sample update` / `feature update`：只铸版本（无物化）；
@@ -822,7 +794,7 @@ python gclient.py [host:port]   # 缺省从配置读 grpc-host/grpc-port
   源头节点：版本 +1，version_list 记录 upsert/delete 事件（带 datetime 区间）
      │  notify_change：BFS 全链置脏（valid=False）
      ▼
-  panel（物化）→ fieldset（物化字段）→ sample/feature（铸版本）→ factor（增量）→ test（增量）
+  panel（物化）→ fieldset（物化字段）→ sample/feature（铸版本）→ factor（增量）→ tester（增量）
      │  每级 update：assert_ready 检查上游就绪 → 按自身语义物化/铸版本 → 水位对齐
      ▼
   get 读物化（curated）或实时；graph lineage 显示新版本
@@ -847,7 +819,7 @@ stkoe fieldset add fs1 x2 --formula "x * 2.0"
 stkoe fieldset check fs1 x2
 stkoe fieldset update fs1
 # 样本池（fieldset 视图 ∩ 筛选 index 键集合，无物化）+ 因子定义库（命名公式，无物化）
-stkoe sample add sp1 fs1 idx2
+stkoe sample add sp1 fs1 index
 stkoe sample check sp1
 stkoe sample update sp1
 stkoe feature add ma5 --formula "x * 2.0"
@@ -860,7 +832,7 @@ stkoe factor update fac1
 stkoe tester add t1 --factor fac1 --returns r --groupby ic --marketcap fv
 stkoe tester check t1
 stkoe tester update t1
-# 因子测试器（stat 集成；单位置简写 → test 目标）
+# 因子测试器（stat 集成；单位置简写 → tester 目标）
 stkoe stat scan t1 --kind ic
 # gRPC 读取（物化且 curated 读物化 parquet，对外列不含 part）
 gclient> e:panel get ds1 --where "date >= 2024-01-01" --limit 100
@@ -947,90 +919,39 @@ gclient> t:<task_id>
 - 哪些资产 update 会物化、如何按事件区间增量，见 §11；
 - portal 不应自行读写 `data_dir`/`catalog.db`——一律经服务 Execute 通道。
 
-## 14. 设计对照与实现出入（V3.0 初始设计）
-
-> 对照基准：V3.0 初始设计定义（原 `v3.0-def.py`，定义已内联下表）+ 本文 §2 图设计。
-> 状态：**P0/P1/P2 已落地**（范围化事件 + factor/test 增量物化 + 沿链增量物化 +
-> get 三态 + version_list 裁剪 + index 唯一性校验）；E5 事件记录语义已修；剩余可选项见 §3。
-
-### 14.1 Event 增量更新逻辑出入
-
-| # | 定义（初始设计） | 当前实现 | 状态 |
-|---|---|---|---|
-| E1 | 事件必须带 `symbol_scope`/`datetime_scope`/`field_scope`/`action` | `service._change_events` 从文件 diff 提取范围：hive 分区路径含 `<datetime_col>=<v>` 时用分区值，其余读变化文件 footer 的 datetime 列 min/max（只读元数据）；`datetime_scope` 统一为 **[min, max] 区间**；added/changed → upsert，removed → delete；`symbol_scope`：登记了 `symbol_col` 的资产（index）从分区键/变化文件该列 distinct 提取（removed 文件回退全集），未登记资产恒 None | ✅ 已修 |
-| E2 | 物理删除 → delete 事件 → 下游按范围删 | removed 文件 → `action="delete"`（范围来自 catalog 指纹 `partition_path` 分区值；flat 无分区则 None 全集）；一次 scan 有增删时**记两个版本事件** | ✅ 已修 |
-| E3 | update 按积累事件范围增量 upsert/delete 进物化 | **沿链增量物化（全部物化资产）**：`_upstream_scope` 沿链收集直接依赖未消费事件 → datetime 区间；已有物化且区间明确 → 分区删受影响桶重算 / flat 删区间+合并写回；`--resync`/首次/无区间 → 全量；**get 三态**（已物化且 curated 读物化；本应物化未物化报错提示 update；sample/feature 恒实时） | ✅ 已修 |
-| E4 | materialize 成功后边水位对齐 + 节点有效 | `graph.resolve` 支持 `mark_materialized`/`extra`；panel/sample/feature update 统一走 resolve——有事件铸版本入 version_list、出边水位对齐、无事件不空 bump（幂等）；事件水位链在中间节点不再断档 | ✅ 已修 |
-| E5 | update 后节点版本体现"我消费了哪些上游事件" | upsert/delete 同积累时**各记一条版本事件**；`resolve(..., own_event=...)` 支持自身变更事件（fieldset 记录重算字段名而非上游列名）；symbol/datetime 未指定时继承积累事件并集 | ✅ 已修 |
-| E6 | version_list 无限增长、无裁剪 | `_prune_version_list` 按所有下游边 `required_version` 的 min 裁剪：`version <= min_rv` 已被全部下游消费可安全删除，`> min_rv` 保留 | ✅ 已修 |
-| E7 | 未细化传播深度 | `notify_change` 铸版本 + 事件入日志 + **BFS 全深度下游置脏**（不 bump 下游版本）；`assert_ready` 传导检查为新增增强 | ✓ 一致且增强 |
-
-### 14.2 其他出入（非 Event）
-
-| # | 定义（初始设计） | 当前实现 | 性质 |
-|---|---|---|---|
-| G1 | Handler 的 `get`"物化且有效时才返回物理数据" | handler `get` 返回节点元数据（示例占位）；物理数据读取走 service 的 `xxx_get`（实时视图 / 物化 parquet） | 形态分工差异，行为正确 |
-| G2 | `IndexHandler.add` 校验 symbol/datetime 列**唯一性** | ✅ 已修：`_check_index_unique`（symbol+datetime 组合唯一校验） | 已修（P2-2） |
-| G3 | `PanelHandler.get` 物化+有效才返回 | ✅ panel 物化 + get 三态（物化且 curated 读物化，否则报错提示 update） | 已修（P2） |
-| G4 | `FieldsetHandler.on_change` 输出 {upsert, delete} 供消费 | `ctrl.accumulated` 存在；service 沿链增量物化经 `_upstream_scope` 消费直接依赖积累事件（见 E3，已覆盖全部物化资产） | 已收敛（E3 落地） |
-| G5 | `GraphHandler.scan()` 空定义 | graph 命令为 lineage/nodes/stats | 语义不同，无实质出入 |
-| G6 | `AssetNode.version: str` | `int`（time_ns 时间戳，可直接排序比较） | 类型改进 ✓ |
-| G7 | 节点列存 `columns: dict[str, ColumnsMeta]` | 平铺 `columns` 列表 + `_norm_cols` 规范化 | 形态差异，行为等价 |
-| G8 | storage 钩子负责物化 | controller 层 `NullStorage` no-op 占位，service 层直接落盘（fieldset/factor/test 真实写 `<data_dir>/<type>/`） | 两层并存，物理层在 service 侧 |
-| G9 | `StatNode` 是图资产 | stat **进图登记**：scan 后建 `Stat` 节点 + `(Stat)-[:DEPENDS]->目标` 边（物理文件仍是唯一数据源，节点是登记镜像，见 §10） | ✅ 已修（评审项） |
-| G10 | `ModelNode` 资产 | 无 model 实现（ASSET_TYPES 含 "model" 但无 add/update） | 未实现（后续规划） |
-| G11 | 无 `assert_ready` | update 前强制"全部上游链 valid"（上游不齐则失败） | 新增增强 ✓ |
-| G12 | 依赖方"积累事件"驱动 | 上游变化 → 置脏（valid=False）驱动重建；版本水位为辅 | 简化后的形态，配合幂等修复 |
-
-### 14.3 评审遗留（graph-migration-review.md 已归档，13 项全部收敛）
-
-原「V2 → V3 迁移评审」13 项全部解决：§1/§3/§4/§5/§6/§7/§11/§12 及部分 §2 随 V3 落地；
-§8/§9/§10/§13 于 2026-08 收尾：
-
-| # | 事项 | 解决 |
-|---|---|---|
-| §8 | 错误体系统一：`service._require_node` 对非 table 资产抛 `TableNotFoundError`（语义错位） | ✅ `_require_node`/`_scan_sync`/`table_add`/`index_add`/`fieldset_check` 全改抛 `AssetNotFoundError`；stat 的 test 目标 catch 同步 |
-| §9 | 三路径补齐：`index`/`panel` 无 SubmitTask 任务版；CLI 无 `graph` 子命令 | ✅ 新增 `index/handlers.py` + `panel/handlers.py`；CLI `stkoe graph lineage/nodes/stats` |
-| §10 | 返回字段形态：sample/factor/test 的 meta columns 简化 | ✅ `_sample_view_cols` 全键（panel 列继承 ColumnMeta、fieldset 字段继承 FieldMeta）；sample_meta 改 V2.0 形态；index meta 补 symbol_col 等专属键 |
-| §13 | 图读取重复：`dispatch._graph_store` 与 GraphService 各自开 catalog.db | ✅ `GraphService.open_graph_store` 类方法收口（命名回退/缺省 data_dir 只此一处），dispatch 薄转发 |
-
-## 15. 测试
+## 14. 测试
 
 ```bash
-uv run pytest -q        # 默认全量 211 用例（graph 模块 + gRPC/资产任务版链路），约 40s
+uv run pytest -q        # 默认全量 270 用例（graph 模块 + gRPC/资产任务版链路）
 ```
 
-- V2.0 死代码 controller 直测（113 例）已归档到 `V2.0/tests/`（默认不收集）；
-  如需运行：`.venv/Scripts/python.exe -m pytest V2.0/tests/test_table.py -q`
 - 改动后优先只跑相关文件：`.venv/Scripts/python.exe -m pytest tests/test_graph.py tests/test_grpc.py -q`
 
-## 16. 目录结构
+## 15. 目录结构
 
 ```
 src/stkoe/
 ├── cli.py / args.py / jsonutil.py / logutil.py / settings.py / dbt.py
 ├── grpc/               # stkoe.proto + 编译产物 + dispatch.py（Execute 分发）+ server.py
 ├── table/ index/ panel/ fieldset/ sample/ feature/ factor/ factor_tester/ stat/ mock/
-├── graph/              # V3.0 资产血缘图（graphqlite）+ GraphService
+├── graph/              # 资产血缘图（graphqlite）+ GraphService
 │   ├── model.py        # DataChangeEvent / AssetMeta / DependencyEdge / 列元数据
 │   ├── store.py        # GraphStore：节点/边 CRUD + BFS 血缘遍历 + txn 事务
 │   ├── export.py       # build_payload / column_payload / node_summaries（→ Cytoscape elements JSON）
 │   ├── events.py       # 事件合并（并集/交集）与积累（required_version 水位线）
 │   ├── controller.py   # GraphController：CRUD + 依赖约束 + notify_change/resolve(_all)
-│   ├── service.py      # GraphService：table/index/panel/fieldset/sample/feature/factor/test
+│   ├── service.py      # GraphService：table/index/panel/fieldset/sample/feature/factor/tester
 │   │                  #   统一服务（登记/依赖/版本走 graph；实时视图 + 物化落盘）
-│   ├── handlers.py     # 资产 Handler（V3.0 设计形态）
+│   ├── handlers.py     # 资产 Handler（图账本层）
+│   ├── analyze.py      # 图算法 + 影响分析（page_rank / degree / components / impact）
 │   ├── version.py      # 高精度时间戳版本号
 │   └── errors.py
 └── task/               # 后台任务框架
-V2.0/                   # V2.0 全量备份（重构基线，勿改）
-v1.0/                   # 旧版参考实现（v0.5.1）
 ```
 
-## 17. 文档索引
+## 16. 文档索引
 
 - **本文件（README.md）**：唯一入口——数据资产与图设计（§2）、对外 API 全量说明
-  （§5-§13）、设计对照与实现出入（§14）、配置、存储布局、测试、路线图
-  （原 `api.md` / `graph-design.md` / `graph-v3-gap.md` 已并入）
+  （§5-§13）、配置、存储布局、测试、路线图
 - [`example.md`](example.md)：全流程演练（mock 造数 → 因子测试）
 - `AGENTS.md`：开发指南（目录结构/架构要点/变更记录）

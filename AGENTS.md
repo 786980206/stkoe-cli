@@ -157,7 +157,7 @@ src/stkoe/
 ### API 文档同步
 
 仓库根 `README.md` 是唯一入口文档（数据资产与图设计 §2 / 对外 API 全量说明 §5-§13 /
-配置 / 存储布局 / 设计对照 §14；原 api.md、graph-design.md、graph-v3-gap.md 已并入）。
+配置 / 存储布局 / 测试 / 路线图）。
 **新增/修改任何对外接口（动词、参数、返回字段、配置键）时，必须同步更新 `README.md`
 的 API 文档节（§5-§13）。**
 
@@ -235,6 +235,24 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 docs: README 收敛为当前状态——移除 V2.0/V3.0 过渡期描述与设计对照章节
+
+- **头部重写**：删除「V2.0 基线 / V3.0 已落地 / catalog.db 废弃 / 原 api.md 等已并入」
+  等过渡期表述，只描述当前图资产模型 + 三路径统一；资产一览补「因子测试集」
+- **§2.1 删除 V2.0 概念对照表**，改为当前「设计目标」（节点 + DEPENDS 边 + 版本事件/
+  消费水位）；§3 路线图删除「已完成」清单（历史沉淀归 AGENTS.md 变更记录），只留
+  剩余规划（ModelNode 预留 + 测试持续）
+- **§14 设计对照与实现出入整体删除**（E1-E7/G1-G12/评审遗留——均为已解决的
+  初始设计对照，历史归 AGENTS.md），后续章节重排：测试 §14 / 目录结构 §15 /
+  文档索引 §16；测试数更新为全量 270 用例，删除 V2.0/tests 归档说明
+- **概念统一收尾**：stat 命令表/§6.12/§7.1/§7.4/§11/§12 的 test → tester（资产名）；
+  §6.1 全命令表补全 graph columns/update/analyze/impact 行 + stats 新键；§6.7
+  FactorTesterMeta keys 改「样本索引键」；§6.9 去掉「原 --formula 已移除」过渡表述；
+  §10 删除「catalog.db 已废弃」矛盾条目（catalog.db 即当前资产库）；§12 示例
+  `sample add sp1 fs1 idx2` → `index`（idx2 未注册，演练会失败的潜在 bug）；
+  §16 目录树补 analyze.py、删 V2.0/v1.0 备份目录行
+- AGENTS.md「API 文档同步」节同步去掉 §14 引用；文档：README、AGENTS.md
 
 ### 2026-08 test: gRPC Execute 端到端补测——graph update/analyze/impact 全链路回归
 

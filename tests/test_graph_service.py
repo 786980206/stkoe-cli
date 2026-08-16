@@ -272,6 +272,51 @@ class TestTableGraph:
             shutil.rmtree(base, ignore_errors=True)
 
 
+class TestQuickCheck:
+    """读前快检（评审项）：读取前签名比对——不一致自动重扫对账、未登记隐式注册。"""
+
+    def test_read_before_fast_check_auto_rescan(self, svc):
+        """物理文件变化（未 update）→ get 前快检签名不一致 → 自动重扫（版本递增）"""
+        svc.table_add("m1")
+        v0 = svc.table_meta("m1")["version"]
+        # 直接覆盖物理文件（跳过 update 语义，模拟外部写入）
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "price": [9.9, 8.8]}).write_parquet(
+            os.path.join(svc.data_dir, "table", "m1", "data.parquet"))
+        df = svc.table_get("m1")  # 读前快检：签名不一致 → 自动重扫对账
+        assert df["price"].to_list() == [9.9, 8.8]
+        assert svc.table_meta("m1")["version"] > v0  # 对账铸了新版本
+        assert svc.table_meta("m1")["consistent"] is True
+
+    def test_read_before_fast_check_implicit_register(self, svc):
+        """未登记目录 → 读前快检隐式注册（add 语义）后再读"""
+        d = os.path.join(svc.data_dir, "table", "t_new")
+        os.makedirs(d, exist_ok=True)
+        pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"], "code": [7]}).write_parquet(
+            os.path.join(d, "data.parquet"))
+        df = svc.table_get("t_new")
+        assert df["code"].to_list() == [7]
+        assert svc.table_meta("t_new")["name"] == "t_new"
+        # 快检不破坏 add 语义：显式 add 已注册 → 报已存在
+        from stkoe.table.errors import TableExistsError
+
+        with pytest.raises(TableExistsError):
+            svc.table_add("t_new")
+
+    def test_read_before_fast_check_index_and_data_key(self, svc):
+        """index 读取同样快检；table_data_key 返回对账后签名（stat 签名比对用）"""
+        svc.index_add("index")
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"],
+                      "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        df = svc.index_get("index")  # 快检 → 自动重扫（追加文件入库）
+        assert df.height == 3
+        svc.table_add("m1")
+        key = svc.table_data_key("m1")
+        assert key and len(key) == 64  # sha256 签名
+        assert svc.table_data_key("nope") == ""  # 目录不存在 → 空
+
+
 class TestIndexGraph:
     def test_index_independent(self, svc):
         r = svc.index_add("index", symbol_col="sym", datetime_col="date")

@@ -494,6 +494,15 @@ def test_execute_fieldset_get_default_and_fields_only(client, srv):
     """Execute 路径 fieldset get 默认返回 panel+fieldset join 视图，--fields-only 仅返回衍生数据"""
     _seed_panel_chain(client, srv)
 
+    # get 三态：先 update 物化 panel/fieldset
+    for src, action, args in [
+        ("panel", "update", ["ds"]),
+        ("fieldset", "update", ["fs1"]),
+    ]:
+        header, _ = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+            source=src, action=action, args=args)))
+        assert header.code == 0, (src, action, args, header.message)
+
     # 默认：panel 视图 + fieldset 已校验指标 join 拼接
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="fieldset", action="get", args=["fs1"])))
@@ -622,6 +631,11 @@ def test_execute_factor_add_get_check_scan_delete(client, srv):
     assert _json(datas, "factor")["keys"] == ["sym", "date"]
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="factor", action="scan", args=["fac1"])))  # get 三态：先物化
+    assert header.code == 0
+    assert _json(datas, "factor")["changed"] is True
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="factor", action="get", args=["fac1"])))
     assert header.code == 0
     tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
@@ -635,12 +649,6 @@ def test_execute_factor_add_get_check_scan_delete(client, srv):
         source="factor", action="check", args=["fac1"])))
     assert header.code == 0
     assert _json(datas, "factor")["ok"] is True
-
-    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="factor", action="scan", args=["fac1"])))
-    assert header.code == 0
-    assert _json(datas, "factor")["changed"] is True
-    assert (root / "factor" / "fac1" / "data.parquet").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="factor", action="delete", args=["fac1"])))
@@ -672,6 +680,12 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
     assert _json(datas, "test")["keys"] == ["sym", "date"]
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
+        source="test", action="scan", args=["t1"])))  # get 三态：先物化
+    assert header.code == 0
+    assert _json(datas, "test")["changed"] is True
+    assert (root / "factor_test" / "t1" / "data.parquet").exists()
+
+    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="test", action="get", args=["t1"])))
     assert header.code == 0
     tables = [dd for dd in datas if dd.WhichOneof("type") == "table"]
@@ -684,12 +698,6 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
         source="test", action="check", args=["t1"])))
     assert header.code == 0
     assert _json(datas, "test")["ok"] is True
-
-    header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
-        source="test", action="scan", args=["t1"])))
-    assert header.code == 0
-    assert _json(datas, "test")["changed"] is True
-    assert (root / "factor_test" / "t1" / "data.parquet").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="stat", action="scan", args=["t1", "--kind", "ic"])))

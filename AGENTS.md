@@ -212,6 +212,19 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 沿链增量物化 + get 三态收口（P2 落地）
+
+- **fix: test 增量物化漏写盘**：`_test_scan_one` flat 增量分支计算了合并 `df` 但未写回
+  （`_write_partitioned` 只在全量 else 分支调用），导致返回 rows=3 而磁盘仍为旧 2 行；
+  补 `df.write_parquet(out_path)`（对照 `_factor_scan_one` 同分支已写盘）
+- **fix: factor/test 幂等判断 materialized 读错位置**：幂等条件用 `extra.get("materialized")`
+  恒 False——`resolve` 把 materialized 放在节点顶层而非 extra → 二次 update 永不幂等
+  （`changed` 恒 True）；改为 `node.get("materialized") or extra.get("materialized")`
+- **测试适配 get 三态**：任务版/Execute/stat 路径在读取物化资产前先 update/scan
+  （test_dataset 的 dataset get、test_factor 的 factor get、test_grpc 的 fieldset/factor/test
+  get、test_factor_test 的 stat 测试器）——未物化先读已按设计报错
+- 测试：全量 194 用例绿
+
 ### 2026-08 中间节点铸版本 + panel/fieldset 物化（P1 落地）
 
 - **panel/sample/feature update 统一走 `graph.resolve` 收口**：`resolve` 新增

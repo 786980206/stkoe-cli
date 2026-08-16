@@ -63,6 +63,10 @@ def test_task_framework_factor_handlers(mgr):
     _await(mgr, t_add)
     assert _mgr_result(mgr, t_add)["name"] == "fac1"
 
+    t_scan = mgr.submit("factor", "scan", ["fac1"])  # get 三态：先物化
+    _await(mgr, t_scan)
+    assert _mgr_result(mgr, t_scan)["changed"] is True
+
     t_get = mgr.submit("factor", "get", ["fac1"])
     _await(mgr, t_get)
     get_res = _mgr_result(mgr, t_get)
@@ -73,10 +77,6 @@ def test_task_framework_factor_handlers(mgr):
     t_check = mgr.submit("factor", "check", ["fac1"])
     _await(mgr, t_check)
     assert _mgr_result(mgr, t_check)["ok"] is True
-
-    t_scan = mgr.submit("factor", "scan", ["fac1"])
-    _await(mgr, t_scan)
-    assert _mgr_result(mgr, t_scan)["changed"] is True
 
     t_del = mgr.submit("factor", "del", ["fac1"])
     _await(mgr, t_del)

@@ -60,6 +60,10 @@ def test_task_framework_dataset_handlers(mgr):
     _await(mgr, t_list)
     assert [d["name"] for d in _mgr_result(mgr, t_list)] == ["ds1"]
 
+    t_upd = mgr.submit("dataset", "update", ["ds1"])  # get 三态：先物化
+    _await(mgr, t_upd)
+    assert _mgr_result(mgr, t_upd)["materialized"] is True
+
     t_get = mgr.submit("dataset", "get", ["ds1"])
     _await(mgr, t_get)
     assert _mgr_result(mgr, t_get)["rows"] == 2

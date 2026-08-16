@@ -86,6 +86,7 @@ def test_stat_scan_test_target(tmp_path):
 
     svc = GraphService(data_dir=tmp_path / "data")
     svc.test_add("t1", "fac1")
+    svc.test_update("t1")  # stat 消费物化（get 三态）
     svc.close()
     st = StatController(data_dir=tmp_path / "data")
     report = _run(st.scan("test", "t1", kind="ic"))
@@ -103,6 +104,7 @@ def test_stat_get_test_partition(tmp_path):
 
     svc = GraphService(data_dir=tmp_path / "data")
     svc.test_add("t1", "fac1")
+    svc.test_update("t1")
     svc.close()
     st = StatController(data_dir=tmp_path / "data")
     _run(st.scan("test", "t1", kind="ic"))
@@ -119,6 +121,7 @@ def test_stat_all_testers(tmp_path):
 
     svc = GraphService(data_dir=tmp_path / "data")
     svc.test_add("t1", "fac1")
+    svc.test_update("t1")
     svc.close()
     st = StatController(data_dir=tmp_path / "data")
     for kind in TESTER_KINDS:
@@ -144,6 +147,7 @@ def test_stat_get_unknown_partition(tmp_path):
 
     svc = GraphService(data_dir=tmp_path / "data")
     svc.test_add("t1", "fac1")
+    svc.test_update("t1")
     svc.close()
     st = StatController(data_dir=tmp_path / "data")
     _run(st.scan("test", "t1", kind="ic"))

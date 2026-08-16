@@ -1,4 +1,7 @@
-"""统计计算：calc_stats（分组/非分组列统计）+ calc_storage（表文件存续信息）
+"""存储层：数据计算——列统计（calc_stats）+ 文件存续统计（calc_storage）。
+
+从 stat/calc.py 迁移——统计聚合是纯数据层计算（不依赖资产语义），替换底层
+引擎（polars → DuckDB 等，如 SQL 聚合）时只改本层内部，接口不变。
 
 - calc_stats（要素对齐 v1.0 stat 模块），输出列（ALL_COLS）：
     group | field | data_type | count | null_count | nunique |
@@ -6,30 +9,26 @@
 - calc_storage（``stat scan --kind storage``），输出列（STORAGE_COLS）：
     partition_by | partition_value | storage_size | file_no
 
-内存策略（大表 coverage 统计）：
-- 计算全程 LazyFrame；聚合阶段用流式（controller 侧 ``sink_parquet`` 落盘）
-- **按 dtype 类别聚合、再对小的聚合结果 unpivot**：多列一次性 group_by 得到
-  每列每指标一列的窄表，再对窄表按指标逐列 unpivot + join 拼成 ALL_COLS 长表，
-  避免对原始数据 unpivot（行数×列数 的内存爆炸）
+内存策略（大表 coverage 统计，实测见变更记录）：
+- 计算全程 LazyFrame；**按 dtype 类别聚合、再对小的聚合结果单次 unpivot +
+  pivot**：多列一次性聚合得到每列每指标一列的窄表（行数=组数），避免对原始
+  数据 unpivot（行数×列数 的内存爆炸）；不做逐指标分支 unpivot+join（CACHE
+  spill 会拖慢 2-3 倍）
+- ``group_col=None`` 走**无分组全局聚合**（polars 并行路径，单大组比
+  group_by 常量快 3 倍）
+- 执行引擎由调用方决定：``collect()``（in-memory，跨分区内存释放干净）或
+  ``sink_parquet``（流式）
 """
 from __future__ import annotations
 
-from pathlib import PurePosixPath
-
 import polars as pl
+
+from .layout import hive_value
 
 ALL_COLS = ["group", "field", "data_type", "count", "null_count", "nunique",
             "min", "q25", "q50", "q75", "max", "mean", "min_date", "max_date"]
 
 STORAGE_COLS = ["partition_by", "partition_value", "storage_size", "file_no"]
-
-
-def _hive_value(rel: str, key: str) -> str:
-    """从相对路径提取 hive 分区值（``year=2024/month=1/data.parquet`` + key=year → ``2024``）"""
-    for part in PurePosixPath(rel).parts[:-1]:
-        if part.startswith(key + "="):
-            return part.split("=", 1)[1]
-    return ""
 
 
 def calc_storage(files: list[tuple[str, int]], group_key: str | None = None) -> pl.DataFrame:
@@ -45,7 +44,7 @@ def calc_storage(files: list[tuple[str, int]], group_key: str | None = None) -> 
     else:
         by: dict[str, list[int]] = {}
         for rel, size in files:
-            by.setdefault(_hive_value(rel, group_key), []).append(size)
+            by.setdefault(hive_value(rel, group_key), []).append(size)
         for val in sorted(by):
             sizes = by[val]
             rows.append((group_key, val, sum(sizes), len(sizes)))
@@ -54,7 +53,7 @@ def calc_storage(files: list[tuple[str, int]], group_key: str | None = None) -> 
                            pl.col("file_no").cast(pl.Int64))
 
 
-# ---------- calc_stats（流式友好实现） ----------
+# ---------- calc_stats（聚合 + 单 unpivot+pivot 实现） ----------
 
 def _metric_specs(kind: str, c: str, st: pl.DataType | None = None) -> list[tuple[str, str, pl.Expr]]:
     """某 dtype 类别单列的指标表达式列表：``(输出列名, 聚合别名后缀, 表达式)``
@@ -91,7 +90,7 @@ def _metric_specs(kind: str, c: str, st: pl.DataType | None = None) -> list[tupl
 
 def _class_stats(base: pl.LazyFrame, g: str, cols: list[str],
                  kind: str, grouped: bool = True) -> pl.LazyFrame:
-    """同一 dtype 类别的统计（流式友好）
+    """同一 dtype 类别的统计
 
     多列一次性聚合（每列每指标一个聚合列），得到行数=组数（非分组 1 行）的窄表；
     再对窄表**单次 unpivot**（variable 拆出 field/metric）后 ``pivot`` 拼成
@@ -189,8 +188,8 @@ def calc_stats(data: pl.LazyFrame | pl.DataFrame, group_col: str | None = None) 
 
     ``group_col`` 为 None 时全量一行 ``group=all``（走**无分组全局聚合**，见
     ``_class_stats(grouped=False)``）；否则按该列不同取值各一组，分组列名作为
-    首列列名。数值/字符串/时间三类各做一次流式聚合（见 _class_stats），
-    结果可直接 ``collect(engine="streaming")`` 或 ``sink_parquet``。
+    首列列名。数值/字符串/时间三类各做一次聚合（见 _class_stats），
+    结果可直接 ``collect()``（in-memory）或 ``sink_parquet``（流式）。
     """
     lf = data.lazy() if isinstance(data, pl.DataFrame) else data
     schema = lf.collect_schema()
@@ -228,3 +227,6 @@ def calc_stats(data: pl.LazyFrame | pl.DataFrame, group_col: str | None = None) 
         pl.col("field").replace_strict(order, default=999).alias("_order")
     ).sort(["_order", gname]).drop("_order")
     return result
+
+
+__all__ = ["ALL_COLS", "STORAGE_COLS", "calc_storage", "calc_stats"]

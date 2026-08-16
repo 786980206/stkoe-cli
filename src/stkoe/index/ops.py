@@ -10,15 +10,15 @@ import polars as pl
 
 from ..graph.errors import AssetNotFoundError
 from ..graph.model import node_id
+from ..storage import disk_files, scan, signature
 from ..table.errors import TableExistsError
-from ..table import util as T
 
 
 def _partition_hint(span: tuple[str, str] | None, gran: str) -> str:
     """物化粒度引导：默认 yearly 时间桶下 index 数据跨多年 → 提示细化粒度。
 
     增量重写按桶整桶替换——yearly 桶粒度粗，跨年数据的大范围/频繁增量会反复
-    重写整个年份桶；monthly/daily 桶可细分（见 graph.materialize.write_partitioned）。
+    重写整个年份桶；monthly/daily 桶可细分（见 storage.write_all）。
     ``span`` 为 ``(datetime 最小, 最大)``（字符串/ISO 字典序），解析失败返回空。
     """
     if gran != "yearly" or not span or len(span) != 2:
@@ -42,7 +42,7 @@ def _check_index_unique(svc, name: str, *, symbol_col: str | None = None,
     node = svc.store.get_node(node_id("index", name)) or {}
     sym = symbol_col or node.get("symbol_col") or "sym"
     dt = datetime_col or node.get("datetime_col") or "date"
-    lf = pl.scan_parquet(svc._index_root(name), hive_partitioning=True)
+    lf = scan(svc._index_root(name), exclude=())
     if dt not in lf.collect_schema().names():
         return None
     df = lf.select(sym, dt).collect()
@@ -170,4 +170,4 @@ def index_data_key(svc, name: str) -> str:
         return ""
     svc._ensure_fresh("index", name)
     node = svc.store.get_node(node_id("index", name))
-    return node.get("signature", "") if node else T.signature(T.disk_files(root))
+    return node.get("signature", "") if node else signature(disk_files(root))

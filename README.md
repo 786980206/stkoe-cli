@@ -961,8 +961,20 @@ uv run pytest -q        # 默认全量 278 用例（graph 模块 + gRPC/资产�
 src/stkoe/
 ├── cli.py / args.py / jsonutil.py / logutil.py / settings.py / dbt.py
 ├── grpc/               # stkoe.proto + 编译产物 + dispatch.py（Execute 分发）+ server.py
+├── storage/            # 数据存储访问层：polars parquet 读写与数据计算的标准接口
+│   │                   #   scan（读）/ write_all·write_incremental·write_incremental_flat
+│   │                   #   （全量/增量物化）/ layout·meta（布局/指纹）/ query（裁剪）/
+│   │                   #   calc_stats·calc_storage（统计）——替换 DuckDB 等只改本层
+│   ├── read.py         # scan：目录（hive）/单文件/文件列表 → LazyFrame（谓词/列裁剪/剔除内部列）
+│   ├── write.py        # write_all（全量：单文件/时间桶 PartitionBy/clean）
+│   │                   # write_incremental（分区桶增量）/ write_incremental_flat（flat 增量）
+│   ├── layout.py       # disk_files / detect_layout / partition_of / hive_value
+│   ├── meta.py         # footer / signature / diff_files / columns_union
+│   ├── query.py        # parse_pred / to_expr / prune_files（SQL 文件级裁剪）
+│   ├── calc.py         # calc_stats（ALL_COLS）/ calc_storage（STORAGE_COLS）
+│   └── spec.py         # FileInfo / FileDiff / ColumnMeta / TableLayout
 ├── table/ …/ factor_tester/    # 资产模块：ops.py = 资产业务实现（GraphService 薄委托入口），
-│                               #   handlers.py = 任务版 Handler，engine/spec/util = 领域组件
+│                               #   handlers.py = 任务版 Handler，engine/spec = 领域组件
 ├── graph/              # 资产血缘图（graphqlite）+ GraphService
 │   ├── model.py        # DataChangeEvent / AssetMeta / DependencyEdge / 列元数据
 │   ├── store.py        # GraphStore：节点/边 CRUD + BFS 血缘遍历 + txn 事务
@@ -971,7 +983,7 @@ src/stkoe/
 │   ├── controller.py   # GraphController：CRUD + 依赖约束 + notify_change/resolve(_all)
 │   ├── service.py      # GraphService：图交互 + 共享基础设施（登记/事件/列解析/级联
 │   │                  #   update）；各资产公共 API 仅薄委托到对应模块 ops.py
-│   ├── materialize.py  # 物化共享基础设施（时间桶分区计划 / PartitionBy 落盘 / 桶增量重写）
+│   ├── materialize.py  # 物化计划（时间桶分区方案/沿链 index 定位；读写落盘走 storage）
 │   ├── handlers.py     # 资产 Handler（图账本层）
 │   ├── analyze.py      # 图算法 + 影响分析（page_rank / degree / components / impact）
 │   ├── version.py      # 高精度时间戳版本号 + now_iso

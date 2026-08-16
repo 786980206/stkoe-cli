@@ -19,9 +19,9 @@ import polars as pl
 
 from ..jsonutil import dumps_str, loads
 from ..settings import load_config
+from ..storage import (columns_union, detect_layout, diff_files, disk_files,
+                       footer, partition_of, prune_files, scan, signature, to_expr)
 from ..table.errors import DEFAULT_IGNORE_COLS
-from ..table import util as T
-from ..table.query import prune_files, to_expr
 from .controller import GraphController
 from .errors import AssetNotFoundError, CycleError
 from .events import DataChangeEvent
@@ -142,9 +142,9 @@ class GraphService:
         files = self._files(node_id(asset_type, name))
         part_count = len({f["partition"] for f in files if f["partition"]})
         root = self._asset_root(asset_type, name)
-        disk = T.disk_files(root)
+        disk = disk_files(root)
         consistent = bool(node.get("signature")) and \
-            node["signature"] == T.signature(disk) if root.exists() else True
+            node["signature"] == signature(disk) if root.exists() else True
         out = {
             "name": name,
             "version": node.get("version", 0),
@@ -183,15 +183,15 @@ class GraphService:
         root = self._asset_root(asset_type, name)
         if not root.exists():
             raise AssetNotFoundError(f"{asset_type} dir not found: {root}")
-        disk = T.disk_files(root)
+        disk = disk_files(root)
         nid = node_id(asset_type, name)
         node = self.store.get_node(nid)
         implicit = node is None
         version_before = 0 if implicit else node["version"]
         cat = self.store.fingerprint_get(nid) if node else {}
         stats = self.store.fingerprint_stats(nid) if cat else {}
-        diffs = T.diff_files(disk, cat)
-        layout, pkeys = T.detect_layout([f.rel_path for f in disk])
+        diffs = diff_files(disk, cat)
+        layout, pkeys = detect_layout([f.rel_path for f in disk])
         changed = bool(diffs)
         version_after = version_before
 
@@ -213,8 +213,8 @@ class GraphService:
                                "schema": loads(old["schema"] or "{}"),
                                "stats": stats.get(old["id"], {})}
                     else:
-                        ftr = T.footer(root / f.rel_path)
-                    payload.append((f, ftr, T.partition_of(f.rel_path)))
+                        ftr = footer(root / f.rel_path)
+                    payload.append((f, ftr, partition_of(f.rel_path)))
 
                 items = [
                     (part, f.rel_path, ftr["row_count"], ftr["file_bytes"], f.size, f.mtime_ns,
@@ -225,7 +225,7 @@ class GraphService:
 
                 old_cols = {c["name"]: c for c in (node.get("columns") or [])}
                 new_cols = []
-                for c in T.columns_union([(f.rel_path, ftr) for f, ftr, _ in payload],
+                for c in columns_union([(f.rel_path, ftr) for f, ftr, _ in payload],
                                          self.ignore_cols):
                     prev = dict(old_cols.get(c.name, {}))
                     prev.update({k: v for k, v in c.to_dict().items() if v is not None or k == "is_tool"})
@@ -252,7 +252,7 @@ class GraphService:
                          "layout": layout.value,
                          "partition_by": pkeys,
                          "columns": new_cols,
-                         "signature": T.signature(disk),
+                         "signature": signature(disk),
                          "update_time": now_iso()}
                 self.store.patch_node(nid, **patch)
                 # 列节点图对账：源头列（table/index）随登记/重扫同步
@@ -300,7 +300,7 @@ class GraphService:
 
         def partition_values(rel: str, part_path: str, key: str) -> list[str]:
             vals = []
-            for seg in (part_path or T.partition_of(rel)).split("/"):
+            for seg in (part_path or partition_of(rel)).split("/"):
                 if not seg:
                     continue
                 k, _, v = seg.partition("=")
@@ -312,7 +312,7 @@ class GraphService:
             scope = partition_values(rel, part_path, datetime_col)
             if (root / rel).exists():  # added/changed：footer min/max
                 try:
-                    st = T.footer(root / rel)["stats"].get(datetime_col)
+                    st = footer(root / rel)["stats"].get(datetime_col)
                     if st:
                         lo, hi = st[1], st[2]
                         if lo is not None and hi is not None:
@@ -334,9 +334,9 @@ class GraphService:
             f = root / rel
             if f.exists():
                 try:
-                    ftr = T.footer(f)
+                    ftr = footer(f)
                     if ftr.get("row_count", 0) <= _SYMBOL_SCAN_LIMIT:
-                        lf = pl.scan_parquet(f)
+                        lf = scan(f, exclude=())
                         if symbol_col in lf.collect_schema().names():
                             vals.extend(lf.select(
                                 pl.col(symbol_col).cast(pl.String).unique())
@@ -394,7 +394,7 @@ class GraphService:
         if not root.exists():
             return
         node = self.store.get_node(node_id(asset_type, name))
-        disk_sig = T.signature(T.disk_files(root))
+        disk_sig = signature(disk_files(root))
         if node is None or disk_sig != (node.get("signature") or ""):
             self._scan_disk(asset_type, name)
 
@@ -409,7 +409,7 @@ class GraphService:
         if not files:
             return pl.LazyFrame()
         paths = [self._asset_root(asset_type, name) / f["rel_path"] for f in files]
-        lf = pl.scan_parquet(paths, hive_partitioning=True)
+        lf = scan(paths)
         if where is not None:
             lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
         if columns is not None:

@@ -13,12 +13,11 @@ import polars as pl
 
 from ..fieldset.ops import _expand_scope, _formula_refs
 from ..graph.handlers import TesterHandler
-from ..graph.materialize import partition_plan, rewrite_buckets, scan_materialized, \
-    write_partitioned
+from ..graph.materialize import partition_plan
+from ..storage import scan, to_expr, write_all, write_incremental, write_incremental_flat
 from ..graph.model import node_id
 from ..graph.version import now_iso
 from ..jsonutil import dumps_str
-from ..table.query import to_expr
 from .spec import FactorTesterSpec
 from .tester import prepare_factor_data
 
@@ -131,7 +130,7 @@ def _tester_view_lf(svc, name: str, *, where=None) -> pl.LazyFrame:
     node = svc._require_node("tester", name)
     tm = _tester_meta_dict(svc, name)
     root = svc._require_materialized("tester", name, tm)
-    lf = scan_materialized(root)
+    lf = scan(root)
     if where is not None:
         lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
     return lf
@@ -143,7 +142,7 @@ def tester_data(svc, name: str) -> pl.DataFrame:
     node = svc._require_node("tester", name)
     tm = _tester_meta_dict(svc, name)
     root = svc._require_materialized("tester", name, tm)
-    return scan_materialized(root).collect()
+    return scan(root).collect()
 
 
 def tester_add(svc, name: str, factor: str, *, returns: str = "r",
@@ -285,24 +284,18 @@ def _tester_scan_one(svc, name: str, *, resync: bool = False) -> dict:
         sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
         inc = _tester_build(svc, node, dt_range=(lo, hi), symbols=syms)
         if pkeys:
-            old = pl.scan_parquet(out_dir, hive_partitioning=True)
-            df = rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt,
+            df = write_incremental(scan(out_dir, exclude=()), inc, dt_expr, pkeys, out_dir, gran, dt,
                                  sym_expr=sym_expr,
                                  sort_cols=[dt, keys[0]] if dt else None)
         else:
-            keep = pl.scan_parquet(out_path).filter(
-                ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
-            ).collect()
-            df = pl.concat([keep, inc], how="vertical_relaxed"
-                           ).unique(subset=keys, keep="last")
-            if dt:
-                df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
-            df.write_parquet(out_path)
+            df = write_incremental_flat(out_path, inc, dt_expr, keys,
+                                        sym_expr=sym_expr,
+                                        sort_cols=[dt, keys[0]] if dt else None)
     else:
         df = _tester_build(svc, node)
         if dt:
             df = df.sort([dt, keys[0]])  # 物化存储时间优先
-        write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt, clean=True)
+        write_all(df, out_dir, pkeys, gran=gran, dt_col=dt, clean=True)
     cols = [{"name": c, "display_name": c, "data_type": str(t)}
             for c, t in zip(df.columns, df.dtypes)]
     # 物化成功 → resolve 收口：铸版本并记录消费的合并事件（带 datetime_scope，

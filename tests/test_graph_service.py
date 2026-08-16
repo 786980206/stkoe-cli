@@ -17,10 +17,10 @@ import pytest
 
 from stkoe.factor import ops as factor_ops
 from stkoe.factor_tester import ops as tester_ops
-from stkoe.graph import materialize as mat_ops
 from stkoe.graph.service import GraphService
 from stkoe.panel import ops as panel_ops
 from stkoe.sample import ops as sample_ops
+from stkoe.storage import scan as storage_scan, write_all as storage_write_all
 
 
 @pytest.fixture()
@@ -571,11 +571,11 @@ class TestPanelGraph:
         df = pl.DataFrame({"sym": [], "date": [], "code": []},
                           schema={"sym": pl.String, "date": pl.String,
                                   "code": pl.Int64})
-        mat_ops.write_partitioned(df, out_dir, ["part"], gran="yearly",
-                                  dt_col="date", clean=True)
+        storage_write_all(df, out_dir, ["part"], gran="yearly",
+                          dt_col="date", clean=True)
         assert not any(out_dir.glob("part=*")), "空物化不应残留桶目录"
         assert (out_dir / "data.parquet").exists()
-        lf = mat_ops.scan_materialized(out_dir)
+        lf = storage_scan(out_dir)
         assert lf.collect().columns == ["sym", "date", "code"]
         assert lf.select(pl.len()).collect().item() == 0
 

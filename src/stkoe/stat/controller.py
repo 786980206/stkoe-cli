@@ -20,9 +20,9 @@ from pathlib import Path
 import polars as pl
 
 from ..graph.model import node_id
+from ..storage import calc_storage, calc_stats, detect_layout, disk_files, now, \
+    row_count, scan, write_file
 from ..table.errors import DEFAULT_IGNORE_COLS, TableNotFoundError
-from ..table.util import now
-from .calc import calc_stats, calc_storage
 from .spec import StatFile, StatMeta, StatScanReport
 
 
@@ -32,13 +32,6 @@ class StatNotFoundError(FileNotFoundError):
 
 class StatTargetError(ValueError):
     pass
-
-
-def _parquet_rows(p: Path) -> int:
-    try:
-        return pl.scan_parquet(p).select(pl.len()).collect().item()
-    except Exception:
-        return 0
 
 
 def _ordered(files: tuple[StatFile, ...]) -> tuple[StatFile, ...]:
@@ -175,7 +168,7 @@ class StatController:
             if on_progress is not None:
                 on_progress(i, total, f"{target_name}/{kind}: {out_name}")
             p = out_dir / f"{out_name}.parquet"
-            df.write_parquet(p)
+            write_file(df, p)
             files.append(StatFile(partition=out_name,
                                   rel_path=p.relative_to(self.root),
                                   rows=df.height, size=p.stat().st_size))
@@ -224,7 +217,7 @@ class StatController:
                 on_progress(i, len(parts), f"{target_type}/{target_name}: {p}")
             f = out_dir / f"{p}.parquet"
             df = calc_stats(lf, group_col=None if p == "all" else p).collect()
-            df.write_parquet(f)
+            write_file(df, f)
             files.append(StatFile(partition=p, rel_path=f.relative_to(self.root),
                                   rows=df.height, size=f.stat().st_size))
         files = list(_ordered(tuple(files)))
@@ -244,8 +237,6 @@ class StatController:
         每个分区键一个文件，按该键目录值各一行
         ``partition_by=<key> / partition_value=<value>``。
         """
-        from ..table.util import detect_layout, disk_files
-
         if target_type == "table":
             svc = self._graph_service()
             try:
@@ -270,7 +261,7 @@ class StatController:
                 on_progress(i, len(parts), f"{target_type}/{target_name}: {p}")
             df = calc_storage(items, group_key=None if p == "all" else p)
             f = out_dir / f"{p}.parquet"
-            df.lazy().sink_parquet(f)
+            write_file(df, f)
             out_files.append(StatFile(partition=p, rel_path=f.relative_to(self.root),
                                       rows=df.height, size=f.stat().st_size))
         out_files = list(_ordered(tuple(out_files)))
@@ -292,7 +283,7 @@ class StatController:
             f = out_dir / f"{partition_by}.parquet"
             if not f.exists():
                 raise StatNotFoundError(f"stat 分区文件不存在: {f.relative_to(self.root)}")
-            return pl.read_parquet(f)
+            return scan(f).collect()
         if not out_dir.exists():
             raise StatNotFoundError(f"stat 目录不存在: {out_dir.relative_to(self.root)}")
         files = _ordered(tuple(
@@ -303,7 +294,7 @@ class StatController:
         out: dict[str, pl.DataFrame] = {}
         for f in files:
             p = out_dir / f"{f.partition}.parquet"
-            out[f.partition] = pl.read_parquet(p)
+            out[f.partition] = scan(p).collect()
         return out
 
     # ---------- meta / list / delete ----------
@@ -316,13 +307,13 @@ class StatController:
         paths = sorted(out_dir.glob("*.parquet")) if out_dir.exists() else []
         files = tuple(
             StatFile(partition=p.stem, rel_path=p.relative_to(self.root),
-                     rows=_parquet_rows(p), size=p.stat().st_size)
+                     rows=row_count(p), size=p.stat().st_size)
             for p in paths
         )
         ts = now()
         files = tuple(
             StatFile(partition=p.stem, rel_path=p.relative_to(self.root),
-                     rows=_parquet_rows(p), size=p.stat().st_size)
+                     rows=row_count(p), size=p.stat().st_size)
             for p in paths
         )
         files = _ordered(files)
@@ -344,7 +335,7 @@ class StatController:
                     ts = now()
                     files = _ordered(tuple(
                         StatFile(partition=p.stem, rel_path=p.relative_to(self.root),
-                                 rows=_parquet_rows(p), size=p.stat().st_size)
+                                 rows=row_count(p), size=p.stat().st_size)
                         for p in paths
                     ))
                     out.append(StatMeta(target_type=tdir.name, target_name=ndir.name,

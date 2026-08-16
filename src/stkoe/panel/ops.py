@@ -18,10 +18,9 @@ import polars as pl
 
 from ..graph.handlers import PanelHandler
 from ..graph.model import node_id
-from ..graph.materialize import partition_plan, rewrite_buckets, scan_materialized, \
-    write_partitioned
+from ..graph.materialize import partition_plan
 from ..graph.version import now_iso
-from ..table.query import to_expr
+from ..storage import scan, to_expr, write_all, write_incremental, write_incremental_flat
 
 
 def _asof_join(left: pl.LazyFrame, right: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
@@ -183,20 +182,14 @@ def panel_update(svc, name: str) -> dict:
         if pkeys:
             # 分区级增量：删区间涉及的桶并保留桶内区间外旧行 → 合并写回
             # （惰性过滤：受影响桶判定只读 key 列，keep 行级裁剪后 collect）
-            old = pl.scan_parquet(out_dir, hive_partitioning=True)
-            rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt,
-                            sym_expr=sym_expr,
-                            sort_cols=[dt, keys[0]] if dt else None)
+            write_incremental(scan(out_dir, exclude=()), df_inc, dt_expr, pkeys, out_dir,
+                              gran, dt, sym_expr=sym_expr,
+                              sort_cols=[dt, keys[0]] if dt else None)
         else:
-            # flat：惰性过滤只读 keep 行（未命中标的/区间外的旧行）
-            keep = pl.scan_parquet(out_path).filter(
-                ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
-            ).collect()
-            df = pl.concat([keep, df_inc], how="vertical_relaxed"
-                           ).unique(subset=keys, keep="last")
-            if dt:
-                df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
-            df.write_parquet(out_path)
+            # flat：删区间（×标的）命中行 + 合并去重写回（storage 统一实现）
+            write_incremental_flat(out_path, df_inc, dt_expr, keys,
+                                   sym_expr=sym_expr,
+                                   sort_cols=[dt, keys[0]] if dt else None)
         rows = df_inc.height
     else:
         joined, _ = _panel_lazy(svc, name, live=True)
@@ -204,7 +197,7 @@ def panel_update(svc, name: str) -> dict:
             joined = joined.sort([dt, keys[0]])  # 物化存储时间优先
         df = joined.collect()  # 一次物化（rows 计数与分桶写盘共用，不重复 join）
         rows = df.height
-        write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt, clean=True)
+        write_all(df, out_dir, pkeys, gran=gran, dt_col=dt, clean=True)
     m = svc.graph.resolve("panel", name, extra={
         "dependency_hash": _panel_hash(svc, node),
         "materialized_at": now_iso(),
@@ -234,7 +227,7 @@ def _panel_lazy(svc, name: str, where: pl.Expr | str | None = None,
         root = svc.data_dir / "panel" / name
         if fm["curated"] and (root / "data.parquet").exists() \
                 or (fm["curated"] and any(root.glob("*=*"))):
-            lf = scan_materialized(root)
+            lf = scan(root)
             if where is not None:
                 lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
             return lf, keys
@@ -284,7 +277,7 @@ def panel_get(svc, name: str, *, columns: list[str] | None = None,
     未物化 → 报错提示先 update**（不再静默回退实时 join）。"""
     meta = panel_meta(svc, name)
     root = svc._require_materialized("panel", name, meta)
-    lf = scan_materialized(root)
+    lf = scan(root)
     if where is not None:
         lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
     return svc._collect_page(lf, columns=columns, exclude_tool=exclude_tool,

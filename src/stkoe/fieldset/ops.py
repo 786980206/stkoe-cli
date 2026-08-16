@@ -17,12 +17,11 @@ import polars as pl
 from ..graph.errors import AssetNotFoundError
 from ..graph.events import DataChangeEvent
 from ..graph.handlers import FieldsetHandler
-from ..graph.materialize import partition_plan, rewrite_buckets, scan_materialized, \
-    write_partitioned
+from ..graph.materialize import partition_plan
+from ..storage import scan, to_expr, write_all, write_incremental, write_incremental_flat
 from ..graph.model import FieldMeta
 from ..graph.version import now_iso
 from ..panel.ops import _panel_columns
-from ..table.query import to_expr
 from .engine import get_engine as get_fieldset_engine
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -100,7 +99,7 @@ def _fieldset_view_lf(svc, name: str, *, fields_only: bool = False,
     root = svc.data_dir / "fieldset" / name
     if fm["curated"] and (root / "data.parquet").exists() \
             or (fm["curated"] and any(root.glob("*=*"))):
-        lf = scan_materialized(root)
+        lf = scan(root)
         if where is not None:
             lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
         if fields_only:
@@ -267,7 +266,7 @@ def fieldset_get(svc, name: str, *, fields_only: bool = False,
     node = svc._require_node("fieldset", name)
     meta = fieldset_meta(svc, name)
     root = svc._require_materialized("fieldset", name, meta)
-    lf = scan_materialized(root)
+    lf = scan(root)
     if where is not None:
         lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
     if not fields_only:
@@ -313,19 +312,13 @@ def fieldset_update(svc, name: str, *, resync: bool = False) -> dict:
         base, _ = svc._panel_lazy(panel, where=where)
         df_inc = engine.scan(base, keys, fields).collect()
         if pkeys:
-            old = pl.scan_parquet(out_dir, hive_partitioning=True)
-            rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt,
+            write_incremental(scan(out_dir, exclude=()), df_inc, dt_expr, pkeys, out_dir, gran, dt,
                             sym_expr=sym_expr,
                             sort_cols=[dt, keys[0]] if dt else None)
         else:
-            keep = pl.scan_parquet(out_path).filter(
-                ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
-            ).collect()
-            df = pl.concat([keep, df_inc], how="vertical_relaxed"
-                           ).unique(subset=keys, keep="last")
-            if dt:
-                df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
-            df.write_parquet(out_path)
+            df = write_incremental_flat(out_path, df_inc, dt_expr, keys,
+                                        sym_expr=sym_expr,
+                                        sort_cols=[dt, keys[0]] if dt else None)
         rows = df_inc.height
     else:
         base, _ = svc._panel_lazy(panel)
@@ -334,7 +327,7 @@ def fieldset_update(svc, name: str, *, resync: bool = False) -> dict:
             out = out.sort([dt, keys[0]])  # 物化存储时间优先
         df = out.collect()  # 一次物化（rows 计数与分桶写盘共用，不重复求值）
         rows = df.height
-        write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt, clean=True)
+        write_all(df, out_dir, pkeys, gran=gran, dt_col=dt, clean=True)
     m = svc.graph.resolve("fieldset", name, extra={
         "dependency_hash": _fieldset_hash(svc, node),
         "materialized_at": now_iso(),

@@ -10,8 +10,8 @@ import polars as pl
 
 from ..graph.errors import AssetNotFoundError
 from ..graph.model import node_id
+from ..storage import disk_files, signature
 from .errors import TableExistsError
-from . import util as T
 
 
 def table_add(svc, name: str, *, all: bool = False, meta: dict | None = None):
@@ -106,4 +106,4 @@ def table_data_key(svc, name: str) -> str:
         return ""
     svc._ensure_fresh("table", name)
     node = svc.store.get_node(node_id("table", name))
-    return node.get("signature", "") if node else T.signature(T.disk_files(root))
+    return node.get("signature", "") if node else signature(disk_files(root))

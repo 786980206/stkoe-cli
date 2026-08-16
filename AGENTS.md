@@ -43,13 +43,20 @@ src/stkoe/
 │   ├── stkoe.proto + stkoe_pb2*.py     # 协议 + protoc 生成
 │   ├── dispatch.py    # Execute 同步命令分发（@handler 注册；version/config/table）
 │   └── server.py      # StkoeService 实现 + StkoeServer + 请求 INFO 日志
-├── table/             # 表数据资产（登记/版本/元数据走 graph，见 graph/service.py）
-│   ├── errors.py      # 共享错误与常量（DependencyError/TableNotFoundError/Exists/DEFAULT_IGNORE_COLS）
-│   ├── spec.py        # TableLayout/ColumnMeta/FileDiff dataclass
-│   ├── util.py        # parquet 指纹/布局识别/footer/差异/signature
-│   ├── query.py       # 谓词解析 + 文件级裁剪（prune_files）
-│   ├── ops.py         # table 资产业务（登记/读取/重扫对账；GraphService 薄委托入口）
-│   └── handlers.py    # 任务版 Handler（source="table"，注册进 TaskRegistry）
+├── storage/            # **数据存储访问层**：polars parquet 读写与数据计算的标准接口
+│   │                   #   （替换 DuckDB 等只改本层，公共接口不变）
+│   ├── read.py         # scan：目录（hive 还原）/单文件/文件列表 → LazyFrame（谓词/列裁剪/剔除内部列）
+│   ├── write.py        # 物化写：write_all（全量：单文件/时间桶 PartitionBy/clean）、
+│   │                   #   write_incremental（分区桶增量）、write_incremental_flat（flat 增量）
+│   ├── layout.py       # disk_files / detect_layout / partition_of / hive_value
+│   ├── meta.py         # footer / signature / diff_files / columns_union
+│   ├── query.py        # parse_pred / to_expr / prune_files（基于 stkoe_file_stats 的 SQL 裁剪）
+│   ├── calc.py         # calc_stats（ALL_COLS 列统计）/ calc_storage（STORAGE_COLS 存续统计）
+│   └── spec.py         # FileInfo / FileDiff / ColumnMeta / TableLayout
+├── table/              # 表数据资产（登记/版本/元数据走 graph，见 graph/service.py）
+│   ├── errors.py       # 共享错误与常量（DependencyError/TableExistsError/DEFAULT_IGNORE_COLS）
+│   ├── ops.py          # table 资产业务（登记/读取/重扫对账；GraphService 薄委托入口）
+│   └── handlers.py     # 任务版 Handler（source="table"，注册进 TaskRegistry）
 ├── index/             # 索引资产（symbol/datetime 列，独立物理目录 index/，走 GraphService）
 │   ├── ops.py         # index 资产业务（登记 + 键唯一性校验/物化粒度引导/重扫对账）
 │   └── handlers.py    # 任务版 Handler（source="index"，注册进 TaskRegistry）
@@ -251,6 +258,36 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 refactor(storage): 抽出数据存储访问层 storage/——polars 读写与计算收拢，替换 DuckDB 只改本层
+
+- **背景**：读写 polars 文件的方法与数据计算代码散落在 `graph/materialize.py`、
+  `table/{util,query,spec}.py`、`stat/calc.py` 及各资产 `ops.py`——存储细节与业务
+  耦合，后续想换 DuckDB 无从下手。用户要求：**抽成独立模块，定义好标准对外接口**；
+  抽象边界 = 读写模块对外提供的方法（get: name→目录→分区/单文件 parquet；
+  materialize: 全量/增量），替换 DuckDB 时业务层零改动
+- **新模块 `src/stkoe/storage/`**（依赖方向 storage→无，assets→storage）：
+  - `read.py`：`scan(root, partition, columns, where, exclude=("part",))`——目录
+    （hive 还原）/单文件/文件列表 → **LazyFrame**（谓词/列裁剪/剔除内部列）；
+    `row_count`
+  - `write.py`：`write_all`（全量：单文件/时间桶 PartitionBy/`clean`）、
+    `write_incremental`（分区桶增量重写）、`write_incremental_flat`（flat 增量）、
+    `write_file`（自定义文件名）
+  - `layout.py`（`disk_files`/`detect_layout`/`partition_of`/`hive_value`）、
+    `meta.py`（`footer`/`signature`/`diff_files`/`columns_union`）、`query.py`
+    （`parse_pred`/`to_expr`/`prune_files`）、`calc.py`（`calc_stats`/`calc_storage`）、
+    `spec.py`（FileInfo/FileDiff/ColumnMeta/TableLayout）
+- **迁移**：删除 `table/{util,query,spec}.py` 与 `stat/calc.py`（内容并入 storage）；
+  `graph/materialize.py` 只留计划侧（`index_node`/`partition_plan`），文件读写全部
+  移出；panel/fieldset/factor/factor_tester 4 个资产原本各自实现的 flat 增量写回
+  **统一为 `write_incremental_flat`**（一处逻辑四资产共用）；增量读统一
+  `scan(out_dir, exclude=())` 保留 part 列（默认剔除）；stat controller 全部改走
+  storage API
+- **替换 DuckDB 的边界**：只改 storage 层——对外签名不变（读仍返回 polars
+  LazyFrame，DuckDB 桥接用 `duckdb.sql(...).pl()`），assets/stat 不感知引擎
+- 测试：全量 280 用例绿（94.86s，+2 例 scan 分区子集/幂等）；真实数据冒烟：
+  panel get 18522212 行 1.2s、panel_update 全量 15.5s、stat scan 双分区 24.3s
+  （与迁移前一致）；文档：README §15（storage 层目录树）、AGENTS.md 目录结构
 
 ### 2026-08 perf: stat coverage 大表提速 + 按需扫描——单分区 58s→16s、新增 --partition
 

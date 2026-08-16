@@ -11,6 +11,7 @@ import polars as pl
 from ..graph.handlers import SampleHandler
 from ..graph.model import FieldMeta, node_id
 from ..panel.ops import _panel_columns
+from ..storage import scan
 
 
 def _sample_index_keys(svc, node: dict) -> tuple[str, str]:
@@ -33,9 +34,8 @@ def _sample_view_lf(svc, name: str, *, where=None) -> pl.LazyFrame:
     sym, dt = _sample_index_keys(svc, node)
     key_sym = sym if sym in keys else (keys[0] if keys else sym)
     key_dt = dt if dt in keys else (keys[-1] if len(keys) > 1 else dt)
-    idx_lf = pl.scan_parquet(
-        svc._index_root(node.get("index", "").split(":", 1)[-1]),
-        hive_partitioning=True)
+    idx_lf = scan(
+        svc._index_root(node.get("index", "").split(":", 1)[-1]), exclude=())
     idx_lf = idx_lf.select([sym, dt]).unique()
     if sym != key_sym or dt != key_dt:
         idx_lf = idx_lf.rename({sym: key_sym, dt: key_dt})

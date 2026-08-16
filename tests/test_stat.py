@@ -4,7 +4,7 @@ import polars as pl
 import pytest
 
 from stkoe.stat import StatController, StatNotFoundError
-from stkoe.stat.calc import ALL_COLS
+from stkoe.storage import ALL_COLS
 
 
 @pytest.fixture()

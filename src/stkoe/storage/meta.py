@@ -1,68 +1,15 @@
-"""通用工具：parquet 文件指纹、布局识别、footer 读取、差异对比（与具体对象类型无关）
+"""存储层：parquet 元数据（footer / 签名 / 差异 / 列并集）。
 
-供 table 等模块复用：磁盘扫描只 stat、签名快检、hive 布局识别、
-footer 统计（min/max/null）、catalog 清单 vs 磁盘差异对比。
+从 table/util.py 迁移——footer 只读元数据不读数据页，签名用于快检与失效判定。
 """
 from __future__ import annotations
 
-import datetime
 import hashlib
-from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
 
 import polars as pl
 import pyarrow.parquet as pq
 
-from .spec import ColumnMeta, FileDiff, TableLayout
-
-
-@dataclass(frozen=True)
-class FileInfo:
-    """磁盘文件指纹（stat-only，不打开文件）"""
-
-    rel_path: str
-    size: int
-    mtime_ns: int
-
-
-def now() -> str:
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def iter_parquets(root: Path) -> list[Path]:
-    return sorted(root.rglob("*.parquet")) if root.exists() else []
-
-
-def disk_files(root: Path) -> list[FileInfo]:
-    """列目录做 stat 指纹（不读 footer）"""
-    files = []
-    for p in iter_parquets(root):
-        st = p.stat()
-        files.append(FileInfo(p.relative_to(root).as_posix(), st.st_size, st.st_mtime_ns))
-    return files
-
-
-def detect_layout(rel_paths: list[str]) -> tuple[TableLayout, list[str]]:
-    """从相对路径识别资产形态：SINGLE / FLAT / HIVE（返回布局 + 分区键）"""
-    keys: list[str] = []
-    for rel in rel_paths:
-        for part in PurePosixPath(rel).parts[:-1]:
-            if "=" in part:
-                key = part.split("=", 1)[0]
-                if key not in keys:
-                    keys.append(key)
-    if not rel_paths:
-        return TableLayout.SINGLE, []
-    if keys:
-        return TableLayout.HIVE, keys
-    if len(rel_paths) == 1:
-        return TableLayout.SINGLE, []
-    return TableLayout.FLAT, []
-
-
-def partition_of(rel: str) -> str:
-    parts = PurePosixPath(rel).parts[:-1]
-    return "/".join(p for p in parts if "=" in p)
+from .spec import ColumnMeta, FileDiff, FileInfo
 
 
 def signature(files: list[FileInfo]) -> str:
@@ -82,7 +29,7 @@ def norm_stat(v) -> str | None:
     return str(v)
 
 
-def footer(path: Path) -> dict:
+def footer(path) -> dict:
     """读 parquet footer：行数/字节/schema/min-max/null_count（不读数据页）"""
     schema = {k: str(v) for k, v in pl.scan_parquet(path).collect_schema().items()}
     md = pq.ParquetFile(path).metadata
@@ -126,7 +73,7 @@ def columns_union(items: list[tuple[str, dict]], ignore: set[str]) -> list[Colum
 
 
 def diff_files(disk: list[FileInfo], cat: dict[str, dict]) -> list[FileDiff]:
-    """磁盘 vs catalog 清单差异（status 与 sniff 共用）。
+    """磁盘 vs catalog 清单差异（added / removed / changed）。
 
     ``cat``：rel_path -> 含 size/mtime_ns 的 dict（来自 stkoe_data_files 行）。
     """
@@ -146,5 +93,4 @@ def diff_files(disk: list[FileInfo], cat: dict[str, dict]) -> list[FileDiff]:
     return diffs
 
 
-__all__ = ["FileInfo", "now", "iter_parquets", "disk_files", "detect_layout", "partition_of",
-           "signature", "norm_stat", "footer", "columns_union", "diff_files"]
+__all__ = ["signature", "norm_stat", "footer", "columns_union", "diff_files"]

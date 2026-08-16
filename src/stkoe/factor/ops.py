@@ -18,10 +18,9 @@ import polars as pl
 from ..fieldset.ops import _expand_scope, _formula_refs
 from ..graph.events import DataChangeEvent
 from ..graph.handlers import FactorHandler
-from ..graph.materialize import partition_plan, rewrite_buckets, scan_materialized, \
-    write_partitioned
+from ..graph.materialize import partition_plan
+from ..storage import scan, to_expr, write_all, write_incremental, write_incremental_flat
 from ..graph.version import now_iso
-from ..table.query import to_expr
 from .engine import get_engine as get_factor_engine
 from .engine import parse_pipeline
 
@@ -128,7 +127,7 @@ def _factor_view_lf(svc, name: str, *, where=None,
     node = svc._require_node("factor", name)
     fm = _factor_meta_dict(svc, name)
     root = svc._require_materialized("factor", name, fm)
-    lf = scan_materialized(root, partition=partition)
+    lf = scan(root, partition=partition)
     if where is not None:
         lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
     return lf
@@ -293,23 +292,17 @@ def _factor_write(svc, plan: dict, df: pl.DataFrame) -> dict:
         dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
         sym_expr = pl.col(keys[0]).is_in(syms) if syms else None
         if pkeys:
-            old = pl.scan_parquet(out_dir, hive_partitioning=True)
-            rewrite_buckets(old, df, dt_expr, pkeys, out_dir, gran, dt,
+            write_incremental(scan(out_dir, exclude=()), df, dt_expr, pkeys, out_dir, gran, dt,
                             sym_expr=sym_expr,
                             sort_cols=[dt, keys[0]] if dt else None)
         else:
-            keep = pl.scan_parquet(out_path).filter(
-                ~(dt_expr & sym_expr) if sym_expr is not None else ~dt_expr
-            ).collect()
-            df = pl.concat([keep, df], how="vertical_relaxed"
-                           ).unique(subset=keys, keep="last")
-            if dt:
-                df = df.sort([dt, keys[0]])  # 时间优先（先时间后标的）
-            df.write_parquet(out_path)
+            df = write_incremental_flat(out_path, df, dt_expr, keys,
+                                        sym_expr=sym_expr,
+                                        sort_cols=[dt, keys[0]] if dt else None)
     else:
         if dt:
             df = df.sort([dt, keys[0]])  # 物化存储时间优先
-        write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt, clean=True)
+        write_all(df, out_dir, pkeys, gran=gran, dt_col=dt, clean=True)
     # 物化成功 → resolve 收口：铸版本并记录**消费的合并事件**（own_event 带
     # 窗口展开后的 datetime_scope，供下游 tester 沿链增量）+ 出边水位对齐
     m = svc.graph.resolve("factor", name, extra={

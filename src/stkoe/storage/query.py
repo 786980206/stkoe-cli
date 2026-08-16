@@ -1,6 +1,7 @@
-"""查询内核：谓词解析 + 基于 stkoe_file_stats 的文件级裁剪
+"""存储层：查询内核——谓词解析 + 基于 stkoe_file_stats 的文件级裁剪。
 
-裁剪正确性不变式：无统计列必含，有统计列按 min/max 与查询范围是否相交判定。
+从 table/query.py 迁移。裁剪正确性不变式：无统计列必含，有统计列按
+min/max 与查询范围是否相交判定。
 """
 from __future__ import annotations
 

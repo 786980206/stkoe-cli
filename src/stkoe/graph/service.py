@@ -41,7 +41,7 @@ from .handlers import (
     TableHandler,
     TesterHandler,
 )
-from .model import ColumnMeta, FieldMeta, node_id, split_node_id
+from .model import ColumnMeta, FieldMeta, column_node_id, node_id, split_node_id
 from .store import GraphStore
 
 
@@ -768,29 +768,84 @@ class GraphService:
                 out.append(item.partition(":")[0])
         return out
 
+    def _resolve_col_meta(self, asset_id: str, col: str) -> dict:
+        """列元数据**引用解析**：沿 DERIVES 递归到定义点列节点，返回其完整 meta。
+
+        定义点（保存完整元数据）：源头列（table/index）、fieldset 自建字段
+        （带 formula）、factor 因子列、feature 公式定义；链路中间层
+        （panel/sample/factor keys/tester 透传列）不重复存储——改源头列说明，
+        下游 meta 自动反映。结构性覆盖（as_index/window_size）沿路径叠加。
+        """
+        cid = column_node_id(asset_id, col)
+        node = self.store.get_node(cid)
+        if node is None:
+            return ColumnMeta.from_dict({"name": col}).to_dict()
+        path = [node]
+        seen = {cid}
+        cur_id = cid
+        while True:
+            nxt_id = None
+            for d in self.store.deps_of(cur_id, rel_type="DERIVES"):
+                if d["target"] not in seen \
+                        and self.store.get_node(d["target"]) is not None:
+                    nxt_id = d["target"]
+                    break
+            if nxt_id is None:
+                break
+            nxt = self.store.get_node(nxt_id)
+            path.append(nxt)
+            seen.add(nxt_id)
+            # 定义点终止：源头资产（table/index/feature）或带 formula 的字段/因子列
+            if nxt.get("asset_type") in ("table", "index", "feature") \
+                    or nxt.get("formula"):
+                break
+            cur_id = nxt_id
+        src = path[-1]
+        meta: dict = {"name": col}
+        for k in ("display_name", "description", "data_type", "unit", "formula",
+                  "tags", "validated"):
+            v = src.get(k)
+            if v is not None and v != "":
+                meta[k] = v
+        if not meta.get("display_name"):
+            meta["display_name"] = col
+        # 结构映射（source_table/source_field）从 DERIVES 第一跳推导——列节点的
+        # 直接上游即其来源（panel.x ← index.x → source_table="index"）；源头
+        # 列节点不存该信息（对源头无意义）
+        first = self.store.deps_of(cid, rel_type="DERIVES")
+        if first:
+            tgt = self.store.get_node(first[0]["target"])
+            if tgt is not None:
+                src_asset = (tgt.get("asset") or "").split(":", 1)[-1]
+                if src_asset:
+                    meta["source_table"] = src_asset
+                if tgt.get("name"):
+                    meta["source_field"] = tgt["name"]
+        meta["as_index"] = any(bool(p.get("as_index")) for p in path)
+        meta["window_size"] = max(
+            (int(p.get("window_size") or 0) for p in path), default=0)
+        return ColumnMeta.from_dict(meta).to_dict()
+
     def _panel_columns(self, node: dict) -> list[dict]:
-        """派生列：index 列优先（keys 标 as_index），member 表列同名跳过。"""
+        """派生列清单：index 列优先（keys 标 as_index），member 表列同名跳过。
+
+        列顺序 = index 列 + 成员表列（去重）；**列元数据经列节点图引用解析**
+        （``_resolve_col_meta``）——完整元数据只在源头（table/index）定义点保存，
+        下游不重复存储，改源头列说明全链自动反映。
+        """
         keys = set(node.get("keys") or [])
-        cols: list[dict] = []
-        seen: set[str] = set()
+        names: list[str] = []
         index = node.get("index", "").split(":", 1)[1]
         idx = self._require_node("index", index)
         for c in idx.get("columns") or []:
-            cc = dict(c)
-            cc.update({"source_table": index, "source_field": cc["name"],
-                       "as_index": cc["name"] in keys})
-            cols.append(cc)
-            seen.add(cc["name"])
+            names.append(c["name"])
         for t in (node.get("tables") or {}):
             tnode = self._require_node("table", t)
             for c in tnode.get("columns") or []:
-                if c["name"] in seen:
-                    continue
-                cc = dict(c)
-                cc.update({"source_table": t, "source_field": cc["name"],
-                           "as_index": cc["name"] in keys})
-                cols.append(cc)
-                seen.add(cc["name"])
+                if c["name"] not in names:
+                    names.append(c["name"])
+        nid = node_id("panel", node.get("name", ""))
+        cols = [self._resolve_col_meta(nid, cname) for cname in names]
         return self._norm_cols(cols)
 
     def _panel_hash(self, node: dict) -> str:

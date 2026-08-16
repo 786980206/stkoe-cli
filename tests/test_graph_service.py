@@ -1658,3 +1658,71 @@ class TestReviewFixes:
         assert fnode["valid"] is False
         f = svc.fieldset_meta_field("fs1", "x2")
         assert f["validated"] is False  # 公式变更 → validated 复位
+
+
+class TestColMetaReference:
+    """列元数据引用化：源头列（table/index）为定义点，链路列经 DERIVES 引用。"""
+
+    def _chain(self, svc):
+        for sub, d in (("index", "index"), ("table", "m1")):
+            os.makedirs(os.path.join(svc.data_dir, sub, d), exist_ok=True)
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
+                      "x": [1.0, 2.0]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "data.parquet"))
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "price": [1.5, 2.5]}).write_parquet(
+            os.path.join(svc.data_dir, "table", "m1", "data.parquet"))
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.panel_update("ds1")
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "x * 2.0")
+        svc.fieldset_check("fs1", "x2")
+        svc.fieldset_update("fs1")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.sample_update("sp1")
+        svc.feature_add("f1", "x * 2.0")
+        svc.feature_update("f1")
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.factor_update("fac1")
+
+    def test_source_col_meta_propagates_down_chain(self, svc):
+        """改源头列 meta（index col --description/--unit）→ panel/sample/factor
+        对应列 meta 自动反映（引用解析，不重复存储）。"""
+        self._chain(svc)
+        svc.index_col("index", "x", description="因子输入", unit="元")
+        # panel 列引用 index 列
+        pcols = {c["name"]: c for c in svc.panel_meta("ds1")["columns"]}
+        assert pcols["x"]["description"] == "因子输入"
+        assert pcols["x"]["unit"] == "元"
+        assert pcols["x"]["source_table"] == "index"
+        # sample 视图列（透传）同样反映
+        scols = {c["name"]: c for c in svc.sample_meta("sp1")["columns"]}
+        assert scols["x"]["description"] == "因子输入"
+        assert scols["x"]["unit"] == "元"
+        # factor 视图列
+        fcols = {c["name"]: c for c in svc.factor_meta("fac1")["columns"]}
+        assert fcols["x"]["description"] == "因子输入"
+        # 成员表列（price）meta 引用 m1 源头
+        svc.table_col("m1", "price", description="收盘价", unit="元")
+        pcols2 = {c["name"]: c for c in svc.panel_meta("ds1")["columns"]}
+        assert pcols2["price"]["description"] == "收盘价"
+        assert pcols2["price"]["source_table"] == "m1"
+
+    def test_fieldset_field_meta_is_definition_point(self, svc):
+        """fieldset 自建字段（定义点 b）：display_name/unit 保存在字段定义，
+        经列节点图可见且不被源头覆盖。"""
+        self._chain(svc)
+        svc.fieldset_set_field("fs1", "x2", display_name="翻倍因子", unit="倍")
+        pcols = {c["name"]: c for c in svc.panel_meta("ds1")["columns"]}
+        assert "x2" not in pcols  # 字段列不在 panel
+        scols = {c["name"]: c for c in svc.sample_meta("sp1")["columns"]}
+        assert scols["x2"]["display_name"] == "翻倍因子"
+        assert scols["x2"]["unit"] == "倍"
+        assert scols["x2"]["formula"] == "x * 2.0"
+        assert scols["x2"]["validated"] is True
+        # 字段列 DERIVES → 公式引用列（x）
+        derives = svc.store.deps_of("column:fieldset:fs1.x2", rel_type="DERIVES")
+        assert [d["target"] for d in derives] == ["column:panel:ds1.x"]

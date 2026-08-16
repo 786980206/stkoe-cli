@@ -252,6 +252,27 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
   （tempfile.mkdtemp），残留目录不再复用
 - 文档：AGENTS.md
 
+### 2026-08 评审修复批次 2：列元数据引用化——源头列 meta 沿 DERIVES 全链自动反映
+
+- **设计**：列完整元数据只在**定义点**保存——(a) table/index 源头列
+  (b) fieldset 自建 fields（带 formula）(c) factor 因子列 (d) feature 公式定义；
+  链路中间层（panel/sample/factor keys/tester 透传列）不重复存储，输出时沿
+  列节点图 DERIVES 引用获取
+- **`_resolve_col_meta(asset_id, col)`**：从列节点沿 DERIVES 递归到定义点列节点
+  （终止条件：table/index/feature 资产列，或带 formula 的字段/因子列），返回
+  源头完整 meta（display_name/description/unit/tags/data_type/formula/validated）
+  + 沿路径叠加结构性覆盖（as_index OR、window_size max）；
+  **source_table/source_field 从 DERIVES 第一跳推导**（列的直接上游即其来源，
+  源头列节点不存该信息）——panel 物化的 join 映射依赖它
+- **接入**：`_panel_columns` 改引用解析（列顺序仍 index 列 + 成员列去重）——
+  panel/sample/factor 的 meta.columns 全链打通；字段列（x2）仍走
+  `_sample_view_cols` 的 FieldMeta 分支（字段定义点，validated 保留）
+- **行为收益**：`index col`/`table col` 改源头列 description/unit → panel/sample/
+  factor meta 自动反映（此前各节点存副本，改源头后下游仍是旧值——一致性 bug）
+- 测试：TestColMetaReference 2 例（源头列 meta 沿链传播 + 字段定义点不被源头
+  覆盖）；全量 255 用例绿
+- 文档：AGENTS.md
+
 ### 2026-08 评审修复批次 1：成员列冲突校验 / tester 键列推断 / 元数据不置脏 / 增量惰性流式 / 物化排序时间优先
 
 - **① panel 成员列冲突校验**（`panel_add`）：成员表之间同名列 → 报错

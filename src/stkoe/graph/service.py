@@ -965,10 +965,11 @@ class GraphService:
             rows = df_inc.height
         else:
             joined, _ = self._panel_lazy(name, live=True)
-            rows = joined.select(pl.len()).collect().item()
             if dt:
                 joined = joined.sort([dt, keys[0]])  # 物化存储时间优先
-            self._write_partitioned(joined, out_dir, pkeys, gran=gran, dt_col=dt)
+            df = joined.collect()  # 一次物化（rows 计数与分桶写盘共用，不重复 join）
+            rows = df.height
+            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
         m = self.graph.resolve("panel", name, extra={
             "dependency_hash": self._panel_hash(node),
             "materialized_at": _now_iso(),
@@ -1335,10 +1336,11 @@ class GraphService:
         else:
             base, _ = self._panel_lazy(panel)
             out = engine.scan(base, keys, fields)
-            rows = out.select(pl.len()).collect().item()
             if dt:
                 out = out.sort([dt, keys[0]])  # 物化存储时间优先
-            self._write_partitioned(out, out_dir, pkeys, gran=gran, dt_col=dt)
+            df = out.collect()  # 一次物化（rows 计数与分桶写盘共用，不重复求值）
+            rows = df.height
+            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
         m = self.graph.resolve("fieldset", name, extra={
             "dependency_hash": self._fieldset_hash(node),
             "materialized_at": _now_iso(),
@@ -1708,9 +1710,16 @@ class GraphService:
 
         ``partition_keys=["part"]``（时间桶）：按 ``materialize_partition`` 粒度从
         ``dt_col`` 提取桶值（yearly→YYYY、monthly→YYYY-MM、daily→YYYY-MM-DD，
-        String/ISO 前缀切片）生成 ``part`` 列后写 ``part=<v>/data.parquet``。
-        分区文件内**保留分区列**（读取 hive_partitioning=True 时用文件列，类型/列序不变）。
-        接受 LazyFrame 时用 ``sink_parquet`` **流式落盘**（全量物化不整表入内存）。
+        String/ISO 前缀切片）生成 ``part`` 列后写 ``part=<v>/`` 目录。
+
+        **原生 Hive 分区写出**（polars ≥1.43 的 ``pl.PartitionBy``）：一次流式求值
+        即按桶落盘——不整表入内存、不逐桶重算上游 lazy 计划（对 LazyFrame 逐桶
+        ``filter(...).sink_parquet()`` 会让每桶重新执行整条 join 链，粗桶 × 大表时
+        成本随桶数线性放大，曾致 1852 万行 × yearly 37 桶的 panel 全量物化卡死）。
+        ``include_key=True``：**文件内保留 part 列**（String，由 with_columns 生成）
+        ——hive_partitioning 读取时文件列优先，part 恒为 String；若 include_key=False，
+        目录值会被推断为 Int64（如 ``part=2024``），与增量数据（String）类型不一致，
+        增量合并/``is_in`` 过滤会失败。
         """
         lf = df_or_lf.lazy() if isinstance(df_or_lf, pl.DataFrame) else df_or_lf
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1722,10 +1731,8 @@ class GraphService:
             cut = {"yearly": 4, "monthly": 7, "daily": 10}.get(gran, 4)
             lf = lf.with_columns(
                 pl.col(dt_col).cast(pl.String).str.slice(0, cut).alias("part"))
-        for val in lf.select(key).unique().collect()[key].to_list():
-            sub = out_dir / f"{key}={val}"
-            sub.mkdir(parents=True, exist_ok=True)
-            lf.filter(pl.col(key) == pl.lit(val)).sink_parquet(sub / "data.parquet")
+        lf.sink_parquet(pl.PartitionBy(out_dir, key=key, include_key=True),
+                        mkdir=True)
 
     def _upstream_scope(self, node: dict) -> tuple[list[str], list[str] | None] | None:
         """最近上游（**直接依赖**）积累事件的范围：``([lo, hi], symbols)``。

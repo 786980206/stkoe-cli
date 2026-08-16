@@ -384,8 +384,9 @@ ISO 日期 `YYYY-MM-DD`、字符串字面量。其余写法报错。
 
 panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_partition`**（`yearly` 默认 /
 `monthly` / `daily`）按**时间桶**分桶落盘：`part=<YYYY>`（yearly）/ `part=<YYYY-MM>`（monthly）/
-`part=<YYYY-MM-DD>`（daily），桶目录 `part=<v>/data.parquet`（文件内保留 `part` 列，
-读取 hive 分区还原后**对外剔除**——get 返回列集合与实时视图一致）。与 index 物理是否分区无关；
+`part=<YYYY-MM-DD>`（daily），桶目录 `part=<v>/`（polars `PartitionBy` 原生分区写出，
+文件名为序号 `<n>.parquet`；文件内保留 `part` 列，读取 hive 分区还原后**对外剔除**——
+get 返回列集合与实时视图一致）。与 index 物理是否分区无关；
 `materialize_partition` 未知 / 无时间键 → 单文件兜底。增量物化按 datetime 区间删受影响桶
 并保留桶内区间外旧行合并写回（桶粒度粗于区间，见 §11）。
 

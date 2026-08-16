@@ -114,8 +114,8 @@ src/stkoe/
    （`assert_ready` BFS 全链 valid）；源头不齐失败
 2. **下游物化按 index 的 `materialize_partition` 时间桶分区**：panel/fieldset/factor/test
    统一继承其 index 的物化粒度（yearly/monthly/daily，默认 yearly）分桶落盘
-   （`part=<YYYY>[/<YYYY-MM>[/<YYYY-MM-DD>]]/data.parquet`，文件内保留 part 列；
-   与 index 物理是否分区无关）；对外读取剔除 part 列（`_scan_materialized`）；
+   （`part=<YYYY>[/<YYYY-MM>[/<YYYY-MM-DD>]]/`，polars `PartitionBy` 原生分区写出，
+   文件内保留 part 列；与 index 物理是否分区无关）；对外读取剔除 part 列（`_scan_materialized`）；
    增量删桶时保留桶内区间外旧行合并写回（桶粒度粗于增量区间，见 `_rewrite_buckets`）
 3. **沿链增量物化**（不找最上游）：`_upstream_scope` 用 `graph._accumulated`（按出边
    required_version 水位取直接依赖未消费事件）得 datetime 区间；有区间且已有物化 → 分区
@@ -235,6 +235,30 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 perf: 物化分区写出改 polars PartitionBy——粗桶×大表全量物化 30x+（1852 万行 panel 10+ 分钟 → 19s）
+
+- **背景**：真实数据暴露——`cnstk_ixday` 1852 万行、数据跨 1990-2026（37 个 yearly
+  桶），panel 全量物化 **10+ 分钟未完成**（逐桶写盘阶段才写出第一个桶）
+- **根因**：`_write_partitioned` 对 LazyFrame 逐桶 `filter(part==v).sink_parquet()`——
+  每桶都**重新求值整个上游 lazy 计划**（panel 的 3 张 1852 万行成员表 asof join 链），
+  count(1 次) + unique(1 次) + 37 桶 filter = **39 次完整 join 链重算**；且 polars
+  streaming 不支持 asof join 时每次求值都全内存回退——又慢又吃内存
+- **修复**：改用 **`pl.PartitionBy` 原生分区写出**（polars ≥1.43：作为 `sink_parquet`
+  的**第一个位置参数**传入，`lf.sink_parquet(pl.PartitionBy(out_dir, key="part",
+  include_key=True), mkdir=True)`）——**一次流式求值**即按桶落盘（`part=<v>/<n>.parquet`），
+  不整表入内存、不逐桶重算
+- **两个关键约束**：① `include_key=True`——文件内保留 part 列（String）：若 False，
+  目录值会被 hive 读取推断为 Int64（如 `part=2024`），与增量数据（String）类型不一致，
+  `is_in` 过滤失败（曾踩）；② flat 无分区场景保持 `sink_parquet` 流式（不整表入内存）
+- **顺带修**：`panel_update`/`fieldset_update` 全量分支的
+  `rows = out.select(pl.len()).collect().item()` 重复全链求值 → 改为一次 collect 后
+  取 `df.height`（与分桶写盘共用，不重复 join）
+- **基准（真实数据 1852 万行）**：panel 全量物化 **10+ 分钟 → ~19s**；全链
+  （panel→fieldset→sample→feature→factor update）~40s 完成；factor check
+  18522212 行 ok
+- 测试：全量 276 用例绿（含物化布局/增量删桶/跨年桶断言适配）；文档：README
+  §6.5（polars PartitionBy 分区写出）、AGENTS.md 架构要点 #2
 
 ### 2026-08 列级血缘粒度收敛——tester 去列级血缘 / factor 只留因子列 / fieldset 字段血缘对账自愈
 

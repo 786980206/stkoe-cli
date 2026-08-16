@@ -366,6 +366,36 @@ class TestEventFlow:
         # index 的 version_list 事件进入 ds1 的 version_list
         assert m["version_list"][str(m["version"])]["symbol_scope"] == ["a"]
 
+    def test_resolve_records_both_actions(self, lineage):
+        """resolve 时 upsert/delete 同时积累：各记一条版本事件（不丢动作/范围语义）。"""
+        IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
+            action="upsert", symbol_scope=["a"], datetime_scope=["d1"]))
+        IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
+            action="delete", symbol_scope=["b"], datetime_scope=["d2"]))
+        acc = lineage.accumulated("panel", "ds1")
+        assert acc["upsert"] is not None and acc["delete"] is not None
+        before = len(PanelHandler.meta(lineage, "ds1")["version_list"])
+        m = PanelHandler.update(lineage, "ds1")
+        vl = m["version_list"]
+        assert len(vl) == before + 2  # 一次重算，两类事件各 bump 一次
+        by_action = {e["action"]: e for e in vl.values()}
+        assert by_action["upsert"]["symbol_scope"] == ["a"]
+        assert by_action["delete"]["symbol_scope"] == ["b"]
+        assert by_action["delete"]["datetime_scope"] == ["d2"]
+
+    def test_resolve_own_event_field_scope(self, lineage):
+        """own_event：记录自身重算产出的变更（field_scope 用自身的），范围与积累并集。"""
+        IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(
+            action="upsert", symbol_scope=["a"], datetime_scope=["2024-01-05"]))
+        PanelHandler.update(lineage, "ds1")  # 事件经 ds1 传导到 fs1
+        m = lineage.resolve("fieldset", "fs1", own_event=DataChangeEvent(
+            action="upsert", field_scope=["ma5"]))
+        ev = m["version_list"][str(m["version"])]
+        assert ev["action"] == "upsert"
+        assert ev["field_scope"] == ["ma5"]   # 自身字段，而非上游列
+        assert ev["symbol_scope"] == ["a"]    # 范围取积累事件并集
+        assert ev["datetime_scope"] == ["2024-01-05"]
+
     def test_resolve_all_topo_order(self, lineage):
         v0 = lineage.get("factor", "fac1")["version"]
         IndexHandler.notify_change(lineage, "index", event=DataChangeEvent(

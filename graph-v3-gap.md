@@ -2,7 +2,8 @@
 
 > 对照基准：仓库根 `v3.0-def.py`（V3.0 初始设计定义）+ `graph-design.md`。
 > 状态：**P0/P1/P2 已落地**（范围化事件 + factor/test 增量物化 + 沿链增量物化 +
-> get 三态 + version_list 裁剪 + index 唯一性校验）；剩余可选项见文末。
+> get 三态 + version_list 裁剪 + index 唯一性校验）；E5 事件记录语义已修；
+> 剩余可选项见文末。
 
 ---
 
@@ -46,13 +47,20 @@
   （`_upstream_scope` 仍从源头收集，但中间节点自身的事件日志已开始积累）。
 - **性质**：`accumulate(version_list, required_version)` 的"水位之后"过滤现在全链可信。
 
-### E5 resolve 的"自身变更事件"记录语义混淆
+### E5【已修 ✅】resolve 的"自身变更事件"记录语义混淆
 
 - **定义**：update 后节点版本应体现"我消费了哪些上游事件"（下游据此感知）。
-- **当前**：`resolve` 里
-  `self._bump(props, accumulated["upsert"] or accumulated["delete"])`——
-  ① upsert/delete 同时存在时**只记一个**；② 把**上游的 field_scope** 原样当作自己的变更事件写入 version_list（对 fieldset 而言，记录的应是它重算产生的字段，而非上游字段名）。
-- **性质**：小出入，语义不严谨，不影响全量重算路径。
+- **当前（已修）**：
+  - upsert/delete 同时积累时**各记一条版本事件**（对齐源头 ``notify_change`` 的
+    "有增删记两个版本事件"约定，不丢动作与范围语义）；
+  - ``resolve(..., own_event=...)`` 支持 service 层传入自身变更事件：``field_scope``
+    用自身的（fieldset 记录重算出的字段名，而非上游列名）；symbol/datetime 范围
+    未指定时继承积累事件并集（None=全集）——下游 ``_upstream_scope`` 沿链取
+    datetime 范围不丢；
+  - ``_bump`` 支持链式铸版本（version_list 基底显式传入），一次 resolve 多事件
+    连续 bump。
+- 测试：``test_resolve_records_both_actions``（两类各记一条 + 动作/范围断言）、
+  ``test_resolve_own_event_field_scope``（own field_scope + 范围继承）。
 
 ### E6【已修 ✅】version_list 无限增长、无裁剪
 

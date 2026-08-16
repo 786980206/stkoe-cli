@@ -985,7 +985,10 @@ class GraphService:
         m = self.graph.resolve("fieldset", name, extra={
             "dependency_hash": self._fieldset_hash(node),
             "materialized_at": _now_iso(),
-        })
+        }, own_event=DataChangeEvent(
+            action="upsert",
+            field_scope=[f.name for f in fields],  # 记录自身重算的字段，而非上游列
+        ))
         return {"name": name, "materialized": True, "valid": True, "rows": rows,
                 "fields_count": len(fields), "version": m["version"]}
 

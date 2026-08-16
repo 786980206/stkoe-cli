@@ -199,6 +199,25 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 fix: resolve 自身变更事件记录语义（E5）+ upsert/delete 各记一条
+
+- **E5-1 upsert/delete 同存只记一条**：`resolve` 原实现
+  `_bump(props, accumulated["upsert"] or accumulated["delete"])` 短路丢 delete；
+  改为 `_record_events` 把两类积累事件**各记一条版本事件**（对齐源头 notify_change
+  的"有增删记两个版本事件"约定，不丢动作与范围语义）；`_bump` 支持链式铸版本
+  （version_list 基底显式传入，一次 resolve 多事件连续 bump，幂等性不变）
+- **E5-2 上游 field_scope 原样照抄**：`resolve` 新增 `own_event` 参数——service 层
+  传入自身变更事件时，记录主体的 `field_scope` 用自身的（`fieldset_update` 传
+  `DataChangeEvent(field_scope=[已校验字段名])`，记录"我重算产出"而非上游列名）；
+  symbol/datetime 未指定时继承积累事件并集（None=全集）——保证下游
+  `_upstream_scope` 沿链取 datetime 范围不丢
+- **修链上范围丢失 bug**：own_event 范围继承初版用 `_union(None, x)` 会误吞为全集
+  （fieldset 记录的事件丢 datetime → factor/test 增量回退全量，2 例回归暴露）；
+  改为"own 未指定才继承积累范围"，85 例 graph 测试全绿
+- 测试：`test_resolve_records_both_actions`（两类各记一条 + 动作/范围断言）、
+  `test_resolve_own_event_field_scope`（own field + 范围继承）
+- 文档：graph-v3-gap.md E5 标 ✅
+
 ### 2026-08 冗余清理：删除 V2.0 死代码 controller（业务只剩 GraphService 一份）
 
 - **删除 6 个死 controller**（约 2500 行）：`src/stkoe/{dataset,fieldset,sample,feature,

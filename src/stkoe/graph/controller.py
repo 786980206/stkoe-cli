@@ -20,7 +20,7 @@ from .errors import (
     CycleError,
     DependencyError,
 )
-from .events import accumulate, event_from_kwargs, merge_events
+from .events import _union, accumulate, event_from_kwargs, merge_events
 from .model import (
     ASSET_TYPES,
     TYPE_TO_LABEL,
@@ -85,14 +85,17 @@ class GraphController:
         props = {k: v for k, v in props.items() if k != "id"}
         return AssetMeta.from_dict(props).to_dict()
 
-    def _bump(self, props: dict, event: DataChangeEvent) -> dict:
+    def _bump(self, props: dict, event: DataChangeEvent,
+              version_list: dict | None = None) -> dict:
         """铸新版本（高精度时间戳）+ 事件入 version_list（返回增量属性）。
 
         顺带按下游消费水位裁剪 version_list：所有下游边 ``required_version`` 之前
         的事件已被下游消费，可安全删除，防节点属性随版本无限增长。
+        ``version_list`` 显式传入时以其为基底（resolve 一次记多条事件时链式 bump）。
         """
         version = new_version()
-        version_list = dict(props.get("version_list") or {})
+        version_list = dict(version_list if version_list is not None
+                            else (props.get("version_list") or {}))
         version_list[str(version)] = event.to_dict()
         self._prune_version_list(props, version_list)
         return {
@@ -449,12 +452,46 @@ class GraphController:
         """公开接口：该资产积累的更新事件（on_change 输出形态）。"""
         return self._accumulated(self._require(asset_type, name))
 
+    def _record_events(self, accumulated: dict,
+                       own_event: DataChangeEvent | None) -> list[DataChangeEvent]:
+        """resolve 铸版本时记录的「自身变更事件」列表。
+
+        - 默认：积累的 upsert/delete **各记一条**（不丢动作与范围语义，对齐源头
+          ``notify_change`` 的"有增删记两个版本事件"约定）；
+        - ``own_event`` 提供时（service 层知道自身重算产出）：以自身事件为记录主体，
+          ``field_scope`` 用自身的（如 fieldset 重算出的字段名，而非上游列名），
+          symbol/datetime 范围与积累事件**并集**（None=全集），下游感知不丢范围。
+        """
+        if own_event is not None:
+            # own_event 的 symbol/datetime 未指定（None）时继承积累事件的范围；
+            # 显式指定时与积累事件并集（_union 的 None=全集 语义仍成立）
+            symbol = own_event.symbol_scope
+            datetime = own_event.datetime_scope
+            for ev in (accumulated["upsert"], accumulated["delete"]):
+                if ev is None:
+                    continue
+                symbol = _union(symbol, ev.symbol_scope) if symbol is not None \
+                    else ev.symbol_scope
+                datetime = _union(datetime, ev.datetime_scope) if datetime is not None \
+                    else ev.datetime_scope
+            return [DataChangeEvent(
+                action=own_event.action or "upsert",
+                symbol_scope=symbol,
+                datetime_scope=datetime,
+                field_scope=own_event.field_scope,
+            )]
+        return [ev for ev in (accumulated["upsert"], accumulated["delete"])
+                if ev is not None]
+
     def resolve(self, asset_type: str, name: str, *, mark_materialized: bool = True,
-                extra: dict | None = None) -> dict:
+                extra: dict | None = None,
+                own_event: DataChangeEvent | None = None) -> dict:
         """重算单节点：积累事件 → storage 物化 → 版本递增 + 出边水位对齐。
 
-        - 有积累事件时：铸新版本并把合并事件写入 version_list（下游据此感知变更）；
-          无积累事件（如定义变更后的首次校验）只置 valid/materialized，不空 bump；
+        - 有积累事件时：铸新版本并把合并事件写入 version_list（下游据此感知变更；
+          upsert/delete 同时存在各记一条，``own_event`` 可替换记录内容，见
+          ``_record_events``）；无积累事件（如定义变更后的首次校验）只置
+          valid/materialized，不空 bump；
         - ``mark_materialized=False``：无物化资产（sample/feature）不置 materialized；
         - ``extra``：并入节点 extra（物化哈希/水位等），不额外 bump；
         - 出边 required_version 对齐为被依赖方当前版本。
@@ -475,8 +512,11 @@ class GraphController:
             cur_extra.update(extra)
             patches["extra"] = cur_extra
         if accumulated["upsert"] is not None or accumulated["delete"] is not None:
-            patches.update(self._bump(
-                props, accumulated["upsert"] or accumulated["delete"]))
+            cur = props
+            for ev in self._record_events(accumulated, own_event):
+                bumps = self._bump(cur, ev, version_list=cur.get("version_list"))
+                patches.update(bumps)
+                cur = {**cur, **bumps}
         with self._store.txn():
             self._store.patch_node(nid, **patches)
             for e in self._store.deps_of(nid):

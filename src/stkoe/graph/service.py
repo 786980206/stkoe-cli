@@ -969,7 +969,8 @@ class GraphService:
                 joined = joined.sort([dt, keys[0]])  # 物化存储时间优先
             df = joined.collect()  # 一次物化（rows 计数与分桶写盘共用，不重复 join）
             rows = df.height
-            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
+            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt,
+                                    clean=True)
         m = self.graph.resolve("panel", name, extra={
             "dependency_hash": self._panel_hash(node),
             "materialized_at": _now_iso(),
@@ -1340,7 +1341,8 @@ class GraphService:
                 out = out.sort([dt, keys[0]])  # 物化存储时间优先
             df = out.collect()  # 一次物化（rows 计数与分桶写盘共用，不重复求值）
             rows = df.height
-            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
+            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt,
+                                    clean=True)
         m = self.graph.resolve("fieldset", name, extra={
             "dependency_hash": self._fieldset_hash(node),
             "materialized_at": _now_iso(),
@@ -1705,7 +1707,8 @@ class GraphService:
     @staticmethod
     def _write_partitioned(df_or_lf: pl.DataFrame | pl.LazyFrame, out_dir: Path,
                            partition_keys: list[str],
-                           gran: str = "", dt_col: str = "") -> None:
+                           gran: str = "", dt_col: str = "",
+                           *, clean: bool = False) -> None:
         """物化落盘：按分区键写 hive 目录 ``key=value/``；无分区键 → 单文件。
 
         ``partition_keys=["part"]``（时间桶）：按 ``materialize_partition`` 粒度从
@@ -1720,7 +1723,17 @@ class GraphService:
         ——hive_partitioning 读取时文件列优先，part 恒为 String；若 include_key=False，
         目录值会被推断为 Int64（如 ``part=2024``），与增量数据（String）类型不一致，
         增量合并/``is_in`` 过滤会失败。
+
+        ``clean=True``（**全量物化**）：写前清空 ``out_dir``——``PartitionBy`` 只写
+        数据里存在的桶、**不删除新数据中已消失的旧桶目录**（整年数据被删后全量
+        重写会残留陈旧桶的 phantom 行；旧逐桶写同样如此）；数据为空时落一个保留
+        schema 的空 ``data.parquet``（hive 桶目录不存在，读路径不因"无 parquet
+        文件"报错）。增量合并（``_rewrite_buckets``）不传 clean——已按受影响桶
+        精确删除，不能动未受影响桶。
         """
+        empty = isinstance(df_or_lf, pl.DataFrame) and df_or_lf.height == 0
+        if clean:
+            shutil.rmtree(out_dir, ignore_errors=True)
         lf = df_or_lf.lazy() if isinstance(df_or_lf, pl.DataFrame) else df_or_lf
         out_dir.mkdir(parents=True, exist_ok=True)
         if not partition_keys:
@@ -1731,6 +1744,9 @@ class GraphService:
             cut = {"yearly": 4, "monthly": 7, "daily": 10}.get(gran, 4)
             lf = lf.with_columns(
                 pl.col(dt_col).cast(pl.String).str.slice(0, cut).alias("part"))
+        if empty:
+            lf.sink_parquet(out_dir / "data.parquet")
+            return
         lf.sink_parquet(pl.PartitionBy(out_dir, key=key, include_key=True),
                         mkdir=True)
 
@@ -1986,7 +2002,8 @@ class GraphService:
         else:
             if dt:
                 df = df.sort([dt, keys[0]])  # 物化存储时间优先
-            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
+            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt,
+                                    clean=True)
         # 物化成功 → resolve 收口：铸版本并记录**消费的合并事件**（own_event 带
         # 窗口展开后的 datetime_scope，供下游 test 沿链增量）+ 出边水位对齐
         m = self.graph.resolve("factor", name, extra={
@@ -2385,7 +2402,8 @@ class GraphService:
             df = self._tester_build(node)
             if dt:
                 df = df.sort([dt, keys[0]])  # 物化存储时间优先
-            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
+            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt,
+                                    clean=True)
         cols = [{"name": c, "display_name": c, "data_type": str(t)}
                 for c, t in zip(df.columns, df.dtypes)]
         # 物化成功 → resolve 收口：铸版本并记录消费的合并事件（带 datetime_scope，

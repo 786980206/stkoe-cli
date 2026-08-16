@@ -236,6 +236,28 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 fix: 全量物化写前清空物化目录——清理新数据中已消失的陈旧桶（phantom 行）
+
+- **背景**：真实数据增量验证暴露——删除 flat 索引文件（removed 事件无分区值 →
+  datetime_scope=None）→ 下游沿链**全量**重写时，`PartitionBy` 只写数据里存在的
+  桶、**不删除缺失的旧桶目录**：add 轮开出的 part=2027 桶在删数据后残留 3 行
+  phantom（panel/fieldset 各残留，factor 因 sample ∩ index 键集合正确）——
+  **既有漏洞，非 PartitionBy 引入**（旧逐桶写同样不清理）
+- **修复**：`_write_partitioned` 新增 `clean` 参数，panel/fieldset/factor/tester
+  4 个**全量**分支传 `clean=True`——写前 `rmtree(out_dir)` 再落盘；数据为空时落
+  保留 schema 的空 `data.parquet`（hive 桶目录不存在，读路径不因"无 parquet 文件"
+  报错）。增量合并（`_rewrite_buckets`）不传 clean——已按受影响桶精确删除，
+  不能动未受影响桶
+- **实测（真实数据 1852 万行）**：加 12 行测试文件（3 新标的 × 2024 三天 +
+  2027 一天）→ index update + `graph update --all` **16.2s 全链增量**（2024 桶
+  重写旧行保留 + 2027 新桶开出、行数精确 +12、factor check 18522224 ok）→ 删
+  文件恢复：**修复前** panel/fieldset 残留 3 行 phantom（part=2027 陈旧桶，
+  mtime 为 add 轮）；**修复后** 37 桶、part=2027 清除、18522212 行、factor check
+  18522212 ok——增量路径（有范围事件）不受 PartitionBy 影响，本次修复的是
+  无范围删除事件 → 全量重写的陈旧桶清理
+- 测试：+2 例（全量清理已消失桶回归 / `_write_partitioned` 空数据 fallback 单元）；
+  全量 278 用例绿；文档：README §6.5/§14、AGENTS.md
+
 ### 2026-08 perf: 物化分区写出改 polars PartitionBy——粗桶×大表全量物化 30x+（1852 万行 panel 10+ 分钟 → 19s）
 
 - **背景**：真实数据暴露——`cnstk_ixday` 1852 万行、数据跨 1990-2026（37 个 yearly

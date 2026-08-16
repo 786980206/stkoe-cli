@@ -530,6 +530,50 @@ class TestPanelGraph:
         assert df.height == 3
         assert sorted(df["date"].to_list()) == ["2024-01-01", "2024-01-01", "2025-01-02"]
 
+    def test_full_update_cleans_stale_bucket(self, svc):
+        """全量重写清理新数据中已消失的桶目录。
+
+        PartitionBy 只写数据里存在的桶、不删除缺失的旧桶目录——删除 flat 索引文件
+        （removed 事件无分区值 → datetime_scope=None）→ 下游全量重写时，整年数据
+        消失的旧桶（part=2024）不得残留 phantom 行。
+        """
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        # 双年数据：2023 新文件 + 2024 既有文件 → 增量出两个桶
+        pl.DataFrame({"sym": ["a"], "date": ["2023-12-29"], "code": [9]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "old.parquet"))
+        svc.index_update("index")
+        svc.panel_update("ds1")
+        root = svc.data_dir / "panel" / "ds1"
+        assert (root / "part=2023").exists() and (root / "part=2024").exists()
+        assert svc.panel_get("ds1").height == 3
+
+        # 删除 2024 文件 → removed 事件（flat 无分区值 → 范围 None）→ panel 全量
+        os.remove(os.path.join(svc.data_dir, "index", "index", "data.parquet"))
+        svc.index_update("index")
+        svc.panel_update("ds1")
+        assert (root / "part=2023").exists()
+        assert not (root / "part=2024").exists(), "全量重写应清理新数据中已消失的桶"
+        df = svc.panel_get("ds1")
+        assert df.height == 1
+        assert df["date"].to_list() == ["2023-12-29"]
+
+    def test_write_partitioned_empty_clean_fallback(self, svc):
+        """全量物化数据为空：clean 写落保留 schema 的空 data.parquet（无桶目录），
+        读取路径不因"无 parquet 文件"报错（PartitionBy 空数据不产任何文件）。"""
+        out_dir = svc.data_dir / "panel" / "ds1"
+        df = pl.DataFrame({"sym": [], "date": [], "code": []},
+                          schema={"sym": pl.String, "date": pl.String,
+                                  "code": pl.Int64})
+        GraphService._write_partitioned(df, out_dir, ["part"], gran="yearly",
+                                        dt_col="date", clean=True)
+        assert not any(out_dir.glob("part=*")), "空物化不应残留桶目录"
+        assert (out_dir / "data.parquet").exists()
+        lf = GraphService._scan_materialized(out_dir)
+        assert lf.collect().columns == ["sym", "date", "code"]
+        assert lf.select(pl.len()).collect().item() == 0
+
     def test_panel_update_bumps_version_and_invalidates_curated(self, svc):
         """源头变化 → panel 置脏 + curated 失效 → update 铸版本恢复"""
         svc.table_add("m1")

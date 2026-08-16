@@ -388,7 +388,10 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
 文件名为序号 `<n>.parquet`；文件内保留 `part` 列，读取 hive 分区还原后**对外剔除**——
 get 返回列集合与实时视图一致）。与 index 物理是否分区无关；
 `materialize_partition` 未知 / 无时间键 → 单文件兜底。增量物化按 datetime 区间删受影响桶
-并保留桶内区间外旧行合并写回（桶粒度粗于区间，见 §11）。
+并保留桶内区间外旧行合并写回（桶粒度粗于区间，见 §11）。**全量物化写前清空物化目录**
+——`PartitionBy` 只写数据里存在的桶、不删除新数据中已消失的旧桶目录（整年数据被删后
+全量重写会残留陈旧桶的 phantom 行），故全量重写一律先清空再落盘；数据为空时落一个
+保留 schema 的空 `data.parquet`（读取路径不因"无 parquet 文件"报错）。
 
 - **粒度引导**：`index add` 登记扫描时若发现 index 数据**跨多年**且粒度仍为默认
   `yearly`，报告附带 `partition_hint` 提示——yearly 桶下增量重写按**整个年份桶**
@@ -940,7 +943,7 @@ gclient> t:<task_id>
 ## 14. 测试
 
 ```bash
-uv run pytest -q        # 默认全量 270 用例（graph 模块 + gRPC/资产任务版链路）
+uv run pytest -q        # 默认全量 278 用例（graph 模块 + gRPC/资产任务版链路）
 ```
 
 - 改动后优先只跑相关文件：`.venv/Scripts/python.exe -m pytest tests/test_graph.py tests/test_grpc.py -q`

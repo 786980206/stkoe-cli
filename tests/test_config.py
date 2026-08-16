@@ -28,6 +28,19 @@ def test_load_defaults(cfg_env):
         "dbt-manifest-file": ""}
 
 
+def test_serve_config_flag_sets_env(monkeypatch):
+    """serve --config <路径>：设置 STKOE_CONFIG（等价于环境变量方式）"""
+    import os
+
+    from stkoe.cli import _apply_config_flag
+
+    monkeypatch.delenv("STKOE_CONFIG", raising=False)
+    _apply_config_flag({"host": "127.0.0.1"})
+    assert "STKOE_CONFIG" not in os.environ
+    _apply_config_flag({"config": "C:/proj/my/stkoe.json"})
+    assert os.environ["STKOE_CONFIG"] == "C:/proj/my/stkoe.json"
+
+
 def test_save_then_load_merge(cfg_env):
     settings.save_config({"grpc-host": "0.0.0.0"})
     settings.save_config({"grpc-port": "9000"})

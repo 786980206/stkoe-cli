@@ -438,7 +438,7 @@ pending → running → succeeded
 
 | 命令 | 说明 |
 |---|---|
-| `stkoe serve [--host H] [--port P]` | 前台运行 gRPC 服务；缺省取 stkoe.json（默认 `127.0.0.1:9569`） |
+| `stkoe serve [--host H] [--port P] [--config <路径>]` | 前台运行 gRPC 服务；缺省取 stkoe.json（默认 `127.0.0.1:9569`）；`--config` 显式指定配置文件（等价于设 `STKOE_CONFIG` 环境变量） |
 | `stkoe config show` | 查看生效配置（含 config_file） |
 | `stkoe config set --<key> <value> ...` | 设置任意配置项（写入 stkoe.json） |
 | `stkoe table <action> <args...>` | table 命令（走 Execute 同步分发，行为与 `e:table ...` 一致） |
@@ -490,7 +490,7 @@ t:<task_id>
 
 ## 7. 配置（stkoe.json）
 
-- **查找优先级**：`STKOE_CONFIG` 环境变量 > `./stkoe.json` > `~/.stkoe/stkoe.json`
+- **查找优先级**：`STKOE_CONFIG` 环境变量（或 `stkoe serve --config <路径>`）> `./stkoe.json` > `~/.stkoe/stkoe.json`
 - **写入位置**：`STKOE_CONFIG` > `./stkoe.json`
 - **已知键**：
 

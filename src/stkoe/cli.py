@@ -1,13 +1,15 @@
 """stkoe 命令行入口
 
 命令：
-- ``stkoe serve [--host H] [--port P]``：前台运行 gRPC 服务（缺省取 stkoe.json 配置）
+- ``stkoe serve [--host H] [--port P] [--config <路径>]``：前台运行 gRPC 服务
+  （缺省取 stkoe.json 配置；``--config`` 显式指定配置文件，等价于设 STKOE_CONFIG）
 - ``stkoe config show``：查看生效配置
 - ``stkoe config set --<key> <value> ...``：设置任意配置项（写入 stkoe.json，
   键名保持连字符形态，如 ``--grpc-host 0.0.0.0`` → ``"grpc-host": "0.0.0.0"``）
 """
 from __future__ import annotations
 
+import os
 import sys
 
 from .args import parse_flags
@@ -18,11 +20,18 @@ def _print_json(obj) -> None:
     print(dumps_str(obj))
 
 
+def _apply_config_flag(kv: dict) -> None:
+    """``--config <路径>``：serve 启动时指定配置文件（等价于设 STKOE_CONFIG 环境变量）"""
+    if kv.get("config"):
+        os.environ["STKOE_CONFIG"] = str(kv["config"])
+
+
 def _cmd_serve(raw: list[str]) -> int:
     from .grpc.server import serve
     from .logutil import LOG
 
     kv = parse_flags(raw)
+    _apply_config_flag(kv)
     host = kv.get("host")
     port = int(kv["port"]) if kv.get("port") else None
     srv = serve(host=host, port=port)
@@ -128,7 +137,7 @@ def _cmd_graph(raw: list[str]) -> int:
 def _help() -> str:
     return (
         "用法: stkoe <command>\n"
-        "  serve [--host H] [--port P]     运行 gRPC 服务（缺省取 stkoe.json 配置）\n"
+        "  serve [--host H] [--port P] [--config <路径>]  运行 gRPC 服务（缺省取 stkoe.json 配置；--config 指定配置文件）\n"
         "  config show                     查看生效配置\n"
         "  config set --<key> <value> ...  设置任意配置项（写入 stkoe.json）\n"
         "  table <action> <args...>        table 命令（list/meta/add/set/get/delete，与 Execute 对齐）\n"

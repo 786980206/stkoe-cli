@@ -232,6 +232,14 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 feat(cli): stkoe serve 支持 --config 指定配置文件
+
+- `stkoe serve [--host H] [--port P] [--config <路径>]`：`--config` 显式指定配置文件
+  （启动前设置 STKOE_CONFIG 环境变量，等价于 `STKOE_CONFIG=... stkoe serve`；
+  生效配置查找优先级不变：`--config`/环境变量 > `./stkoe.json` > `~/.stkoe/stkoe.json`）
+- 测试：test_config.py +1 例（_apply_config_flag 设置/不设置环境变量）；全量 211 用例绿
+- 文档：api.md CLI 表 + §7 查找优先级、AGENTS.md
+
 ### 2026-08 feat(dbt): 配置 dbt-manifest-file——table/index add 自动应用 dbt 模型元数据
 
 - **配置键**：`stkoe config set --dbt-manifest-file <路径>`（StkoeConfig 新增已知键

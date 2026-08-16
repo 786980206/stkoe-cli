@@ -269,7 +269,7 @@ class TestIndexGraph:
         assert {n["type"] for n in svc.store.list_nodes()} == {"index", "table"}
 
     def test_index_add_requires_unique_keys(self, tmp_path):
-        """v3.0-def：index 的 (symbol, datetime) 组合必须唯一，重复拒绝登记"""
+        """V3.0 设计：index 的 (symbol, datetime) 组合必须唯一，重复拒绝登记"""
         import shutil
 
         base = os.path.join(os.environ.get("TEMP", "."), "gql_idx_unique")

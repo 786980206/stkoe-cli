@@ -1,4 +1,4 @@
-"""图数据导出为 Cytoscape elements payload（HTTP 接口与 tools/graph-viewer 共用）。
+"""图数据导出为 Cytoscape elements payload（Execute/CLI 与 portal 血缘共用）。
 
 ``build_payload`` / ``node_summaries`` 为纯函数：给定 GraphStore 即返回可序列化结构。
 """

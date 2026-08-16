@@ -1,10 +1,10 @@
 """graph 模块全流程测试：节点/边 CRUD、依赖约束、版本事件、血缘传播、handler。
 
-覆盖 graph-design.md §3/§4 的约定：
+覆盖 README.md §2 图设计的约定：
 - 节点 CRUD 与「无下游才可删除」约束（force 绕过）；
 - 版本/version_list 与 DataChangeEvent 积累合并；
 - notify_change → 下游置脏 → resolve/resolve_all 拓扑重算 + 边水位对齐；
-- v3.0-def.py 形态的 handler 全链路。
+- Handler 全链路（V3.0 设计形态）。
 """
 from __future__ import annotations
 
@@ -455,7 +455,7 @@ class TestEventFlow:
 
 
 # =====================================================================
-# Handler 全链路（v3.0-def.py 形态）
+# Handler 全链路（V3.0 设计形态）
 # =====================================================================
 
 class TestHandlers:

@@ -1,4 +1,4 @@
-"""图节点/边/事件数据模型（对应 v3.0-def.py 的节点定义）。
+"""图节点/边/事件数据模型（对应 V3.0 初始设计的节点定义）。
 
 节点在 graphqlite 中以 ``label = 资产类型``、``id = "<type>:<name>"`` 存储；
 通用属性 + 类型专属属性平铺在节点属性上（``AssetMeta.data`` 承载类型专属部分）。
@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields as _fields
 from typing import Any
 
-# 资产类型（与 v3.0-def.py GraphHandler.list 的 asset_type 对齐）
+# 资产类型（与 GraphHandler.list 的 asset_type 对齐）
 ASSET_TYPES: tuple[str, ...] = (
     "table", "index", "panel", "fieldset", "sample",
     "feature", "factor", "tester", "model", "stat",
@@ -243,7 +243,7 @@ class DependencyEdge:
         }
 
 
-# v3.0-def.py 的 AssetNode 即通用资产节点视图（本实现以 AssetMeta 承载）
+# 初始设计的 AssetNode 即通用资产节点视图（本实现以 AssetMeta 承载）
 AssetNode = AssetMeta
 
 

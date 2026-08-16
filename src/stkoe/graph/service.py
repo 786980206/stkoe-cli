@@ -298,7 +298,7 @@ class GraphService:
 
     def _change_events(self, asset_type: str, name: str, diffs: list,
                        cat: dict[str, dict]) -> list[DataChangeEvent]:
-        """物理变化 → 范围化事件（v3.0-def 语义，P0-1）。
+        """物理变化 → 范围化事件（V3.0 设计语义，P0-1）。
 
         - added/changed 文件 → ``action="upsert"``；removed 文件 → ``action="delete"``；
         - ``datetime_scope``：hive 分区路径含 ``<datetime_col>=<v>`` 时直接用分区值；
@@ -524,8 +524,8 @@ class GraphService:
 
     def _check_index_unique(self, name: str, *, symbol_col: str | None = None,
                             datetime_col: str | None = None) -> None:
-        """校验 index 物理数据的 ``(symbol_col, datetime_col)`` 组合唯一（v3.0-def
-        ``IndexHander.add``：index 是时间×标的的索引，不允许重复键）。"""
+        """校验 index 物理数据的 ``(symbol_col, datetime_col)`` 组合唯一（V3.0 设计
+        ``IndexHandler.add``：index 是时间×标的的索引，不允许重复键）。"""
         node = self.store.get_node(node_id("index", name)) or {}
         sym = symbol_col or node.get("symbol_col") or "sym"
         dt = datetime_col or node.get("datetime_col") or "date"
@@ -543,7 +543,7 @@ class GraphService:
         """注册 index（发现资产）：目录必须存在；已注册报 TableExistsError。
 
         ``--all`` 批量发现：扫描 ``index/`` 下未登记且含 parquet 的目录（同 table add --all）。
-        单表登记前校验 ``(symbol, datetime)`` 组合唯一（v3.0-def）。
+        单表登记前校验 ``(symbol, datetime)`` 组合唯一（V3.0 设计）。
         配置了 ``dbt-manifest-file`` 时先应用 manifest 元数据（参数显式指定覆盖）。
         """
         if all:

@@ -68,7 +68,7 @@ V2.0 用 SQLite catalog 的 `stkoe_depends` 表记录**一跳**依赖，无法�
 时间戳，纳秒，单调递增）/ version_list（version → 事件）/ materialized / valid /
 create_time / update_time / extra`。
 
-类型专属属性（对应 v3.0-def.py）：
+类型专属属性：
 
 | Label | 节点类 | 专属属性 |
 |---|---|---|
@@ -529,8 +529,7 @@ panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partit
   （依赖方 → 被依赖方），`join` 仅 table → panel 边带
 - `--node <type:name>` 只导出该节点上下游子图（`--depth N` 限制深度，须为正整数）；
   `graph nodes --type <t>` 供前端中心节点选择器使用
-- **可视化**：`tools/graph-viewer/`（Cytoscape.js 独立页）+ **portal 前端右上角
-  "血缘关系"抽屉**（Tauri 经 gRPC 拉取渲染）
+- **可视化**：**portal 前端右上角"血缘关系"抽屉**（Tauri 经 gRPC 拉取渲染）
 
 ## 7. 后台任务（`s:...`）
 
@@ -855,15 +854,15 @@ gclient> t:<task_id>
 - 哪些资产 update 会物化、如何按事件区间增量，见 §11；
 - portal 不应自行读写 `data_dir`/`catalog.db`——一律经服务 Execute 通道。
 
-## 14. 设计对照与实现出入（v3.0-def）
+## 14. 设计对照与实现出入（V3.0 初始设计）
 
-> 对照基准：仓库根 `v3.0-def.py`（V3.0 初始设计定义）+ 本文 §2 图设计。
+> 对照基准：V3.0 初始设计定义（原 `v3.0-def.py`，定义已内联下表）+ 本文 §2 图设计。
 > 状态：**P0/P1/P2 已落地**（范围化事件 + factor/test 增量物化 + 沿链增量物化 +
 > get 三态 + version_list 裁剪 + index 唯一性校验）；E5 事件记录语义已修；剩余可选项见 §3。
 
 ### 14.1 Event 增量更新逻辑出入
 
-| # | 定义（v3.0-def） | 当前实现 | 状态 |
+| # | 定义（初始设计） | 当前实现 | 状态 |
 |---|---|---|---|
 | E1 | 事件必须带 `symbol_scope`/`datetime_scope`/`field_scope`/`action` | `service._change_events` 从文件 diff 提取范围：hive 分区路径含 `<datetime_col>=<v>` 时用分区值，其余读变化文件 footer 的 datetime 列 min/max（只读元数据）；`datetime_scope` 统一为 **[min, max] 区间**；added/changed → upsert，removed → delete | ✅ 已修；剩余 `symbol_scope` 仍为 None（P2 可选，见 §3） |
 | E2 | 物理删除 → delete 事件 → 下游按范围删 | removed 文件 → `action="delete"`（范围来自 catalog 指纹 `partition_path` 分区值；flat 无分区则 None 全集）；一次 scan 有增删时**记两个版本事件** | ✅ 已修 |
@@ -875,7 +874,7 @@ gclient> t:<task_id>
 
 ### 14.2 其他出入（非 Event）
 
-| # | 定义（v3.0-def） | 当前实现 | 性质 |
+| # | 定义（初始设计） | 当前实现 | 性质 |
 |---|---|---|---|
 | G1 | Handler 的 `get`"物化且有效时才返回物理数据" | handler `get` 返回节点元数据（示例占位）；物理数据读取走 service 的 `xxx_get`（实时视图 / 物化 parquet） | 形态分工差异，行为正确 |
 | G2 | `IndexHandler.add` 校验 symbol/datetime 列**唯一性** | ✅ 已修：`_check_index_unique`（symbol+datetime 组合唯一校验） | 已修（P2-2） |
@@ -927,11 +926,10 @@ src/stkoe/
 │   ├── controller.py   # GraphController：CRUD + 依赖约束 + notify_change/resolve(_all)
 │   ├── service.py      # GraphService：table/index/panel/fieldset/sample/feature/factor/test
 │   │                  #   统一服务（登记/依赖/版本走 graph；实时视图 + 物化落盘）
-│   ├── handlers.py     # v3.0-def.py 形态的资产 Handler
+│   ├── handlers.py     # 资产 Handler（V3.0 设计形态）
 │   ├── version.py      # 高精度时间戳版本号
 │   └── errors.py
 └── task/               # 后台任务框架
-tools/graph-viewer/     # Cytoscape.js 血缘可视化（独立页）
 V2.0/                   # V2.0 全量备份（重构基线，勿改）
 v1.0/                   # 旧版参考实现（v0.5.1）
 ```

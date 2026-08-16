@@ -85,7 +85,7 @@ src/stkoe/
 │   ├── controller.py  # GraphController：资产 CRUD + 依赖约束 + notify_change/resolve(_all)
 │   ├── service.py     # GraphService：table/index/panel/fieldset/sample/feature/factor/test
 │   │                  #   统一服务（登记/依赖/版本走 graph；实时视图 + 物化落盘）
-│   ├── handlers.py    # 各资产 Handler（v3.0-def.py 形态：table/index/panel/fieldset/…/graph）
+│   ├── handlers.py    # 各资产 Handler（V3.0 设计形态：table/index/panel/fieldset/…/graph）
 │   └── errors.py      # AssetNotFound/Exists、DependencyError、CycleError 等
 └── task/              # 任务框架
     ├── model.py       # Task / TaskEvent / TaskResult / TaskContext
@@ -234,6 +234,20 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 refactor: 删除 v3.0-def.py 设计基准 + tools/graph-viewer 独立可视化工具
+
+- **`v3.0-def.py` 删除**（485 行 pydantic 初始设计定义）：无任何代码引用/执行，其定义
+  内容已内联进 README §14 对照表与各模块 docstring；代码/测试中的「v3.0-def.py 形态」
+  引用统一改为「V3.0 设计形态」等表述，`test_graph.py` 的 graph-design.md 残留引用
+  改指 README.md §2
+- **`tools/graph-viewer/` 删除**（Cytoscape.js 独立页：export.py + index.html + vendor
+  前端库 + sample-data.json）：血缘可视化已由 portal 前端"血缘关系"抽屉（Tauri 经
+  gRPC Execute 拉取 `graph/export.py` payload）承担，独立页无维护价值；
+  `src/stkoe/graph/export.py` 纯函数保留（Execute/CLI/portal 共用）
+- 文档：README §6.13 可视化/§14 对照基准与表头/§16 目录树、example.md 血缘可视化步骤、
+  AGENTS.md 目录结构注释同步清理
+- 测试：仅 docstring 调整，全量 211 用例绿
+
 ### 2026-08 docs: 文档整合——api.md / graph-design.md / graph-v3-gap.md 并入 README.md
 
 - **README.md 成为唯一入口文档**：整合原 4 份文档并去重——图设计（节点/边/版本/事件/
@@ -243,7 +257,8 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
   graph-v3-gap.md 已删除（git 历史可恢复）
 - **交叉引用收口**：AGENTS.md「API 文档同步」节改指 README.md §5-§13（原 api.md）；
   目录结构注释/当前状态改指 README.md §2；`graph/__init__.py` docstring 改指 README.md §2
-- 保留：`example.md`（全流程演练）、`AGENTS.md`（开发指南）、`v3.0-def.py`（设计对照基准）
+- 保留：`example.md`（全流程演练）、`AGENTS.md`（开发指南）；`v3.0-def.py` 设计对照
+  基准内容已并入 §14，文件于后续清理中删除
 
 ### 2026-08 refactor(cli): config show 改名 config get
 

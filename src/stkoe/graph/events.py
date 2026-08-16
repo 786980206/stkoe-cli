@@ -1,6 +1,6 @@
 """DataChangeEvent 合并与积累（血缘传播的核心算法）。
 
-规则（v3.0-def.py PanelHandler.update 语义）：
+规则（PanelHandler.update 语义）：
 - 上游 ``version_list`` 中 ``version > 边.required_version`` 的事件 = 积累的更新事件；
 - 按 action（upsert/delete）分两类合并：
   - symbol_scope / datetime_scope 取并集（None = 全集，吞并一切）
@@ -72,7 +72,7 @@ def accumulate(
     version_list: dict,
     required_version: int,
 ) -> dict[str, DataChangeEvent | None]:
-    """计算依赖方积累的更新事件（v3.0-def.py ``on_change`` 输出形态）。"""
+    """计算依赖方积累的更新事件（``on_change`` 输出形态）。"""
     return merge_events(events_after(version_list, required_version))
 
 

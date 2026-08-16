@@ -1,11 +1,11 @@
-"""各资产类型 Handler（对应 v3.0-def.py 的 TableHander/IndexHander/PanelHandler/...）。
+"""各资产类型 Handler（对应 V3.0 初始设计的 TableHandler/IndexHandler/PanelHandler/...）。
 
 本阶段每个 handler 都是 GraphController 的薄封装：
 - 节点/边的图账本（add/delete/set/meta/col/notify_change/update/resolve）全部真实；
 - 物理数据读取（``get`` 返回节点元数据）与物化（``materialize`` 走 storage 钩子）
   暂未接真实存储，流程可端到端跑通。
 
-Handler 形态沿用 v3.0-def.py：classmethod + 第一个参数为 controller。
+Handler 形态沿用 V3.0 初始设计：classmethod + 第一个参数为 controller。
 """
 from __future__ import annotations
 

@@ -207,9 +207,7 @@ stkoe> t:<task_id>                   # 回放订阅某任务事件流
 uv run -m stkoe graph lineage                      # Cytoscape elements JSON（全图）
 uv run -m stkoe graph nodes                        # 节点摘要（中心节点选择器用）
 uv run -m stkoe graph stats                        # 节点/边统计
-# 浏览器可视化（Cytoscape.js 独立页）：
-python tools/graph-viewer/export.py example-data/catalog.db --output example-data/graph.json
-# 然后 python -m http.server 打开 tools/graph-viewer/index.html 或拖入 JSON
+# portal 前端右上角"血缘关系"抽屉可交互查看（Tauri 经 gRPC 拉取同一 payload）
 ```
 
 本案例血缘链：`index/index + table/m1 → panel:ds1 → fieldset:fs1 → sample:sp1（+ index:idx2

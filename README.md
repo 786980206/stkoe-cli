@@ -47,13 +47,22 @@ stkoe 数据服务（gRPC）：管理**表 / 数据集 / 衍生指标 / 样本�
 
 ## 接下来要做什么（路线图）
 
-1. **panel 物化**：panel scan 落盘 + index 唯一性校验等物理细节
-2. **V2.0 清理**：任务版 table/dataset handler 切 graph、V2.0 controller 死代码评估
-3. **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
+已完成（见 AGENTS.md 变更记录）：
+- ✅ **panel 物化**（scan 落盘）+ index 唯一性校验等物理细节（P1/P2）
+- ✅ **V2.0 清理**：V2.0 controller 死代码删除（业务只剩 GraphService 一份）、
+  任务版 handler 全面切 graph
+- ✅ **版本/事件沉淀**：version_list 过期裁剪（按 consumed 水位）、事件合并
+  （upsert/delete 各记一条 + 自身变更事件 own_event，E5）
+- ✅ **增量物化闭环**：范围化事件（datetime 区间 + delete）+ 沿链增量重算 + get 三态
+
+剩余规划：
+1. **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
    （`(column) -[:DERIVES]-> (column)`）
-4. **版本/事件沉淀**：version_list 过期裁剪、事件合并的跨依赖精确并集
-5. **图算法能力**：graphqlite 内置算法（PageRank/中心性/连通分量）用于资产重要性分析
-6. **测试**：图模块更多边界用例 + gRPC 全链路回归
+2. **图算法能力**：graphqlite 内置算法（PageRank/中心性/连通分量）用于资产重要性分析
+3. **可选 P2**：symbol_scope 提取（读数据页，datetime 区间已够用）；
+   stat 是否纳入图资产（G9 设计决策，当前保持不进图）；
+   ModelNode 资产（G10 后续规划）
+4. **测试**：图模块更多边界用例 + gRPC 全链路回归（持续）
 
 ## 环境要求
 

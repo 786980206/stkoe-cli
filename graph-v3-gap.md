@@ -104,6 +104,13 @@
 2. **P1 ✅ 已落地**：panel/sample/feature update 统一走 `resolve`（铸版本 + 事件入 version_list +
    出边水位对齐）；**panel update 物化**（join 视图落盘 + get 读物化 + curated 失效回退）；
    **fieldset update 物化衍生字段**（keys + 已校验字段落盘 + 视图拼接读物化）。
-3. **P2 剩余**：panel/fieldset 物化的增量路径（当前全量重算 + curated 失效兜底，可复用 factor
-   的 `dt_range` 机制）；symbol_scope 提取（读数据页）；fieldset `fields` 变更的 curated 联动；
-   stat 是否纳入图资产；index 唯一性校验；version_list 裁剪（按 consumed 水位清理已消费事件）。
+3. **P2 ✅ 已落地（结论文本收敛）**：
+   - **panel/fieldset 物化的增量路径**（原"当前全量重算"已过时）：沿链增量覆盖**全部物化
+     资产**——`_upstream_scope` 取直接依赖积累事件 datetime 区间，panel/fieldset/factor/test
+     update 均支持"删区间重算 + 合并写回"（分区镜像 index：只替换受影响分区），
+     见 E3 与测试 `test_panel_update_incremental_by_scope` /
+     `test_fieldset_update_incremental_by_scope`；
+   - **index 唯一性校验**（G2 已修）、**version_list 裁剪**（E6 已修）、
+     **fieldset `fields` 变更的 curated 联动**（`set` 定义键 self_invalidate 置脏，已落地）；
+   - **剩余可选项**：symbol_scope 提取（读数据页，datetime 区间已够用）；
+     stat 是否纳入图资产（设计决策，当前保持不进图）；ModelNode（G10 后续规划）。

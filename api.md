@@ -207,11 +207,16 @@ date >= 2024-01-01            开区间（> / >=）
 ### 3.4 `--partition` 语义
 
 - **table / index**：匹配 `partition_path`（hive 目录 `key=value`，精确或 `key=value...` 前缀）
-- **panel**：物化分区概念已移除（实时 join 视图），`--partition` 仅透传底层表读取
+- **panel / factor 等物化资产**：按物化时间桶 `part` 前缀匹配（如 `--partition 2024` 取 2024 年桶）
 
-### 3.5 panel 分区策略
+### 3.5 物化分区策略（继承 index.materialize_partition）
 
-V3.0 panel（原 dataset）为**实时 join 视图**，无物化分区策略（物化/分区属 table/index 物理层）。
+panel/fieldset/factor/test 物化统一**继承其 index 的 `materialize_partition`**（`yearly` 默认 /
+`monthly` / `daily`）按**时间桶**分桶落盘：`part=<YYYY>`（yearly）/ `part=<YYYY-MM>`（monthly）/
+`part=<YYYY-MM-DD>`（daily），桶目录 `part=<v>/data.parquet`（文件内保留 `part` 列，
+读取 hive 分区还原后**对外剔除**——get 返回列集合与实时视图一致）。与 index 物理是否分区无关；
+`materialize_partition` 未知 / 无时间键 → 单文件兜底。增量物化按 datetime 区间删受影响桶
+并保留桶内区间外旧行合并写回（桶粒度粗于区间，见 §11）。
 
 ### 3.6 `stat get` 返回
 
@@ -239,7 +244,7 @@ V3.0 panel（原 dataset）为**实时 join 视图**，无物化分区策略（�
 - **SampleCheckResult**：`sample, ok, rows, columns[], message`
 - **FeatureMeta**：`name, version, engine, formula, display_name, description, unit, tags[], source, extra, created_at, updated_at`
 - **FeatureTestResult**：`feature, sample, ok, valid, rows, columns[], message`
-- **FactorMeta**：`name, version, feature, sample, pipeline, engine, factor_col, keys[]（样本索引）, partition_by, partition_gran, materialized, materialized_at, curated, columns[ColumnMeta]（源 sample 视图列）, field（Factor 因子列 FieldMeta）, extra, display_name, description, tags[], source, created_at, updated_at`（graph 版物化为 flat 单文件，partition_by 恒 []）
+- **FactorMeta**：`name, version, feature, sample, pipeline, engine, factor_col, keys[]（样本索引）, partition_by, partition_gran, materialized, materialized_at, curated, columns[ColumnMeta]（源 sample 视图列）, field（Factor 因子列 FieldMeta）, extra, display_name, description, tags[], source, created_at, updated_at`（graph 版按 index.materialize_partition 时间桶物化：partition_by=`["part"]`、partition_gran=`yearly/monthly/daily`）
 - **FieldMeta（factor）**：`name, formula（源 feature 公式）, display_name, description, unit, tags[]`
 - **FactorScanReport**：`name, version_before, version_after, materialized, changed, partition_by, rebuilt_partitions[]`
 - **FactorCheckResult**：`factor, ok, rows, columns[], message`（`ok` 条件：计算成功、含全部索引列、因子列恰好 1 列、行数 > 0）
@@ -298,7 +303,7 @@ V3.0 panel（原 dataset）为**实时 join 视图**，无物化分区策略（�
   输出结构恒为「样本索引列 + 一列因子列」（列名 = `--factor_col`，默认取 feature 名）
 - **pipeline 算子链**：`|` 分隔的算子调用（如 `nothing()|standardlize()`），每段为 `name()`；
   算子注册制（`register_operator`，当前仅 `nothing()`，原样返回），后续算子按注册即可扩展
-- **物化**：`factor scan` 落盘到 `factor/<name>/data.parquet`（flat 单文件）；
+- **物化**：`factor scan` 落盘 `factor/<name>/part=<v>/`（时间桶，见 §3.5）；
   **幂等**——依赖签名（上游 feature/sample 的 graph 版本 + engine/pipeline/factor_col hash）
   不变则跳过；`--resync` 强制重建
 - **读取**：物化完成且与源+feature+pipeline 一致（`curated`）读物化 parquet；否则实时基于
@@ -510,8 +515,10 @@ t:<task_id>
 ├── task/<task_id>/           # 任务日志 task.log + 结果文件（ResultStore）
 ├── table/<name>/             # 表（table 资产）parquet（只读，绝不写/删）
 ├── index/<name>/             # 索引（index 资产）parquet，独立目录（只读，绝不写/删）
-├── factor/<name>/            # factor 物化产物（样本索引 + 1 因子列，flat 单文件 data.parquet）
-├── factor_test/<name>/       # 因子测试数据集物化产物（data.parquet，flat 单文件）
+├── factor/<name>/            # factor 物化产物（样本索引 + 1 因子列，时间桶 part=<v>/，见 §3.5）
+├── factor_test/<name>/       # 因子测试数据集物化产物（时间桶 part=<v>/，见 §3.5）
+├── panel/<name>/             # panel 物化产物（join 视图，时间桶 part=<v>/，见 §3.5）
+├── fieldset/<name>/          # fieldset 物化产物（keys + 已校验字段，时间桶 part=<v>/，见 §3.5）
 └── stat/<type>/<name>/<kind>/<partition>.parquet   # 统计产物（不进 graph）
 ```
 
@@ -523,9 +530,9 @@ t:<task_id>
 - **stat 资产不进 graph**：文件夹存在即已扫描，`meta`/`list` 读目录
 - **sample 无物化产物**：只登记于 graph（依赖 fieldset），读取动态构造 fieldset 视图 + 过滤
 - **feature 纯定义**：只登记于 graph，无任何磁盘产物
-- **factor 物化产物**：`factor/<name>/data.parquet`（仅索引列 + 因子列，flat 单文件）；
+- **factor 物化产物**：`factor/<name>/part=<v>/`（仅索引列 + 因子列，时间桶见 §3.5）；
   幂等——上游 feature/sample 版本 + pipeline/factor_col 签名不变则跳过；删除 factor 时一并清理
-- **factor_test 物化产物**：`factor_test/<name>/data.parquet`（测试数据集面板，flat 单文件）；
+- **factor_test 物化产物**：`factor_test/<name>/part=<v>/`（测试数据集面板，时间桶见 §3.5）；
   测试器产物 `stat/test/<name>/<kind>/<output>.parquet`（stat 命名输出）；删除 test 时一并清理
 
 ### 8.1 覆盖率统计输出列（ALL_COLS）
@@ -670,10 +677,10 @@ gclient> t:<task_id>
 | 资产 | update 行为 | 物化产物 |
 |---|---|---|
 | **table / index**（源头） | 重扫对账（`update`/`scan`）：物理变化 → 铸版本 + 事件入 version_list + **全链下游置脏**；天然 valid，无物化 | 无（物理 parquet 即数据） |
-| **panel** | join 视图**全量物化落盘** + 铸版本 + 水位对齐 | `panel/<name>/data.parquet` |
-| **fieldset** | 衍生字段（keys + 已校验字段）**全量物化落盘** + 铸版本 | `fieldset/<name>/data.parquet` |
-| **factor** | **增量物化**：按源头积累事件区间只重算该区间并合并写回；`--resync` 全量 | `factor/<name>/data.parquet` |
-| **test** | **增量物化**（同 factor） | `factor_test/<name>/data.parquet` |
+| **panel** | join 视图**物化落盘**（增量：按积累区间重算受影响时间桶）+ 铸版本 + 水位对齐 | `panel/<name>/part=<v>/`（时间桶，见 §3.5） |
+| **fieldset** | 衍生字段（keys + 已校验字段）**物化落盘**（增量同上）+ 铸版本 | `fieldset/<name>/part=<v>/` |
+| **factor** | **增量物化**：按源头积累事件区间只重算该区间（受影响桶）并合并写回；`--resync` 全量 | `factor/<name>/part=<v>/` |
+| **test** | **增量物化**（同 factor） | `factor_test/<name>/part=<v>/` |
 | **sample / feature** | 无物化，update 只**铸版本**（消费事件入 version_list）+ 出边水位对齐 | 无（实时构造） |
 | **stat** | 不进 graph，纯文件产物（手动 `stat scan` 触发） | `stat/<target>/<name>/<kind>/*.parquet` |
 
@@ -692,13 +699,14 @@ gclient> t:<task_id>
    - `notify_change`：源头**铸版本 + 事件入 version_list + BFS 全链下游置脏**
      （valid=False，materialized=False）。
 2. **逐级 update 恢复**（必须按依赖顺序，先上游后下游；`assert_ready` 检查全链就绪）：
-   - `panel update`：join 视图重新物化落盘（全量）；有积累事件 → 铸版本
+   - `panel update`：join 视图重新物化落盘（**增量**——按积累事件 datetime 区间删受影响
+     时间桶并保留桶内区间外旧行合并写回，见 §3.5）；有积累事件 → 铸版本
      （合并事件入 version_list）；出边 `required_version` 对齐被依赖方当前版本；
-   - `fieldset update`：衍生字段重新物化（全量）+ 铸版本；
+   - `fieldset update`：衍生字段重新物化（增量同上）+ 铸版本；
    - `sample update` / `feature update`：只铸版本（无物化）；
    - `factor update`：**增量**——从全部源头（table/index）收集
      `version > consumed` 的积累事件，得 datetime 区间；已有物化且区间明确 →
-     读旧物化删区间 + **仅重算区间内行**合并写回；无区间 / 首次 / `--resync` →
+     读旧物化删区间（受影响桶）+ **仅重算区间内行**合并写回；无区间 / 首次 / `--resync` →
      全量重算；成功后记录各源头水位（`extra.consumed_versions`）；
    - `test update`：同 factor（在 sample 视图上按区间构造）。
 3. **幂等**：update 时节点 valid 且依赖签名一致 → 直接返回 `changed=False` 跳过重建；

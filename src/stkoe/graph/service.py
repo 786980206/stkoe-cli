@@ -668,7 +668,9 @@ class GraphService:
         meta["materialized"] = materialized
         meta["materialized_at"] = extra.get("materialized_at")
         meta["curated"] = materialized and dep_hash == self._panel_hash(node)
-        meta["partition_by"] = self._index_partition_keys(node)
+        keys = list(node.get("keys") or ())
+        meta["partition_by"], meta["partition_gran"] = self._partition_plan(
+            node, dt_col=keys[-1] if keys else "")
         meta["extra"] = extra
         return meta
 
@@ -690,23 +692,20 @@ class GraphService:
         self.graph.assert_ready("panel", name)
         node = self._require_node("panel", name)
         out_dir = self.data_dir / "panel" / name
-        pkeys = self._index_partition_keys(node)
-        out_path = out_dir / ("data.parquet" if not pkeys else "")
         keys = list(node.get("keys") or ())
+        dt = keys[-1] if keys else ""
+        pkeys, gran = self._partition_plan(node, dt_col=dt)
+        out_path = out_dir / ("data.parquet" if not pkeys else "")
         scope = self._upstream_scope(node)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
             lo, hi = scope
-            dt = keys[-1]
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
             inc, _ = self._panel_lazy(name, where=dt_expr, live=True)
             df_inc = inc.collect()
             if pkeys:
-                # 分区级增量：删区间涉及的分区旧文件 → 重算区间行按分区写回（其余分区不动）
+                # 分区级增量：删区间涉及的桶并保留桶内区间外旧行 → 合并写回
                 old = pl.read_parquet(out_dir, hive_partitioning=True)
-                affected = old.filter(dt_expr)[pkeys[0]].unique().to_list()
-                for v in affected:
-                    shutil.rmtree(out_dir / f"{pkeys[0]}={v}", ignore_errors=True)
-                self._write_partitioned(df_inc, out_dir, pkeys)
+                self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt)
             else:
                 old = pl.read_parquet(out_path)
                 keep = old.filter(~dt_expr)
@@ -717,7 +716,7 @@ class GraphService:
         else:
             joined, _ = self._panel_lazy(name, live=True)
             rows = joined.select(pl.len()).collect().item()
-            self._write_partitioned(joined.collect(), out_dir, pkeys)
+            self._write_partitioned(joined.collect(), out_dir, pkeys, gran=gran, dt_col=dt)
         m = self.graph.resolve("panel", name, extra={
             "dependency_hash": self._panel_hash(node),
             "materialized_at": _now_iso(),
@@ -745,7 +744,7 @@ class GraphService:
             root = self.data_dir / "panel" / name
             if fm["curated"] and (root / "data.parquet").exists() \
                     or (fm["curated"] and any(root.glob("*=*"))):
-                lf = pl.scan_parquet(root, hive_partitioning=True)
+                lf = self._scan_materialized(root)
                 if where is not None:
                     lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
                 return lf, keys
@@ -814,7 +813,7 @@ class GraphService:
         未物化 → 报错提示先 update**（不再静默回退实时 join）。"""
         meta = self.panel_meta(name)
         root = self._require_materialized("panel", name, meta)
-        lf = pl.scan_parquet(root, hive_partitioning=True)
+        lf = self._scan_materialized(root)
         if where is not None:
             lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
         return self._collect_page(lf, columns=columns, exclude_tool=exclude_tool,
@@ -868,8 +867,9 @@ class GraphService:
         keys = self._panel_keys(panel)
         fm = self._fieldset_meta_node(name)
         root = self.data_dir / "fieldset" / name
-        if fm["curated"] and (root / "data.parquet").exists():
-            lf = pl.scan_parquet(root, hive_partitioning=True)
+        if fm["curated"] and (root / "data.parquet").exists() \
+                or (fm["curated"] and any(root.glob("*=*"))):
+            lf = self._scan_materialized(root)
             if where is not None:
                 lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
             if fields_only:
@@ -943,7 +943,7 @@ class GraphService:
         node = self._require_node("fieldset", name)
         meta = self.fieldset_meta(name)
         root = self._require_materialized("fieldset", name, meta)
-        lf = pl.scan_parquet(root, hive_partitioning=True)
+        lf = self._scan_materialized(root)
         if where is not None:
             lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
         if not fields_only:
@@ -969,21 +969,18 @@ class GraphService:
                   if f.get("validated")]
         engine = get_fieldset_engine(node.get("engine") or "polars")
         out_dir = self.data_dir / "fieldset" / name
-        pkeys = self._index_partition_keys(node)
+        dt = keys[-1] if keys else ""
+        pkeys, gran = self._partition_plan(node, dt_col=dt)
         out_path = out_dir / ("data.parquet" if not pkeys else "")
         scope = None if resync else self._upstream_scope(node)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
             lo, hi = scope
-            dt = keys[-1]
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
             base, _ = self._panel_lazy(panel, where=dt_expr)
             df_inc = engine.scan(base, keys, fields).collect()
             if pkeys:
                 old = pl.read_parquet(out_dir, hive_partitioning=True)
-                affected = old.filter(dt_expr)[pkeys[0]].unique().to_list()
-                for v in affected:
-                    shutil.rmtree(out_dir / f"{pkeys[0]}={v}", ignore_errors=True)
-                self._write_partitioned(df_inc, out_dir, pkeys)
+                self._rewrite_buckets(old, df_inc, dt_expr, pkeys, out_dir, gran, dt)
             else:
                 old = pl.read_parquet(out_path)
                 keep = old.filter(~dt_expr)
@@ -995,7 +992,7 @@ class GraphService:
             base, _ = self._panel_lazy(panel)
             out = engine.scan(base, keys, fields)
             rows = out.select(pl.len()).collect().item()
-            self._write_partitioned(out.collect(), out_dir, pkeys)
+            self._write_partitioned(out.collect(), out_dir, pkeys, gran=gran, dt_col=dt)
         m = self.graph.resolve("fieldset", name, extra={
             "dependency_hash": self._fieldset_hash(node),
             "materialized_at": _now_iso(),
@@ -1243,10 +1240,69 @@ class GraphService:
         idx = self._index_node(node)
         return list(idx.get("partition_by") or ()) if idx else []
 
-    @staticmethod
-    def _write_partitioned(df: pl.DataFrame, out_dir: Path, partition_keys: list[str]) -> None:
-        """物化落盘：镜像 index 分区（hive 目录 ``key=value/``）；无分区键 → 单文件。
+    def _partition_plan(self, node: dict, dt_col: str = "") -> tuple[list[str], str]:
+        """下游物化分区方案 = 继承 index 的 ``materialize_partition`` 时间桶。
 
+        - yearly/monthly/daily（默认 yearly）：**无论 index 物理是否分区**，下游都按
+          时间粒度分桶落盘（``part=<YYYY>[/<YYYY-MM>[/<YYYY-MM-DD>]]``，见
+          ``_write_partitioned``）；``dt_col`` 为时间键（keys 末列）；
+        - gran 未知 / 无 index / 无时间键 → 单文件（``([], "")``）。
+        """
+        idx = self._index_node(node)
+        if idx is None or not dt_col:
+            return [], ""
+        gran = (idx.get("materialize_partition") or "yearly").strip().lower()
+        if gran in ("yearly", "monthly", "daily"):
+            return ["part"], gran
+        return [], ""
+
+    @staticmethod
+    def _scan_materialized(root: Path, partition: str | None = None) -> pl.LazyFrame:
+        """读物化 parquet（hive 分区还原），**剔除内部分区桶列 part**——
+        保持对外列集合与实时视图一致（part 仅供物化增量删桶，不对外暴露）。
+        ``partition`` 按 part 桶前缀过滤（如 ``--partition 2024`` 取 2024 年桶）。"""
+        lf = pl.scan_parquet(root, hive_partitioning=True)
+        if partition is not None:
+            lf = lf.filter(pl.col("part").cast(pl.String).str.starts_with(partition))
+        return lf.select(pl.all().exclude("part"))
+
+    def _rewrite_buckets(self, old: pl.DataFrame, df_inc: pl.DataFrame,
+                         dt_expr: pl.Expr, pkeys: list[str], out_dir: Path,
+                         gran: str, dt_col: str) -> pl.DataFrame:
+        """分区级增量写回：删受影响桶后，把**桶内区间外旧行**与增量行合并写回。
+
+        时间桶粒度（yearly/monthly/daily）粗于增量区间（天级）——直接删桶会丢掉
+        桶内未变化的行；且增量新日期可能与旧数据**同桶**（affected 取两边的并集）。
+        故：受影响桶 = 旧数据命中区间行的桶 ∪ 增量数据所在桶；保留受影响桶内
+        ``~dt_expr`` 旧行，与增量合并后整体重写这些桶。
+        """
+        key = pkeys[0]
+        cut = {"yearly": 4, "monthly": 7, "daily": 10}.get(gran, 4)
+        part_expr = pl.col(dt_col).cast(pl.String).str.slice(0, cut).alias(key)
+        inc_parts = df_inc.with_columns(part_expr)[key].unique().to_list()
+        affected = sorted(set(old.filter(dt_expr)[key].unique().to_list())
+                          | set(inc_parts))
+        keep = old.filter(~dt_expr).filter(pl.col(key).is_in(affected)) \
+            if affected else None
+        for v in affected:
+            shutil.rmtree(out_dir / f"{key}={v}", ignore_errors=True)
+        if keep is not None:
+            # 增量行补同款 part 列（与 keep 列数对齐；_write_partitioned 会再覆盖同值）
+            merged = pl.concat(
+                [keep, df_inc.with_columns(part_expr)], how="vertical_relaxed")
+        else:
+            merged = df_inc
+        self._write_partitioned(merged, out_dir, pkeys, gran=gran, dt_col=dt_col)
+        return merged
+
+    @staticmethod
+    def _write_partitioned(df: pl.DataFrame, out_dir: Path, partition_keys: list[str],
+                           gran: str = "", dt_col: str = "") -> None:
+        """物化落盘：按分区键写 hive 目录 ``key=value/``；无分区键 → 单文件。
+
+        ``partition_keys=["part"]``（时间桶）：按 ``materialize_partition`` 粒度从
+        ``dt_col`` 提取桶值（yearly→YYYY、monthly→YYYY-MM、daily→YYYY-MM-DD，
+        String/ISO 前缀切片）生成 ``part`` 列后写 ``part=<v>/data.parquet``。
         分区文件内**保留分区列**（读取 hive_partitioning=True 时用文件列，类型/列序不变）。
         """
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1254,6 +1310,10 @@ class GraphService:
             df.write_parquet(out_dir / "data.parquet")
             return
         key = partition_keys[0]
+        if key == "part":
+            cut = {"yearly": 4, "monthly": 7, "daily": 10}.get(gran, 4)
+            df = df.with_columns(
+                pl.col(dt_col).cast(pl.String).str.slice(0, cut).alias("part"))
         for val in df[key].unique().to_list():
             sub = out_dir / f"{key}={val}"
             sub.mkdir(parents=True, exist_ok=True)
@@ -1319,9 +1379,7 @@ class GraphService:
         node = self._require_node("factor", name)
         fm = self._factor_meta_dict(name)
         root = self._require_materialized("factor", name, fm)
-        lf = pl.scan_parquet(root, hive_partitioning=True)
-        if partition is not None:
-            lf = lf.filter(pl.col("part").cast(pl.String).str.starts_with(partition))
+        lf = self._scan_materialized(root, partition=partition)
         if where is not None:
             lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
         return lf
@@ -1419,23 +1477,20 @@ class GraphService:
                     "version_after": version_before, "materialized": True,
                     "changed": False, "partition_by": list(extra.get("partition_by") or ())}
         out_dir = self.data_dir / "factor" / name
-        pkeys = self._index_partition_keys(node)
+        keys = self._factor_keys(node)
+        dt = keys[-1] if keys else ""
+        pkeys, gran = self._partition_plan(node, dt_col=dt)
         out_path = out_dir / ("data.parquet" if not pkeys else "")
         # 增量物化：最近上游积累事件有明确 datetime 区间且已有物化 → 只重算该区间
         # （分区场景只替换受影响分区文件，flat 场景删区间+合并）
         scope = None if resync else self._upstream_scope(node)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
             lo, hi = scope
-            keys = self._factor_keys(node)
-            dt = keys[-1]
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
             inc = self._factor_compute(node, dt_range=(lo, hi))
             if pkeys:
                 old = pl.read_parquet(out_dir, hive_partitioning=True)
-                affected = old.filter(dt_expr)[pkeys[0]].unique().to_list()
-                for v in affected:
-                    shutil.rmtree(out_dir / f"{pkeys[0]}={v}", ignore_errors=True)
-                self._write_partitioned(inc, out_dir, pkeys)
+                df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt)
             else:
                 old = pl.read_parquet(out_path)
                 keep = old.filter(~dt_expr)
@@ -1444,11 +1499,9 @@ class GraphService:
                 df.write_parquet(out_path)
         else:
             df = self._factor_compute(node)
-            self._write_partitioned(df, out_dir, pkeys)
+            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
         feature = node.get("feature", "").split(":", 1)[1]
         fnode = self._require_node("feature", feature)
-        idx = self._index_node(node)
-        gran = idx.get("materialize_partition", "yearly") if idx and pkeys else ""
         # 物化成功 → resolve 收口：铸版本并记录**消费的合并事件**（带 datetime_scope，
         # 供下游沿链增量）+ 出边 required_version 对齐 + valid/materialized
         m = self.graph.resolve("factor", name, extra={
@@ -1462,7 +1515,7 @@ class GraphService:
         version_after = m["version"]
         return {"name": name, "version_before": version_before,
                 "version_after": version_after, "materialized": True, "changed": True,
-                "partition_by": [], "rebuilt_partitions": [""]}
+                "partition_by": list(pkeys), "rebuilt_partitions": [""]}
 
     # =====================================================================
     # test（因子测试数据集：factor 关联 sample 视图 + 测试必需列；物化落盘）
@@ -1556,7 +1609,7 @@ class GraphService:
         node = self._require_node("tester", name)
         tm = self._test_meta_dict(name)
         root = self._require_materialized("tester", name, tm)
-        lf = pl.scan_parquet(root, hive_partitioning=True)
+        lf = self._scan_materialized(root)
         if where is not None:
             lf = lf.filter(to_expr(where) if isinstance(where, str) else where)
         return lf
@@ -1567,7 +1620,7 @@ class GraphService:
         node = self._require_node("tester", name)
         tm = self._test_meta_dict(name)
         root = self._require_materialized("tester", name, tm)
-        return pl.read_parquet(root, hive_partitioning=True)
+        return self._scan_materialized(root).collect()
 
     def test_add(self, name: str, factor: str, *, returns: str = "r",
                  groupby: str = "ic", marketcap: str = "fv",
@@ -1672,25 +1725,21 @@ class GraphService:
                     "changed": False, "rows": 0, "quantiles": spec.quantiles,
                     "periods": list(spec.periods)}
         out_dir = self.data_dir / "factor_test" / name
-        pkeys = self._index_partition_keys(node)
+        keys = list(self._factor_meta_dict(
+            node.get("factor", "").split(":", 1)[1])["keys"])
+        dt = keys[-1] if keys else ""
+        pkeys, gran = self._partition_plan(node, dt_col=dt)
         out_path = out_dir / ("data.parquet" if not pkeys else "")
         # 增量物化：最近上游积累事件有明确 datetime 区间且已有物化 → 只重算该区间
         # （分区场景只替换受影响分区文件，flat 场景删区间+合并）
         scope = None if resync else self._upstream_scope(node)
         if scope and ((pkeys and out_dir.exists()) or (not pkeys and out_path.exists())):
             lo, hi = scope
-            keys = list(self._factor_meta_dict(
-                node.get("factor", "").split(":", 1)[1])["keys"])
-            dt = keys[-1]
             dt_expr = pl.col(dt).cast(pl.String).is_between(pl.lit(lo), pl.lit(hi))
             inc = self._test_build(node, dt_range=(lo, hi))
             if pkeys:
                 old = pl.read_parquet(out_dir, hive_partitioning=True)
-                affected = old.filter(dt_expr)[pkeys[0]].unique().to_list()
-                for v in affected:
-                    shutil.rmtree(out_dir / f"{pkeys[0]}={v}", ignore_errors=True)
-                self._write_partitioned(inc, out_dir, pkeys)
-                df = inc
+                df = self._rewrite_buckets(old, inc, dt_expr, pkeys, out_dir, gran, dt)
             else:
                 old = pl.read_parquet(out_path)
                 keep = old.filter(~dt_expr)
@@ -1699,7 +1748,7 @@ class GraphService:
                 df.write_parquet(out_path)
         else:
             df = self._test_build(node)
-            self._write_partitioned(df, out_dir, pkeys)
+            self._write_partitioned(df, out_dir, pkeys, gran=gran, dt_col=dt)
         cols = [{"name": c, "display_name": c, "data_type": str(t)}
                 for c, t in zip(df.columns, df.dtypes)]
         # 物化成功 → resolve 收口：铸版本并记录消费的合并事件（带 datetime_scope，

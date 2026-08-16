@@ -113,8 +113,11 @@ src/stkoe/
 ### GraphService 设计约束（V3.0 全局）
 
 1. **scan → update 语义**：上游传导就绪检查（`assert_ready` BFS 全链 valid）；源头不齐失败
-2. **下游物化分区镜像 index**：`_index_partition_keys(node)` 沿链 Cypher 找 index 取其分区键；
-   分区写保留分区列 + hive 目录（`key=value/data.parquet`），读 `hive_partitioning=True`
+2. **下游物化按 index 的 `materialize_partition` 时间桶分区**：panel/fieldset/factor/test
+   统一继承其 index 的物化粒度（yearly/monthly/daily，默认 yearly）分桶落盘
+   （`part=<YYYY>[/<YYYY-MM>[/<YYYY-MM-DD>]]/data.parquet`，文件内保留 part 列；
+   与 index 物理是否分区无关）；对外读取剔除 part 列（`_scan_materialized`）；
+   增量删桶时保留桶内区间外旧行合并写回（桶粒度粗于增量区间，见 `_rewrite_buckets`）
 3. **沿链增量物化**（不找最上游）：`_upstream_scope` 用 `graph._accumulated`（按出边
    required_version 水位取直接依赖未消费事件）得 datetime 区间；有区间且已有物化 → 分区
    删受影响分区重算 / flat 删区间+合并写回；`--resync`/首次/无区间 → 全量
@@ -229,6 +232,26 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 2. 持续优化循环：结构清晰 / 容错 / 数据处理性能（每项提交文档 + Git）
 
 ## 近期变更记录
+
+### 2026-08 feat: 物化按 index.materialize_partition 时间桶分区（下游继承物化粒度）
+
+- **语义修正**：panel/fieldset/factor/test 物化不再"镜像 index 物理分区键"（物理 flat 则
+  单文件），统一继承 index 的 `materialize_partition`（yearly/monthly/daily，默认 yearly）
+  按**时间桶**落盘：`part=<YYYY>[/<YYYY-MM>[/<YYYY-MM-DD>]]/data.parquet`
+  （`_partition_plan` 替代 `_index_partition_keys`；`_write_partitioned` 按 gran 从
+  时间键提取桶值生成 part 列）
+- **对外隐藏桶列**：新增 `_scan_materialized`（hive 分区还原 + `exclude("part")`），
+  panel/fieldset/factor/test 的 get/视图读取统一走它——返回列集合与实时视图一致，
+  下游链（fieldset/sample/stat）不感知 part；内部增量删桶用原生
+  `read_parquet(hive_partitioning=True)` 保留 part
+- **修粗桶×细区间增量丢数据**：时间桶粒度（年）粗于增量区间（天）——删桶会把桶内
+  未变化行一起删掉、且新增日期可能与旧数据同桶（affected 空 → 覆盖丢数据）；
+  新增 `_rewrite_buckets`：受影响桶 = 旧数据命中区间行的桶 ∪ 增量数据所在桶，
+  删桶后保留桶内 `~dt_expr` 旧行与增量合并写回（4 个 update 增量分区分支统一接入）
+- 测试：+2 例（monthly/daily 粒度继承 + 跨年增量开新桶旧桶不动）+ 适配 5 处物化布局断言
+  （`data.parquet` → `part=2024`）；全量 202 用例绿
+- 文档：api.md §3.4/§3.5/§3.7/§3.10/§3.12/§8/§11（物化产物布局与分区策略）、
+  AGENTS.md 设计约束 #2
 
 ### 2026-08 评审遗留 4 项全部解决（§8/§9/§10/§13）
 

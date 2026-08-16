@@ -683,7 +683,7 @@ def test_execute_test_add_get_check_scan_and_stat(client, srv):
         source="test", action="scan", args=["t1"])))  # get 三态：先物化
     assert header.code == 0
     assert _json(datas, "test")["changed"] is True
-    assert (root / "factor_test" / "t1" / "data.parquet").exists()
+    assert (root / "factor_test" / "t1" / "part=2024").exists()
 
     header, datas = _collect(client.Execute(stkoe_pb2.ExecuteRequest(
         source="test", action="get", args=["t1"])))

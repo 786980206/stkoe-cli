@@ -423,12 +423,51 @@ class TestPanelGraph:
         assert svc.panel_meta("ds1")["materialized"] is False
         r = svc.panel_update("ds1")
         assert r["materialized"] is True
-        assert (svc.data_dir / "panel" / "ds1" / "data.parquet").exists()
+        # 物化按 index.materialize_partition（默认 yearly）时间桶落盘
+        assert (svc.data_dir / "panel" / "ds1" / "part=2024").exists()
         m = svc.panel_meta("ds1")
         assert m["materialized"] is True and m["curated"] is True
+        assert m["partition_by"] == ["part"] and m["partition_gran"] == "yearly"
+        # 对外读取剔除内部桶列 part，列集合与实时视图一致
         df, total = svc.panel_get("ds1", count_total=True)
         assert df.height == 2 and total == 2
-        assert df.columns == ["sym", "date", "code", "price"]
+        assert "part" not in df.columns
+
+    def test_partition_gran_follows_materialize_partition(self, svc):
+        """物化时间桶粒度继承 index.materialize_partition（monthly/daily）"""
+        svc.table_add("m1")
+        svc.index_add("index", materialize_partition="monthly")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.panel_update("ds1")
+        assert (svc.data_dir / "panel" / "ds1" / "part=2024-01").exists()
+        assert svc.panel_meta("ds1")["partition_gran"] == "monthly"
+
+        os.makedirs(os.path.join(svc.data_dir, "index", "idx2"), exist_ok=True)
+        pl.DataFrame({"sym": ["a"], "date": ["2024-01-01"], "code": [1]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "idx2", "data.parquet"))
+        svc.index_add("idx2", materialize_partition="daily")
+        svc.panel_add("ds2", "idx2", ["m1"])
+        svc.panel_update("ds2")
+        assert (svc.data_dir / "panel" / "ds2" / "part=2024-01-01").exists()
+
+    def test_incremental_cross_year_keeps_old_bucket(self, svc):
+        """跨年增量：新日期开新桶（part=2025），旧桶（part=2024）不受影响"""
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.panel_update("ds1")
+        assert svc.panel_get("ds1").height == 2
+
+        pl.DataFrame({"sym": ["c"], "date": ["2025-01-02"], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        svc.index_update("index")
+        svc.panel_update("ds1")
+
+        root = svc.data_dir / "panel" / "ds1"
+        assert (root / "part=2024").exists() and (root / "part=2025").exists()
+        df = svc.panel_get("ds1")
+        assert df.height == 3
+        assert sorted(df["date"].to_list()) == ["2024-01-01", "2024-01-01", "2025-01-02"]
 
     def test_panel_update_bumps_version_and_invalidates_curated(self, svc):
         """源头变化 → panel 置脏 + curated 失效 → update 铸版本恢复"""
@@ -468,7 +507,7 @@ class TestFieldsetSampleGraph:
         assert svc.fieldset_meta("fs1")["materialized"] is False
         r = svc.fieldset_update("fs1")
         assert r["materialized"] is True
-        assert (svc.data_dir / "fieldset" / "fs1" / "data.parquet").exists()
+        assert (svc.data_dir / "fieldset" / "fs1" / "part=2024").exists()
         m = svc.fieldset_meta("fs1")
         assert m["curated"] is True
         # fields_only 读物化字段（keys + x2）
@@ -653,7 +692,7 @@ class TestFactorGraph:
         s2 = svc.factor_scan("fac1")  # 幂等
         assert s2["changed"] is False
         assert svc.factor_meta("fac1")["curated"] is True
-        assert (svc.data_dir / "factor" / "fac1" / "data.parquet").exists()
+        assert (svc.data_dir / "factor" / "fac1" / "part=2024").exists()
         # 物化后 get 读物化
         df, total = svc.factor_get("fac1", count_total=True)
         assert df.height == 2 and total == 2
@@ -779,7 +818,7 @@ class TestTesterGraph:
         s2 = svc.test_scan("t1")  # 幂等
         assert s2["changed"] is False
         assert svc.test_meta("t1")["curated"] is True
-        assert (svc.data_dir / "factor_test" / "t1" / "data.parquet").exists()
+        assert (svc.data_dir / "factor_test" / "t1" / "part=2024").exists()
 
         # 物化后 get/data 读物化
         df, total = svc.test_get("t1", count_total=True)

@@ -29,7 +29,7 @@ from ..table.errors import DEFAULT_IGNORE_COLS, TableExistsError
 from ..table import util as T
 from ..table.query import prune_files, to_expr
 from .controller import GraphController
-from .errors import AssetNotFoundError
+from .errors import AssetNotFoundError, CycleError
 from .events import DataChangeEvent
 from .handlers import (
     FactorHandler,
@@ -43,6 +43,10 @@ from .handlers import (
 )
 from .model import ColumnMeta, FieldMeta, node_id, split_node_id
 from .store import GraphStore
+
+
+_ASSET_TYPES = ("table", "index", "panel", "fieldset", "sample", "feature",
+                "factor", "tester")
 
 
 def _now_iso() -> str:
@@ -1961,6 +1965,61 @@ class GraphService:
                 "version_after": version_after, "materialized": True, "changed": True,
                 "rows": df.height, "quantiles": spec.quantiles,
                 "periods": list(spec.periods)}
+
+    # ---------- 沿链级联 update ----------
+
+    def update_cascade(self, asset_type: str | None = None, name: str | None = None,
+                       *, all: bool = False) -> dict:
+        """沿链级联 update：按拓扑序更新目标节点及其全部下游链。
+
+        - ``--node <type:name>``：更新该资产 + 其下游闭包（BFS 收集，含自身）；
+          ``--all``：按拓扑序更新图中全部资产节点；
+        - 每个节点都走各自 ``*_update``（内含 ``assert_ready`` 上游传导就绪
+          检查），拓扑序保证任一节点更新时其上游都已就绪；某节点上游未就绪
+          → ``DependencyError`` 中止（已更新的节点保持已更新，未更新的不动）；
+        - 返回 ``{"node", "scope", "updated": [{"node", "version_before",
+          "version_after", "result"}...]}``；``result`` 为对应 ``*_update`` 的
+          返回值（各资产返回形态不一），``version_*`` 是统一的可比口径
+          （版本未推进 = 该节点本次无真实变更）。
+        """
+        if all:
+            nids = [node_id(t, n["name"])
+                    for t in _ASSET_TYPES for n in self.graph.list(t)]
+            scope = "all"
+            center = "*"
+        else:
+            if not asset_type or not name:
+                raise ValueError("update_cascade 需要 --node <type:name>（或 --all）")
+            nid = node_id(asset_type, name)
+            self._require_node(asset_type, name)
+            nids = [nid] + [d["id"] for d in self.store.downstream(nid)]
+            scope = "downstream"
+            center = nid
+        # 拓扑序：依赖方先于被依赖方（闭包内 DAG；guard 兜底防意外成环死循环）
+        order: list[str] = []
+        pending = set(nids)
+        guard = 0
+        while pending and guard < len(pending) * len(pending) + 10:
+            guard += 1
+            progressed = False
+            for nid_ in list(pending):
+                if any(d["target"] in pending for d in self.store.deps_of(nid_)):
+                    continue  # 上游还在集合内，等其先更新
+                order.append(nid_)
+                pending.remove(nid_)
+                progressed = True
+            if not progressed:
+                raise CycleError(
+                    f"血缘图存在环或无法拓扑排序，级联 update 中止: {sorted(pending)}")
+        updated = []
+        for nid_ in order:
+            t, n = split_node_id(nid_)
+            before = self.store.get_node(nid_).get("version", 0)
+            result = getattr(self, f"{t}_update")(n)
+            after = self.store.get_node(nid_).get("version", 0)
+            updated.append({"node": nid_, "version_before": before,
+                            "version_after": after, "result": result})
+        return {"node": center, "scope": scope, "updated": updated}
 
 
 def get_fieldset_engine(name: str):

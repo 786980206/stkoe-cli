@@ -234,6 +234,26 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 feat(graph): 沿链级联 update——graph update 一次更新整条依赖链
+
+- **背景**：update 语义要求"上游传导就绪"（assert_ready BFS 全链 valid），源头变化后
+  手工沿链逐个 update（panel → fieldset → sample → feature → factor → tester），
+  顺序错误即被 DependencyError 拦截——本次收口为一次命令完成
+- **`GraphService.update_cascade`**：`--node <type:name>` 更新目标资产 + 其**下游闭包**
+  （store.downstream BFS 含自身）；`--all` 按拓扑序更新全部资产节点（`_ASSET_TYPES`
+  八类）；集合内按 deps 依赖做拓扑排序（依赖方恒在依赖之后），每个节点仍走各自
+  `*_update`（内含 assert_ready），闭包外上游未就绪 → DependencyError 中止
+  （已更新的保持已更新，未更新的不动；成环兜底 CycleError）
+- **命令**：`graph update [--node <type:name>] [--all]`（Execute + CLI，无任务版，
+  同其它 graph 命令）；返回 `{node, scope: downstream|all,
+  updated: [{node, version_before, version_after, result}]}`——各资产 update
+  返回形态不一（table/index 有 changed、panel/sample/feature 无物化键），
+  `version_*` 为统一可比口径（未推进 = 本次无真实变更）
+- 测试：TestUpdateCascade 6 例（节点级联拓扑序与全链就绪 / 闭包外上游未就绪中止 /
+  --all 全链拓扑序 / 二次级联幂等 / 源头变化级联铸版本 + 增量数据落到 tester /
+  Execute 通道 --node/--all）；相关文件 137 例绿
+- 文档：README §6.13（graph update 行）+ §3 路线图勾选、AGENTS.md
+
 ### 2026-08 refactor: 资产概念统一——test 全面改为 tester（对齐新版概念）
 
 - **背景**：新版定义资产为 **tester**（图类型/Handler 已是 tester），但命令层/方法层

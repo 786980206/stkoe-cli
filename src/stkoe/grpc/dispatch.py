@@ -1304,3 +1304,25 @@ def _graph_stats(args: list[str], data_dir=None) -> list[Result]:
     finally:
         store.close()
     return [Result.json("graph", data)]
+
+
+@handler("graph", "update")
+def _graph_update(args: list[str], data_dir=None) -> list[Result]:
+    """graph update [--node <type:name>] [--all]：沿链级联 update。
+
+    --node 更新该资产 + 其全部下游链（拓扑序，先上游后下游）；--all 按拓扑序
+    更新图中全部资产节点。任一节点上游未就绪 → 报错中止（见 update_cascade）。
+    """
+    flags = parse_flags(args)
+    svc = _graph_service(data_dir)
+    if flags.get("all"):
+        data = svc.update_cascade(all=True)
+    else:
+        node = flags.get("node")
+        if not node:
+            raise CommandError("graph update 需要 --node <type:name> 或 --all")
+        t, _, n = node.partition(":")
+        if not n:
+            raise CommandError("--node 格式应为 <type:name>")
+        data = svc.update_cascade(t, n)
+    return [Result.json("graph", data)]

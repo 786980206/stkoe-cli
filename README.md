@@ -211,6 +211,8 @@ DataChangeEvent {
 - ✅ **dbt 集成**：`dbt-manifest-file` 配置 + table/index add 自动应用模型元数据
 - ✅ **列级血缘**：DEPENDS 边 detail 的字段映射升级为独立列节点图
   （`(column) -[:DERIVES]-> (column)`，`graph lineage --columns/--column` + `graph columns`）
+- ✅ **沿链级联 update**：`graph update`（`--node` 目标 + 下游闭包 / `--all` 全图），
+  按拓扑序一次更新整条依赖链（上游传导就绪检查的收口，见 §6.13）
 
 剩余规划：
 1. **图算法能力**：graphqlite 内置算法（PageRank/中心性/连通分量）用于资产重要性分析
@@ -551,6 +553,13 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
   含 data_type/formula/as_index 等属性）
 - **`graph stats`**：`node_count/edge_count`（资产/DEPENDS 口径）+ `column_count/derives_count`
   （列级血缘口径）
+- **`graph update [--node <type:name>] [--all]`**：沿链级联 update——`--node` 更新该资产 +
+  其**全部下游链**（BFS 闭包含自身），`--all` 按拓扑序更新图中全部资产节点；每个节点都走
+  各自 `*_update`（内含上游传导就绪检查），**拓扑序保证任一节点更新时上游已就绪**；闭包外
+  上游未就绪 → 报错中止（未更新的节点保持原状）。返回
+  `{"node", "scope": "downstream"|"all", "updated": [{"node", "version_before",
+  "version_after", "result"}...]}`（`result` 为各 `*_update` 返回值，`version_*` 为统一
+  可比口径：未推进 = 该节点本次无真实变更）
 - **可视化**：**portal 前端右上角"血缘关系"抽屉**（Tauri 经 gRPC 拉取渲染）
 
 ## 7. 后台任务（`s:...`）

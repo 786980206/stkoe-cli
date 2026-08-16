@@ -157,7 +157,9 @@ def _help() -> str:
         "                                         --column 以某列为中心查列级血缘）\n"
         "  graph columns [--node <type:name>]   列节点清单（全部，或指定资产的列）\n"
         "  graph nodes [--type <t>]             节点摘要列表（--type column 列列节点）\n"
-        "  graph stats                          图统计（资产/DEPENDS + 列/DERIVES）"
+        "  graph stats                          图统计（资产/DEPENDS + 列/DERIVES）\n"
+        "  graph update [--node <type:name>] [--all]  沿链级联 update（目标 + 下游链拓扑序；\n"
+        "                                         或 --all 全图资产节点）"
     )
 
 

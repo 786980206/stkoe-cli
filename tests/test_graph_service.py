@@ -1151,3 +1151,128 @@ class TestWindowScope:
         svc.tester_update("t1")
         assert calls and calls[-1] == ("2023-12-24", "2024-01-02"), \
             f"test 增量应向后展开 lo，实际 {calls}"
+
+
+class TestUpdateCascade:
+    """沿链级联 update（graph update）：目标节点 + 下游闭包按拓扑序更新。
+
+    - ``--node``：更新该资产 + 全部下游链；``--all``：全图资产节点；
+    - 拓扑序保证任一节点更新时其上游先就绪；上游未就绪 → DependencyError 中止。
+    """
+
+    def _chain(self, svc):
+        # 覆盖 index/data.parquet 加入测试必需列（tester 需要 r/ic/fv）
+        pl.DataFrame({"sym": ["a", "b"], "date": ["2024-01-01"] * 2,
+                      "r": [0.01, 0.02], "ic": ["G1", "G1"], "fv": [1.0, 2.0],
+                      "code": [1, 2]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "data.parquet"))
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_check("fs1", "x2")
+        svc.sample_add("sp1", "fs1", "index")
+        svc.feature_add("f1", "code * 2")
+        svc.factor_add("fac1", "f1", "sp1")
+        svc.tester_add("t1", "fac1")
+
+    def test_cascade_node_updates_downstream_topological(self, svc):
+        """--node：目标 + 下游闭包，按拓扑序更新（依赖方恒在依赖之后）。"""
+        self._chain(svc)
+        svc.panel_update("ds1")  # 目标自身的上游链先就绪
+        svc.feature_update("f1")  # feature 无上游，单独就绪（不在闭包内）
+        r = svc.update_cascade("fieldset", "fs1")
+        assert r["node"] == "fieldset:fs1" and r["scope"] == "downstream"
+        nodes = [u["node"] for u in r["updated"]]
+        assert nodes == ["fieldset:fs1", "sample:sp1", "factor:fac1", "tester:t1"], \
+            f"应按拓扑序更新下游链: {nodes}"
+        # 全链恢复就绪：物化资产 curated、无物化资产 valid
+        assert svc.fieldset_meta("fs1")["curated"] is True
+        assert svc.sample_meta("sp1")["valid"] is True
+        assert svc.factor_meta("fac1")["curated"] is True
+        assert svc.tester_meta("t1")["curated"] is True
+
+    def test_cascade_propagates_source_change_down_the_chain(self, svc):
+        """源头变化 → 级联一次到位：全链版本推进 + 增量数据可见。"""
+        self._chain(svc)
+        svc.update_cascade(all=True)
+        v0 = {u["node"]: u["version_after"] for u in
+              svc.update_cascade(all=True)["updated"]}
+        # 源头追加一行 → 级联 → 依赖链全部铸版本
+        pl.DataFrame({"sym": ["c"], "date": ["2024-01-02"], "r": [0.03],
+                      "ic": ["G1"], "fv": [3.0], "code": [3]}).write_parquet(
+            os.path.join(svc.data_dir, "index", "index", "more.parquet"))
+        r = svc.update_cascade(all=True)
+        bumped = {u["node"] for u in r["updated"]
+                  if u["version_after"] > v0[u["node"]]}
+        assert {"index:index", "panel:ds1", "fieldset:fs1", "sample:sp1",
+                "factor:fac1", "tester:t1"} <= bumped, f"链上节点应全部铸版本: {bumped}"
+        # 新数据经级联落到 tester 物化（沿链增量）
+        df, total = svc.tester_get("t1", count_total=True)
+        assert total == 3
+        assert sorted(df["date"].to_list()) == ["2024-01-01", "2024-01-01",
+                                                "2024-01-02"]
+
+    def test_cascade_blocks_on_unready_upstream(self, svc):
+        """闭包外的上游未就绪（feature 未 update）→ 级联中止（DependencyError）。"""
+        from stkoe.graph.errors import DependencyError
+
+        self._chain(svc)
+        with pytest.raises(DependencyError):
+            svc.update_cascade("fieldset", "fs1")
+
+    def test_cascade_all_full_chain_topological(self, svc):
+        """--all：全图资产节点按拓扑序更新。"""
+        self._chain(svc)
+        r = svc.update_cascade(all=True)
+        assert r["scope"] == "all" and r["node"] == "*"
+        nodes = [u["node"] for u in r["updated"]]
+        assert set(nodes) == {"table:m1", "index:index", "panel:ds1",
+                              "fieldset:fs1", "sample:sp1", "feature:f1",
+                              "factor:fac1", "tester:t1"}
+        idx = {n: i for i, n in enumerate(nodes)}
+        assert idx["panel:ds1"] > idx["index:index"]
+        assert idx["fieldset:fs1"] > idx["panel:ds1"]
+        assert idx["sample:sp1"] > idx["fieldset:fs1"]
+        assert idx["factor:fac1"] > idx["sample:sp1"]
+        assert idx["factor:fac1"] > idx["feature:f1"]
+        assert idx["tester:t1"] > idx["factor:fac1"]
+        assert all(u["version_after"] >= u["version_before"] for u in r["updated"])
+        assert svc.fieldset_meta("fs1")["curated"] is True
+        assert svc.factor_meta("fac1")["curated"] is True
+
+    def test_cascade_second_run_idempotent(self, svc):
+        """二次级联全部幂等（版本不再推进，不重复物化）。"""
+        self._chain(svc)
+        svc.update_cascade(all=True)
+        r2 = svc.update_cascade(all=True)
+        assert all(u["version_after"] == u["version_before"] for u in r2["updated"])
+
+    def test_dispatch_update_cascade(self, svc):
+        """Execute 通道：graph update --node / --all。"""
+        import json
+        import os as _os
+
+        from stkoe.grpc import dispatch as _d
+
+        self._chain(svc)
+        svc.panel_update("ds1")  # fieldset 上游链先就绪
+        svc.feature_update("f1")
+        base = str(svc.data_dir)
+        try:
+            data = json.loads(_d.dispatch("graph", "update",
+                                          ["--node", "fieldset:fs1"],
+                                          data_dir=base)[0].data)
+            assert data["scope"] == "downstream"
+            assert [u["node"] for u in data["updated"]] == \
+                ["fieldset:fs1", "sample:sp1", "factor:fac1", "tester:t1"]
+            data2 = json.loads(_d.dispatch("graph", "update", ["--all"],
+                                           data_dir=base)[0].data)
+            assert data2["scope"] == "all"
+            # 刚级联过的下游链二次执行全部幂等（版本不变）
+            assert all(u["version_after"] == u["version_before"]
+                       for u in data2["updated"] if u["node"] != "panel:ds1")
+        finally:
+            # 清线程本地缓存，避免缓存连接阻碍 fixture 清理（rmtree）
+            _d._thread_local.services.pop(_os.path.realpath(base), None)

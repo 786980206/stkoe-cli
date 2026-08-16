@@ -722,6 +722,43 @@ class TestGraphAnalyze:
         assert len(edges) == 6  # panel→index/m1、fieldset→panel、sample→fieldset/index、
         # factor→sample
 
+    def test_asset_graph_multi_center_union(self, lineage):
+        """--node 多中心批量：各自上下游闭包的**并集**（含自身），单中心字符串兼容"""
+        from stkoe.graph.analyze import asset_graph
+
+        # panel:ds1 闭包 6 节点；feature:ma5f 闭包 {feature, factor} → 并集 = 全链 7 节点
+        nodes, edges = asset_graph(lineage.store, ["panel:ds1", "feature:ma5f"])
+        assert set(nodes) == {"index:index", "table:m1", "panel:ds1",
+                              "fieldset:fs1", "sample:sp1", "feature:ma5f",
+                              "factor:fac1"}
+        assert len(edges) == 7
+        # 单中心字符串（旧签名）等价单元素列表
+        nodes1, _ = asset_graph(lineage.store, "panel:ds1")
+        assert len(nodes1) == 6
+        # 空/无中心 → 全图
+        nodes2, _ = asset_graph(lineage.store, [])
+        assert len(nodes2) == 7
+
+    def test_dispatch_analyze_multi_node(self):
+        from stkoe.grpc.dispatch import dispatch
+
+        base = os.path.join(os.environ.get("TEMP", "."), "gql_test_dispatch_multi")
+        _make_graph_db(base)
+        try:
+            data = json.loads(dispatch("graph", "analyze",
+                                       ["--node", "panel:ds1,feature:ma5f"],
+                                       data_dir=base)[0].data)
+            assert len(data["page_rank"]) == 7  # 并集 = 全链
+            assert len(data["degree"]) == 7
+            # 列表中含不存在节点 → 该中心闭包为空，整体不报错
+            data2 = json.loads(dispatch("graph", "analyze",
+                                        ["--node", "panel:ds1,nope:x"],
+                                        data_dir=base)[0].data)
+            assert len(data2["page_rank"]) == 6
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
+
     def test_dispatch_analyze_and_impact(self):
         from stkoe.grpc.dispatch import dispatch
 

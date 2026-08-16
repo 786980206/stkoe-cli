@@ -1330,10 +1330,11 @@ def _graph_update(args: list[str], data_dir=None) -> list[Result]:
 
 @handler("graph", "analyze")
 def _graph_analyze(args: list[str], data_dir=None) -> list[Result]:
-    """graph analyze [--node <type:name>]：图算法（纯 Python）。
+    """graph analyze [--node <type:name>[,<type:name>...]]：图算法（纯 Python）。
 
     PageRank / 度中心性 / 弱连通分量；默认全图资产节点（列节点不参与），
-    --node 限定该资产上下游子图（含自身）。
+    --node 限定该资产上下游子图（含自身）；**逗号分隔多个 --node** 时取各自
+    闭包的并集批量分析（如 ``--node panel:ds1,factor:fac1``）。
     """
     from ..graph.analyze import analyze, asset_graph
 
@@ -1343,7 +1344,10 @@ def _graph_analyze(args: list[str], data_dir=None) -> list[Result]:
         return [Result.json("graph", {"page_rank": [], "degree": [],
                                       "components": []})]
     try:
-        node_ids, edges = asset_graph(store, flags.get("node"))
+        raw = flags.get("node")
+        centers = [c.strip() for c in str(raw).split(",") if c.strip()] \
+            if raw else None
+        node_ids, edges = asset_graph(store, centers)
         data = analyze(node_ids, edges)
     finally:
         store.close()

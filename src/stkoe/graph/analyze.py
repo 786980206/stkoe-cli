@@ -104,18 +104,26 @@ def analyze(node_ids: list[str], edges: list[tuple[str, str]]) -> dict:
     }
 
 
-def asset_graph(store, center: str | None = None):
-    """资产子图：全部资产节点 + DEPENDS 边；``center`` 时取其上下游闭包（含自身）。
+def asset_graph(store, centers: str | list[str] | None = None):
+    """资产子图：全部资产节点 + DEPENDS 边；``centers``（可多个）时取各自上下
+    游闭包的**并集**（含自身，逗号/列表多中心批量）。
 
     列节点（Column）不参与。返回 ``(node_ids, [(source, target), ...])``。
+    兼容旧签名：单中心传字符串等价 ``[center]``。
     """
-    if center is None:
+    if isinstance(centers, str):
+        centers = [centers]
+    if not centers:
         nodes = [n["id"] for n in store.list_nodes()
                  if not n["id"].startswith(_COLUMN_PREFIX)]
     else:
-        ids = {center}
-        ids |= {d["id"] for d in store.downstream(center)}
-        ids |= {d["id"] for d in store.upstream(center)}
+        ids: set[str] = set()
+        for c in centers:
+            if not c or not store.has_node(c):
+                continue  # 不存在的中心直接跳过（不虚造节点）
+            ids.add(c)
+            ids |= {d["id"] for d in store.downstream(c)}
+            ids |= {d["id"] for d in store.upstream(c)}
         nodes = [n for n in ids if not n.startswith(_COLUMN_PREFIX)]
     idset = set(nodes)
     edges = []

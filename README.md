@@ -577,12 +577,13 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
   `{"node", "scope": "downstream"|"all", "updated": [{"node", "version_before",
   "version_after", "result"}...]}`（`result` 为各 `*_update` 返回值，`version_*` 为统一
   可比口径：未推进 = 该节点本次无真实变更）
-- **`graph analyze [--node <type:name>]`**：图算法（**纯 Python 实现**，不依赖
+- **`graph analyze [--node <type:name>[,<type:name>...]]`**：图算法（**纯 Python 实现**，不依赖
   graphqlite 内置算法）——`page_rank`（有向，DEPENDS 方向：rank 沿边流向被依赖方，
   被更多下游依赖的资产得分更高）/ `degree`（`in_degree`=被依赖的下游数、
   `out_degree`=上游依赖数、`degree` 合计，降序）/ `components`（弱连通分量，
   按 size 降序）；默认全图资产节点（列节点不参与），`--node` 限定该资产
-  上下游子图（含自身）
+  上下游子图（含自身），**逗号分隔多个 `--node` 取各自闭包的并集批量分析**
+  （不存在的节点跳过不报错）
 - **`graph impact --node <type:name> | --column <type:name.col> [--depth N]`**：
   下游影响分析——`--node` 返回该资产 DEPENDS 下游闭包（`assets`，带 depth）+
   其全部列的 DERIVES 下游列闭包（`columns`）；`--column` 返回以该列为中心的

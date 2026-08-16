@@ -233,6 +233,11 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 版本 0.7.1（tag v0.7.1）：下游物化按 index.materialize_partition 时间桶分区
+
+- **pyproject 版本 0.7.0 → 0.7.1**：发布下游继承物化粒度（panel/fieldset/factor/test
+  按 index.materialize_partition 时间桶分区落盘）行为变更，详见下方 feat 记录
+
 ### 2026-08 feat: 物化按 index.materialize_partition 时间桶分区（下游继承物化粒度）
 
 - **语义修正**：panel/fieldset/factor/test 物化不再"镜像 index 物理分区键"（物理 flat 则

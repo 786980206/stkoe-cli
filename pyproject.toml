@@ -1,6 +1,6 @@
 [project]
 name = "stkoe"
-version = "0.7.0"
+version = "0.7.1"
 description = "stkoe 数据服务（gRPC）"
 readme = "README.md"
 authors = [

@@ -94,6 +94,19 @@ class GraphService:
                 return old
         return db
 
+    @classmethod
+    def open_graph_store(cls, data_dir: Path | str | None = None) -> GraphStore | None:
+        """只读打开资产图库（§13：dispatch graph 命令复用同一打开逻辑/命名回退）。
+
+        缺省 data_dir 取配置；库文件（catalog.db / 旧 graph.db）不存在返回 None
+        （命令方输出空图），不做建目录/建库副作用。
+        """
+        if data_dir is None:
+            data_dir = load_config().data_dir
+        root = Path(data_dir).expanduser()
+        db = cls._db_path(root)
+        return GraphStore(str(db)) if db.exists() else None
+
     def close(self) -> None:
         self.store.close()
 

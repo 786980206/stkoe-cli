@@ -1238,27 +1238,11 @@ def _mock_gen(args: list[str], data_dir=None) -> list[Result]:
 # ---------------------------------------------------------------------------
 
 def _graph_store(data_dir):
-    """按 data_dir 打开资产图库（<data_dir>/catalog.db；兼容旧名 graph.db；
-    不存在返回 None，命令返回空图）。
+    """按 data_dir 打开资产图库（§13：统一走 GraphService.open_graph_store——
+    catalog.db/graph.db 命名回退只此一处；库不存在返回 None，命令返回空图）"""
+    from ..graph.service import GraphService
 
-    缺省 data_dir（CLI 路径不传）回退 ``load_config().data_dir``，与
-    ``_graph_service`` 行为对齐。
-    """
-    from ..graph.store import GraphStore
-    from ..settings import load_config
-
-    import os
-
-    if not data_dir:
-        data_dir = load_config().data_dir
-    # data_dir 可能来自配置默认值 "~/.stkoe"（未展开）：GraphService 内部 expanduser，
-    # 此处必须同样展开，否则 os.path.join("~/.stkoe", ...) 找不到库 → 空图
-    data_dir = os.path.expanduser(data_dir)
-    for name in ("catalog.db", "graph.db"):
-        path = os.path.join(data_dir, name)
-        if os.path.exists(path):
-            return GraphStore(path)
-    return None
+    return GraphService.open_graph_store(data_dir)
 
 
 @handler("graph", "lineage")

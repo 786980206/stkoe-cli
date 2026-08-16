@@ -90,13 +90,20 @@ def _metric_specs(kind: str, c: str, st: pl.DataType | None = None) -> list[tupl
 
 
 def _class_stats(base: pl.LazyFrame, g: str, cols: list[str],
-                 kind: str) -> pl.LazyFrame:
-    """同一 dtype 类别的分组统计（流式友好）
+                 kind: str, grouped: bool = True) -> pl.LazyFrame:
+    """同一 dtype 类别的统计（流式友好）
 
-    多列一次性 ``group_by`` 聚合（每列每指标一个聚合列），得到按组行数=组数的窄表；
-    再对窄表按指标逐列 unpivot 成 ``(g, count, field, <metric>)`` 并以
-    ``(g, count, field)`` 内 join 拼成一行一字段的统计行。窄表行数=组数（小），
-    全程不对原始数据 unpivot。
+    多列一次性聚合（每列每指标一个聚合列），得到行数=组数（非分组 1 行）的窄表；
+    再对窄表**单次 unpivot**（variable 拆出 field/metric）后 ``pivot`` 拼成
+    ``(g, count, field, <metric>...)`` 宽行——窄表小，全程不对原始数据 unpivot。
+    **不做逐指标分支 unpivot+join**：多分支共享 AGGREGATE 会让优化器插入 CACHE
+    节点，streaming 执行时 CACHE 强制物化/spill 整表（1852 万行粗桶实测 58s/分区
+    vs 单 unpivot+pivot 36s/分区，见变更记录）。
+
+    ``grouped=False``（``group_col=None`` 的全量分区）：走**无分组全局聚合**
+    （``select(*aggs)`` 而非 ``group_by(常量)``）——polars 对无分组聚合有专门的
+    并行路径，1 组场景实测 12s vs group_by 常量 39s（流式 quantile 在单大组下
+    维护排序结构昂贵）。
     """
     st = None
     if kind == "numeric":
@@ -108,24 +115,39 @@ def _class_stats(base: pl.LazyFrame, g: str, cols: list[str],
             st = None
     aggs: list[pl.Expr] = [pl.len().alias("_count")]
     for c in cols:
-        for _, suffix, expr in _metric_specs(kind, c, st):
-            aggs.append(expr.alias(f"{c}#{suffix}"))
-    small = base.select([g, *cols]).group_by(g).agg(*aggs)
+        for m, _, expr in _metric_specs(kind, c, st):
+            # 别名直接带输出列名（null_count/nunique/min_date…），unpivot 拆分后
+            # metric 即契约列名，无需 replace_strict 二次映射
+            aggs.append(expr.alias(f"{c}#{m}"))
+    if grouped:
+        small = base.select([g, *cols]).group_by(g).agg(*aggs)
+        idx = [g, "_count"]
+    else:
+        small = base.select(*aggs)
+        idx = ["_count"]
 
     metrics = [(m, s) for m, s, _ in _metric_specs(kind, cols[0], st)]
-    parts: list[pl.LazyFrame] = []
-    for metric, suffix in metrics:
-        mcols = [f"{c}#{suffix}" for c in cols]
-        parts.append(
-            small.select([g, "_count", *mcols])
-            .unpivot(index=[g, "_count"], on=mcols,
-                     variable_name="field", value_name=metric)
-            .with_columns(pl.col("field").replace_strict(
-                {f"{c}#{suffix}": c for c in cols})))
-    joined = parts[0]
-    for p in parts[1:]:
-        joined = joined.join(p, on=[g, "_count", "field"], how="inner")
+    mcols = [f"{c}#{m}" for m, _ in metrics for c in cols]
+    long = (
+        small.unpivot(index=idx, on=mcols,
+                      variable_name="_var", value_name="_v")
+        .with_columns(pl.col("_var").str.split_exact("#", 1).alias("_sp"))
+        .unnest("_sp")
+        .rename({"field_0": "field", "field_1": "metric"})
+    )
+    joined = long.pivot("metric", [m for m, _ in metrics],
+                        index=idx + ["field"], values="_v",
+                        aggregate_function="first")
+    if not grouped:
+        joined = joined.with_columns(pl.lit("all").alias(g))
     joined = joined.with_columns(pl.col("_count").alias("count"))
+    # pivot 的 value 列来自 unpivot 的 supertype（数值分支全 Float64）——
+    # null_count/nunique 需 cast 回契约类型（UInt32），保证各 dtype 分支
+    # concat 时 schema 一致（vertical 不放松类型）
+    joined = joined.with_columns([
+        pl.col("null_count").cast(pl.UInt32),
+        pl.col("nunique").cast(pl.UInt32),
+    ])
 
     if kind == "numeric":
         joined = joined.with_columns([
@@ -165,8 +187,9 @@ def _class_stats(base: pl.LazyFrame, g: str, cols: list[str],
 def calc_stats(data: pl.LazyFrame | pl.DataFrame, group_col: str | None = None) -> pl.LazyFrame:
     """计算所有列的统计信息（支持分组/非分组；返回 LazyFrame）
 
-    ``group_col`` 为 None 时全量一行 ``group=all``；否则按该列不同取值各一组，
-    分组列名作为首列列名。数值/字符串/时间三类各做一次流式聚合（见 _class_stats），
+    ``group_col`` 为 None 时全量一行 ``group=all``（走**无分组全局聚合**，见
+    ``_class_stats(grouped=False)``）；否则按该列不同取值各一组，分组列名作为
+    首列列名。数值/字符串/时间三类各做一次流式聚合（见 _class_stats），
     结果可直接 ``collect(engine="streaming")`` 或 ``sink_parquet``。
     """
     lf = data.lazy() if isinstance(data, pl.DataFrame) else data
@@ -177,18 +200,22 @@ def calc_stats(data: pl.LazyFrame | pl.DataFrame, group_col: str | None = None) 
     group_col = group_col or "all"
     has_group = group_col != "all"
     g = "_g"
-    if not has_group:
-        base = lf.with_columns(pl.lit("all").alias(g))
-    else:
-        base = lf.with_columns(pl.col(group_col).cast(pl.String, strict=False).alias(g))
+    if has_group:
+        base = lf.with_columns(
+            pl.col(group_col).cast(pl.String, strict=False).alias(g))
 
     stats: list[pl.LazyFrame] = []
-    if numeric_cols:
-        stats.append(_class_stats(base, g, numeric_cols, "numeric"))
-    if string_cols:
-        stats.append(_class_stats(base, g, string_cols, "string"))
-    if temporal_cols:
-        stats.append(_class_stats(base, g, temporal_cols, "temporal"))
+    if has_group:
+        for cls, kind in ((numeric_cols, "numeric"), (string_cols, "string"),
+                          (temporal_cols, "temporal")):
+            if cls:
+                stats.append(_class_stats(base, g, cls, kind))
+    else:
+        # 非分组：不做 with_columns 常量列，直接无分组全局聚合（polars 并行路径）
+        for cls, kind in ((numeric_cols, "numeric"), (string_cols, "string"),
+                          (temporal_cols, "temporal")):
+            if cls:
+                stats.append(_class_stats(lf, g, cls, kind, grouped=False))
 
     if stats:
         result = pl.concat(stats, how="vertical")

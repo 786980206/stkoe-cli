@@ -61,9 +61,11 @@ class StatScanHandler(TaskHandler):
         flags = parse_flags(ctx.args)
         kind = flags.get("kind") or "coverage"
         target_type, target_name = _target(ctx, tester_only=True)
+        parts = [p for p in str(flags.get("partition") or "").split(",") if p] or None
         ctl = _controller(ctx)
         loop = asyncio.get_running_loop()
         report = await ctl.scan(target_type, target_name, kind=kind,
+                                partitions=parts,
                                 on_progress=worker_on_progress(ctx, loop))
         return TaskResult(data=dumps_str(report.to_dict()))
 

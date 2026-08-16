@@ -286,7 +286,7 @@ uv run stkoe config set --dbt-manifest-file ./dbt-project/target/manifest.json
 | panel | `set` | `<name>` | `--display_name/--description/--tags <v>` + 任意键 | JsonData（PanelMeta） |
 | panel | `update` | `<name>` | — | JsonData（PanelMeta；传导检查上游 index/成员表就绪后**物化 join 视图**——按 index 的 `materialize_partition` 时间桶分区落盘 `panel/<name>/part=<v>/`，见 §6.5；增量按积累区间只重算受影响时间桶） |
 | panel | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
-| stat | `scan` | `<table\|panel\|tester> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic`）；`<name>` 单位置 + `--kind <测试器>` 简写 → tester 目标 | JsonData（StatScanReport） |
+| stat | `scan` | `<table\|panel\|tester> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic`）；`--partition <p>[,<p>...]`（coverage 按需只算指定分区，见 §6.6）；`<name>` 单位置 + `--kind <测试器>` 简写 → tester 目标 | JsonData（StatScanReport） |
 | stat | `get` | `<table\|panel\|tester> <name>` | `--partition_by <p>` `--kind <kind>`；单位置 `<name>` 简写 → tester 目标 | JsonData + ArrowTable（§6.6） |
 | stat | `meta` | `<table\|panel\|tester> <name>` | `--kind <kind>`；单位置 `<name>` 简写 → tester 目标 | JsonData（StatMeta） |
 | stat | `list` | — | — | JsonData（StatMeta[]） |
@@ -405,6 +405,11 @@ get 返回列集合与实时视图一致）。与 index 物理是否分区无关
 - **不指定 `--partition_by`**：每个分区一对消息 —— `JsonData{name="stat/<p>", data={"partition","rows","columns"}}` + `ArrowTable`
 - **指定 `--partition_by <p>`**：一对 —— `JsonData{name=<target>, data={"partition","rows","columns"}}` + `ArrowTable`
 - 分区名：`all`（全量）+ 每个索引列（panel 取 keys；table 取非工具列）
+- **`stat scan --partition <p>[,<p>...]`（按需扫描）**：只计算指定分区（未知名报错）——
+  coverage 全量 = 每索引列一个分组文件，粗桶大表（千万行 × 数十列）的分区内存/耗时
+  随分区数线性放大（每分区一次全表聚合，组数高的列哈希内存可达数 GB），
+  日常只需 `all` + 常用索引列（如 `--partition all,date,sym`）可秒级完成；
+  局部扫描只覆盖指定分区文件，其余保留（`stat meta` 可见存量）
 - **`--kind storage`（存续统计）**：`stat scan table <name>` 只对表磁盘 parquet 做 stat 聚合，
   输出列 `partition_by | partition_value | storage_size | file_no`；`all` 分区为
   `__all__/__all__` 全表总量，其余分区（如 `year`）文件按表 hive 分区键逐值一行

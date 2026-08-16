@@ -189,19 +189,32 @@ class StatController:
     # ---------- scan ----------
 
     def _scan_sync(self, target_type: str, target_name: str, kind: str = "coverage",
-                   on_progress=None) -> StatScanReport:
+                   on_progress=None,
+                   partitions: list[str] | None = None) -> StatScanReport:
         """计算全量 + 逐索引分组统计并写 ``stats/<type>/<name>/<kind>/<part>.parquet``
 
         ``on_progress(i, total, msg)`` 可选进度回调（worker 线程同步调用，逐分组）。
+        ``partitions`` 给定时只算指定分区（如 ``["all", "date"]``，未知名报错）——
+        粗桶大表（千万行 × 数十索引列）全量分区逐列分组统计的内存/耗时随分区数
+        线性放大，按需只算常用分区（all + 索引列子集）可秒级完成。
         kind=storage 走存续统计分支（见 _scan_storage_sync）。
-        覆盖率统计全程 LazyFrame，写入走 ``sink_parquet``（流式），
-        calc_stats 内部按 dtype 类别聚合再对窄结果 unpivot，内存与数据规模解耦。
+
+        计算全程 LazyFrame；**执行用 in-memory 引擎**（``collect()`` 后写结果，
+        结果本身很小 = 组数 × 14 列）：实测（1852 万行 × 22 列，见变更记录）
+        流式 ``sink_parquet`` 的 group_by 哈希表单分区峰值 ~8GB，且 polars 跨
+        分区不释放内存（第 8 个分区即 OOM）；in-memory 引擎单分区 ~16s、
+        临时结构随 collect 结束释放，串行 23 分区可稳定跑完。
         """
         if kind == "storage":
             return self._scan_storage_sync(target_type, target_name, on_progress)
         if target_type == "tester":
             return self._scan_tester_sync(target_name, kind, on_progress)
         parts = self._partitions(target_type, target_name)
+        if partitions:
+            unknown = [p for p in partitions if p not in parts]
+            if unknown:
+                raise StatTargetError(f"未知 stat 分区: {unknown}（可选 {parts}）")
+            parts = partitions
         lf = self._select_lf(target_type, target_name)
         out_dir = self._kind_dir(target_type, target_name, kind)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -210,9 +223,10 @@ class StatController:
             if on_progress is not None:
                 on_progress(i, len(parts), f"{target_type}/{target_name}: {p}")
             f = out_dir / f"{p}.parquet"
-            calc_stats(lf, group_col=None if p == "all" else p).sink_parquet(f)
+            df = calc_stats(lf, group_col=None if p == "all" else p).collect()
+            df.write_parquet(f)
             files.append(StatFile(partition=p, rel_path=f.relative_to(self.root),
-                                  rows=_parquet_rows(f), size=f.stat().st_size))
+                                  rows=df.height, size=f.stat().st_size))
         files = list(_ordered(tuple(files)))
         report = StatScanReport(target_type=target_type, target_name=target_name,
                                 kind=kind, partitions=tuple(f.partition for f in files),
@@ -355,10 +369,12 @@ class StatController:
     # ---------- async 接口 ----------
 
     async def scan(self, target_type: str, target_name: str,
-                   kind: str = "coverage", on_progress=None) -> StatScanReport:
-        """生成/更新统计分组产物（幂等）；``on_progress`` 逐分组进度回调"""
+                   kind: str = "coverage", on_progress=None,
+                   partitions: list[str] | None = None) -> StatScanReport:
+        """生成/更新统计分组产物（幂等）；``on_progress`` 逐分组进度回调；
+        ``partitions`` 给定时只算指定分区（按需扫描，见 ``_scan_sync``）。"""
         return await asyncio.to_thread(self._scan_sync, target_type, target_name,
-                                       kind, on_progress)
+                                       kind, on_progress, partitions)
 
     async def get(self, target_type: str, target_name: str,
                   kind: str = "coverage", partition_by: str | None = None

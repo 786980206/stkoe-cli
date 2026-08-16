@@ -252,6 +252,35 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 perf: stat coverage 大表提速 + 按需扫描——单分区 58s→16s、新增 --partition
+
+- **背景**：真实数据（klday 1852 万行 × 22 列）`stat scan table` 覆盖率全量实测
+  单分区 58s × 23 分区 ≈ 22 分钟——且用户体感"非常耗时"
+- **根因 1（CACHE spill）**：`calc_stats._class_stats` 逐指标分支 unpivot+join，
+  多分支共享 AGGREGATE 让优化器插入 CACHE 节点——streaming 执行时 CACHE 强制
+  物化/spill 整表（1852 万行 × 20 列写盘 + 8 次读回）；实测同计划 in-memory 16s
+  vs sink 58s
+- **根因 2（group_by 常量）**：`all` 分区（group_col=None）走 `group_by(常量)`——
+  单大组下流式 quantile 维护排序结构昂贵（39s）；polars 对**无分组全局聚合**
+  （`select(*aggs)`）有专门并行路径（12s）
+- **修复**：① `_class_stats` 改**单次 unpivot + pivot**（variable 拆 field/metric，
+  别名直接带输出列名，绕开 replace_strict/rename_fields 的 polars 1.43 bug），
+  消除 CACHE 分支；② `calc_stats(group_col=None)` 走无分组聚合路径
+  （`_class_stats(grouped=False)`）；③ 执行引擎改 **in-memory `collect()` 后
+  `write_parquet`**——流式 sink 的 group_by 哈希表单分区峰值 ~8GB 且 polars 跨
+  分区不释放内存（串行第 8 个分区 OOM，32GB 机器实测），in-memory 引擎临时结构
+  随 collect 释放，串行可稳定跑完（结果小 = 组数 × 14 列）；④ 线程并行放弃
+  （多路哈希内存叠加必 OOM，实测 2/4/8 路均失败）
+- **新增 `stat scan --partition <p>[,<p>...]`**：coverage 按需只算指定分区
+  （未知名报错；局部扫描只覆盖指定文件，其余保留）——日常
+  `--partition all,date,sym` 实测 34-55s（vs 全量 22 分钟）；大表全量分区
+  （组数≈行数的浮点列哈希单分区 ~24GB）在 32GB 机器不可行，文档注明建议按需
+- **实测（klday 1852 万行）**：单分区 all 39s→12s、分组分区 58s→16s；全流程
+  基准：源头 update 幂等 0s、panel 全量物化 15.8s、全链 ~26s、get 秒级、graph
+  命令 <0.2s
+- 测试：+2 例（--partition 子集/未知名报错、先全量后按需幂等保留其余文件）；
+  test_stat 19 例绿；文档：README §6.1/§6.6、AGENTS.md
+
 ### 2026-08 refactor: GraphService 瘦身——资产业务分模块 ops.py（130KB → 48KB）
 
 - **背景**：`graph/service.py` 巨石（150 方法 / 130KB）——table/index/panel/fieldset/

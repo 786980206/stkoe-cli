@@ -331,7 +331,9 @@ def _stat_scan(args: list[str], data_dir=None) -> list[Result]:
         raise CommandError("stat scan 需要 target 类型和名字（如 panel <name>，"
                            "或 tester <name> --kind <tester>）")
     ctl = _stat_controller(data_dir)
-    report = asyncio.run(ctl.scan(target_type, target_name, kind=kind))
+    parts = [p for p in str(flags.get("partition") or "").split(",") if p] or None
+    report = asyncio.run(ctl.scan(target_type, target_name, kind=kind,
+                                  partitions=parts))
     return [Result.json("stat", report.to_dict())]
 
 

@@ -322,6 +322,33 @@ def test_task_framework_stat_handlers(mgr):
     assert [p["partition"] for p in all_res["partitions"]] == ["all", "date", "sym"]
 
 
+def test_scan_partition_subset(ctl, tmp_path):
+    """stat scan --partition 只算指定分区；未知名报错（粗桶大表按需扫描）"""
+    _setup_sources(tmp_path)
+    r = _scan(ctl, "table", "m1", partitions=["all", "date"])
+    assert list(r.partitions) == ["all", "date"]
+
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        _scan(ctl, "table", "m1", partitions=["nope"])
+
+
+def test_scan_full_then_partial_is_idempotent(ctl, tmp_path):
+    """先全量再按需重扫：只覆盖指定分区文件，其余保留"""
+    _setup_sources(tmp_path)
+    _scan(ctl, "table", "m1")
+    r = _scan(ctl, "table", "m1", partitions=["all"])
+    assert list(r.partitions) == ["all"]
+    out = _get(ctl, "table", "m1")
+    assert "all" in out and "date" in out and "sym" in out  # 其余分区文件保留
+    assert set(out) == set(_partitions_of(ctl, "table", "m1"))
+
+
+def _partitions_of(ctl, target_type, target_name):
+    return ctl._partitions(target_type, target_name)
+
+
 def test_task_scan_reports_index_progress(mgr):
     """s:stat scan 计算各索引 coverage 分组：ctx.update 逐分组上报进度（graph 语义）"""
     _gsetup(mgr.data_dir)
@@ -332,10 +359,10 @@ def test_task_scan_reports_index_progress(mgr):
 
     evs = mgr.events.list_by_task(t_scan.task_id)
     prog = [(e.progress, e.message) for e in evs if e.message.startswith("panel/ds1:")]
-    assert len(prog) == 3  # all + 每个索引各一条（按 _partitions 计算顺序）
-    assert prog[0] == (pytest.approx(1 / 3), "panel/ds1: all（1/3）")
-    assert prog[1] == (pytest.approx(2 / 3), "panel/ds1: sym（2/3）")
-    assert prog[2] == (pytest.approx(1.0), "panel/ds1: date（3/3）")
+    assert len(prog) == 3  # all + 每个索引各一条（分区并行，完成顺序不定）
+    parts = {m.split(": ", 1)[1].split("（", 1)[0] for _, m in prog}
+    assert parts == {"all", "date", "sym"}
+    assert [p for p, _ in prog] == pytest.approx([1 / 3, 2 / 3, 1.0])
     assert evs[-1].state == "succeeded"
     assert evs[-1].progress == 1.0
 

@@ -403,6 +403,11 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
 `materialize_partition` 未知 / 无时间键 → 单文件兜底。增量物化按 datetime 区间删受影响桶
 并保留桶内区间外旧行合并写回（桶粒度粗于区间，见 §11）。
 
+- **粒度引导**：`index add` 登记扫描时若发现 index 数据**跨多年**且粒度仍为默认
+  `yearly`，报告附带 `partition_hint` 提示——yearly 桶下增量重写按**整个年份桶**
+  替换，跨年大表 + 频繁增量会反复重写整桶，建议 `index set --materialize-partition
+  monthly/daily`（下游物化继承，见 §6.5 上）；数据单年或已显式细化粒度则不提示
+
 ### 6.6 `stat get` 返回
 
 - **不指定 `--partition_by`**：每个分区一对消息 —— `JsonData{name="stat/<p>", data={"partition","rows","columns"}}` + `ArrowTable`

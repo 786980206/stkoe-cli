@@ -87,6 +87,23 @@ def _expand_scope(scope, back: int = 0, forward: int = 0):
     return [lo, hi]
 
 
+def _partition_hint(span: tuple[str, str] | None, gran: str) -> str:
+    """物化粒度引导：默认 yearly 时间桶下 index 数据跨多年 → 提示细化粒度。
+
+    增量重写按桶整桶替换——yearly 桶粒度粗，跨年数据的大范围/频繁增量会反复
+    重写整个年份桶；monthly/daily 桶可细分（见 ``_write_partitioned``）。
+    ``span`` 为 ``(datetime 最小, 最大)``（字符串/ISO 字典序），解析失败返回空。
+    """
+    if gran != "yearly" or not span or len(span) != 2:
+        return ""
+    lo, hi = str(span[0]), str(span[1])
+    if lo and hi and lo[:4] != hi[:4]:
+        return (f"index 数据跨 {lo[:4]}-{hi[:4]} 年：yearly 时间桶下增量重写会重写"
+                f"整个年份桶，数据量大或增量频繁建议 materialize_partition=monthly/"
+                f"daily（index set 调整，下游物化继承）")
+    return ""
+
+
 def _asof_join(left: pl.LazyFrame, right: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
     """asof join：等值键 ``keys[:-1]``（by）+ 时间键 ``keys[-1]``（on，backward 就近匹配）。
 
@@ -608,19 +625,30 @@ class GraphService:
     # =====================================================================
 
     def _check_index_unique(self, name: str, *, symbol_col: str | None = None,
-                            datetime_col: str | None = None) -> None:
+                            datetime_col: str | None = None) -> tuple[str, str] | None:
         """校验 index 物理数据的 ``(symbol_col, datetime_col)`` 组合唯一（V3.0 设计
-        ``IndexHandler.add``：index 是时间×标的的索引，不允许重复键）。"""
+        ``IndexHandler.add``：index 是时间×标的的索引，不允许重复键）。
+
+        返回 ``(datetime 最小, 最大)``（登记时一次扫描顺带取到，供物化粒度引导
+        ``_partition_hint``）；无时间列/无数据 → None。
+        """
         node = self.store.get_node(node_id("index", name)) or {}
         sym = symbol_col or node.get("symbol_col") or "sym"
         dt = datetime_col or node.get("datetime_col") or "date"
         lf = pl.scan_parquet(self._index_root(name), hive_partitioning=True)
-        total = lf.select(pl.len()).collect().item()
-        uniq = lf.select(sym, dt).unique().select(pl.len()).collect().item()
+        if dt not in lf.collect_schema().names():
+            return None
+        df = lf.select(sym, dt).collect()
+        total = df.height
+        uniq = df.unique().height
         if uniq != total:
             raise ValueError(
                 f"index {name} 的 ({sym}, {dt}) 组合不唯一: {total} 行 / {uniq} 组唯一"
                 f"（index 要求 symbol+datetime 键唯一）")
+        vals = df[dt].drop_nulls()
+        if vals.len() == 0:
+            return None
+        return str(vals.min()), str(vals.max())
 
     def index_add(self, name: str, *, all: bool = False, symbol_col: str = "sym",
                   datetime_col: str = "date", materialize_partition: str = "yearly",
@@ -639,10 +667,17 @@ class GraphService:
                 if self.store.get_node(node_id("index", d.name)) is None \
                         and any(d.rglob("*.parquet")):
                     m, cols = self._manifest_meta(d.name)
-                    out.append(self._scan_disk(
+                    r = self._scan_disk(
                         "index", d.name, meta={**m, **(meta or {})}, col_meta=cols,
                         extra_data={"symbol_col": symbol_col, "datetime_col": datetime_col,
-                                    "materialize_partition": materialize_partition}))
+                                    "materialize_partition": materialize_partition})
+                    hint = _partition_hint(
+                        self._check_index_unique(d.name, symbol_col=symbol_col,
+                                                 datetime_col=datetime_col),
+                        materialize_partition)
+                    if hint:
+                        r["partition_hint"] = hint
+                    out.append(r)
             return out
         if not name:
             raise ValueError("add 需要 index 名（或 --all 批量发现）")
@@ -651,12 +686,18 @@ class GraphService:
             raise AssetNotFoundError(f"index dir not found: {root}")
         if self.store.get_node(node_id("index", name)) is not None:
             raise TableExistsError(f"index already registered: {name}")
-        self._check_index_unique(name, symbol_col=symbol_col, datetime_col=datetime_col)
+        span = self._check_index_unique(name, symbol_col=symbol_col,
+                                        datetime_col=datetime_col)
         m, cols = self._manifest_meta(name)
-        return self._scan_disk(
+        r = self._scan_disk(
             "index", name, meta={**m, **(meta or {})}, col_meta=cols,
             extra_data={"symbol_col": symbol_col, "datetime_col": datetime_col,
                         "materialize_partition": materialize_partition})
+        # 物化粒度引导：yearly 默认粒度下数据跨多年 → 报告带 partition_hint
+        hint = _partition_hint(span, materialize_partition)
+        if hint:
+            r["partition_hint"] = hint
+        return r
 
     def index_get(self, name: str, *, columns=None, where=None, partition=None,
                   exclude_tool: bool = False, limit=None, offset=None,

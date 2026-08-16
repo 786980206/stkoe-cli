@@ -625,6 +625,26 @@ class TestIndexGraph:
         listed = svc.index_list()
         assert [i["name"] for i in listed] == ["index"]
 
+    def test_index_add_partition_hint(self, svc):
+        """物化粒度引导：默认 yearly 且数据跨多年 → 报告带 partition_hint；单年/已细化无"""
+        for n, dates in [("span", ["2023-12-31", "2025-01-01"]),
+                         ("oneyear", ["2024-01-01", "2024-12-31"])]:
+            d = os.path.join(svc.data_dir, "index", n)
+            os.makedirs(d, exist_ok=True)
+            pl.DataFrame({"sym": ["a", "b"], "date": dates,
+                          "code": [1, 2]}).write_parquet(os.path.join(d, "data.parquet"))
+        r = svc.index_add("span")
+        assert "partition_hint" in r
+        assert "monthly/daily" in r["partition_hint"]
+        assert "2023" in r["partition_hint"] and "2025" in r["partition_hint"]
+        assert "partition_hint" not in svc.index_add("oneyear")  # 单年内不提示
+        d = os.path.join(svc.data_dir, "index", "span2")
+        os.makedirs(d, exist_ok=True)
+        pl.DataFrame({"sym": ["a", "a"], "date": ["2023-12-31", "2025-01-01"]}).write_parquet(
+            os.path.join(d, "data.parquet"))
+        # 显式 monthly：粒度已细化，不提示
+        assert "partition_hint" not in svc.index_add("span2", materialize_partition="monthly")
+
     def test_index_add_all(self, svc):
         """index add --all：批量发现 index/ 下未登记的 parquet 目录（空目录跳过）"""
         # fixture 已含 index/index（未登记）；再造两个未登记候选 + 一个空目录

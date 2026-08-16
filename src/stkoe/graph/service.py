@@ -1011,7 +1011,10 @@ class GraphService:
 
     def _sync_fieldset_field_derives(self, name: str, field: str,
                                      formula: str) -> list[str]:
-        """字段列级血缘：字段列 DERIVES → 公式引用的 panel 列 / 同集字段列。"""
+        """字段列级血缘：字段列 DERIVES → 公式引用的 panel 列 / 同集字段列。
+
+        同时把引用列写回字段 meta 的 ``required_fields``（派生信息，不额外置脏）。
+        """
         node = self._require_node("fieldset", name)
         panel = node.get("panel", "").split(":", 1)[-1]
         pcols, ffields = self._fieldset_ref_cols(name)
@@ -1024,6 +1027,14 @@ class GraphService:
         if to_fields:
             self.graph.sync_derives("fieldset", name, "fieldset", name,
                                     {field: to_fields})
+        fields = dict(node.get("fields") or {})
+        cur = fields.get(field)
+        if cur is not None and list(cur.get("required_fields") or ()) != refs:
+            fields[field] = {**cur, "required_fields": refs}
+            # required_fields 是 formula 的派生信息（与 validated 同属状态更新）：
+            # add_field/set_field 已按定义变化置脏过自身与下游，此处不重复置脏
+            self.graph.set("fieldset", name, definition=True, fields=fields,
+                           self_invalidate=False)
         return refs
 
     def fieldset_meta_field(self, name: str, field: str) -> dict:

@@ -134,6 +134,9 @@ class FieldMeta:
     ``window_size``：滚动窗口回看宽度（0=逐行无窗口）。用于 data change event 的
     datetime 范围计算——回看窗口 w 下，输入在 [lo, hi] 变化时输出受影响范围是
     [lo, hi+w-1]（增量物化按此展开重算区间与事件范围，见 GraphService._expand_scope）。
+    ``required_fields``：公式引用的上游列（panel 视图列 ∪ 同集字段），由
+    GraphService 登记时自动计算（复用 ``_formula_refs``），供 meta 展示与下游
+    依赖分析。
     """
 
     name: str
@@ -145,6 +148,7 @@ class FieldMeta:
     validated: bool = False
     engine: str = "polars"
     window_size: int = 0
+    required_fields: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -157,6 +161,7 @@ class FieldMeta:
             "validated": self.validated,
             "engine": self.engine,
             "window_size": self.window_size,
+            "required_fields": list(self.required_fields),
         }
 
     @classmethod
@@ -167,6 +172,8 @@ class FieldMeta:
             kw["tags"] = tuple(kw["tags"] or ())
         if "window_size" in kw:
             kw["window_size"] = int(kw["window_size"] or 0)
+        if "required_fields" in kw and not isinstance(kw["required_fields"], tuple):
+            kw["required_fields"] = tuple(kw["required_fields"] or ())
         return cls(**kw)
 
     def patch(self, **kw) -> "FieldMeta":

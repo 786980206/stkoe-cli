@@ -1274,5 +1274,60 @@ class TestUpdateCascade:
             assert all(u["version_after"] == u["version_before"]
                        for u in data2["updated"] if u["node"] != "panel:ds1")
         finally:
-            # 清线程本地缓存，避免缓存连接阻碍 fixture 清理（rmtree）
-            _d._thread_local.services.pop(_os.path.realpath(base), None)
+            # 清线程本地缓存并显式关闭，避免缓存连接阻碍 fixture 清理（rmtree）
+            inst = _d._thread_local.services.pop(_os.path.realpath(base), None)
+            if inst is not None:
+                inst.close()
+
+
+class TestRequiredFields:
+    """FieldMeta.required_fields 回归：公式引用列自动登记（复用 _formula_refs）。"""
+
+    def _chain(self, svc):
+        svc.table_add("m1")
+        svc.index_add("index")
+        svc.panel_add("ds1", "index", ["m1"])
+        svc.fieldset_add("fs1", "ds1")
+
+    def test_add_field_records_referenced_panel_cols(self, svc):
+        """add_field：required_fields = 公式引用的 panel 视图列（保序去重）。"""
+        self._chain(svc)
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        f = svc.fieldset_meta_field("fs1", "x2")
+        assert f["required_fields"] == ["code"]
+        # 多引用保序 + 函数名/字面量不收录
+        svc.fieldset_add_field("fs1", "x3", "abs(price) + code")
+        assert svc.fieldset_meta_field("fs1", "x3")["required_fields"] == \
+            ["price", "code"]
+
+    def test_required_fields_include_sibling_fields(self, svc):
+        """引用同集已定义字段 → 一并收录（与 panel 列同一集合计算）。"""
+        self._chain(svc)
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        svc.fieldset_add_field("fs1", "x3", "x2 + code")
+        assert svc.fieldset_meta_field("fs1", "x3")["required_fields"] == \
+            ["x2", "code"]
+
+    def test_set_field_recomputes_required_fields(self, svc):
+        """set_field 改公式 → required_fields 重算（旧引用清除）。"""
+        self._chain(svc)
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        assert svc.fieldset_meta_field("fs1", "x2")["required_fields"] == ["code"]
+        svc.fieldset_set_field("fs1", "x2", formula="price + code")
+        assert svc.fieldset_meta_field("fs1", "x2")["required_fields"] == \
+            ["price", "code"]
+
+    def test_required_fields_in_fieldset_meta(self, svc):
+        """fieldset meta / Execute 通道均可见 required_fields。"""
+        import json
+
+        from stkoe.grpc.dispatch import dispatch
+
+        self._chain(svc)
+        svc.fieldset_add_field("fs1", "x2", "code * 2")
+        m = svc.fieldset_meta("fs1")
+        assert m["fields"]["x2"]["required_fields"] == ["code"]
+        base = str(svc.data_dir)
+        data = json.loads(dispatch("fieldset", "meta", ["fs1"],
+                                   data_dir=base)[0].data)
+        assert data["fields"]["x2"]["required_fields"] == ["code"]

@@ -234,6 +234,26 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md §2/§6.13�
 
 ## 近期变更记录
 
+### 2026-08 feat: required_fields 回归——fieldset 字段公式引用列自动登记
+
+- **背景**：v3.0-def.py 的 FieldMeta 本有 ``required_fields``（公式所需上游字段），
+  重构中与 ``window_size`` 一起丢失；window_size 已回归，required_fields 本次补回
+- **字段**：FieldMeta 补 ``required_fields: tuple[str, ...] = ()``（to_dict 输出
+  list、from_dict 归一 tuple）；**自动计算**：`_sync_fieldset_field_derives` 复用
+  ``_formula_refs``（标识符 ∩ panel 视图列 ∪ 同集字段，保序去重）算出引用列后
+  写回字段 meta（add_field / set_field 改公式都会重算并清旧引用）——
+  写回用 `self.graph.set(..., self_invalidate=False)`（与 check 写回 validated
+  同模式：required_fields 是 formula 的派生信息，add/set 已按定义变化置脏过，
+  不重复置脏）
+- **可见性**：`fieldset meta <name>`（FieldsetMeta.fields）与
+  `fieldset meta <name> <field>`（FieldMeta）均含 required_fields；
+  Execute/CLI 通道经 service 层自动透出
+- 测试：TestRequiredFields 4 例（单引用/多引用保序与函数名过滤/同集字段引用/
+  set_field 重算/meta 与 Execute 通道可见）；修 test_dispatch_update_cascade
+  缓存清理（pop 后显式 close，避免 Windows 句柄延迟释放导致 fixture rmtree
+  静默失败、旧库残留）
+- 文档：README §6.7 FieldMeta、AGENTS.md
+
 ### 2026-08 feat(graph): 沿链级联 update——graph update 一次更新整条依赖链
 
 - **背景**：update 语义要求"上游传导就绪"（assert_ready BFS 全链 valid），源头变化后

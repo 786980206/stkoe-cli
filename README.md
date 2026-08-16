@@ -416,7 +416,7 @@ panel/fieldset/factor/tester 物化统一**继承其 index 的 `materialize_part
 - **StatScanReport**：`target_type, target_name, kind, partitions[], files[{partition, rel_path, rows, size}]`
 - **ColumnMeta**：`name, display_name, description, data_type, unit, formula, tags[], as_index, is_tool, source_table, source_field`
 - **FieldsetMeta**：`name, version, panel(基于的 panel 名), engine, keys[], fields[FieldMeta], materialized, materialized_at, curated, columns[ColumnMeta]（源 panel 列）, extra, display_name, description, tags[], source, created_at, updated_at`
-- **FieldMeta**：`name, formula, display_name, description, unit, tags[], validated（是否已 check）, window_size（滚动窗口回看宽度，0=逐行；用于 data change event 范围展开）`
+- **FieldMeta**：`name, formula, display_name, description, unit, tags[], validated（是否已 check）, window_size（滚动窗口回看宽度，0=逐行；用于 data change event 范围展开）, required_fields（公式引用的上游列——panel 视图列 ∪ 同集字段，add_field/set_field 时自动计算登记）`
 - **FieldsetScanReport**：`name, version, materialized, rows, fields_count`
 - **FieldsetCheckResult**：`fieldset, field, ok, message`
 - **SampleMeta**：`name, version, fieldset(依赖的 fieldset 名), index(筛选参照 index 名), keys[]（fieldset 底层 panel 主键）, columns[ColumnMeta]（panel 视图列 + fieldset 衍生指标列）, display_name, description, tags[], source, extra, created_at, updated_at`

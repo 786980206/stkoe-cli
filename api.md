@@ -80,7 +80,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | config | （空）/ `show` | — | — | JsonData `{"config_file", "grpc-host", "grpc-port", "data-dir", ...extra}` |
 | config | `set` | — | `--<key> <value> ...`（任意键） | JsonData `{"written", "set"}` |
 | task | （空）/ `list` | — | `--state <state>` | JsonData `{"tasks": [...]}`（按创建时间倒序） |
-| mock | `demo` | — | `--n-syms N`（默认 300） `--n-days N`（默认 500，交易日数，从 2024-01-01 起） | JsonData（写入清单：`[{name, path, rows, columns}]`，写 `table/index` + `table/m1`，不注册） |
+| mock | `demo` | — | `--n-syms N`（默认 300） `--n-days N`（默认 500，交易日数，从 2024-01-01 起） | JsonData（写入清单：`[{name, path, rows, columns}]`，写 `index/index`（index 资产目录）+ `table/m1`，不注册） |
 | mock | `gen` | `<name>` | `--kind <kind>`（默认 index；`tdcal/common/index/feature/klday/m1`） `--n-syms N` `--n-days N` `--start S` `--end E` `--seed N` `--col C` | JsonData（单表写入清单） |
 | table | `add` | `<name>` | `--all`；单表可带 `--display_name/--description/--source/--tags <v>` + 任意键（`--type` 为旧概念，进 extra；类型由 label 承载，table 恒 "table"） | JsonData（TableScanReport） |
 | table | `get` | `<name>` | `--columns a,b` `--where <谓词>` `--partition <p>` `--exclude-tool` `--limit N` `--offset N` | **ArrowTable**（无 JsonData） |
@@ -103,7 +103,7 @@ HealthRequest {}                                   HealthResponse { status, vers
 | panel | `meta` | `<name>` | — | JsonData（PanelMeta） |
 | panel | `list` | — | — | JsonData（PanelMeta[]） |
 | panel | `set` | `<name>` | `--display_name/--description/--tags <v>` + 任意键 | JsonData（PanelMeta） |
-| panel | `update` | `<name>` | — | JsonData（PanelMeta；传导检查上游 index/成员表就绪后标记有效，无物化） |
+| panel | `update` | `<name>` | — | JsonData（PanelMeta；传导检查上游 index/成员表就绪后**物化 join 视图**——按 index 的 `materialize_partition` 时间桶分区落盘 `panel/<name>/part=<v>/`，见 §3.5；增量按积累区间只重算受影响时间桶） |
 | panel | `delete`/`del` | `<name>` | `--force` | JsonData `{"deleted"}` |
 | dataset | `add` 等 | — | **旧别名**：转发到 panel 同一实现（返回 name 用 "panel"），保持兼容 | JsonData（PanelMeta） |
 | stat | `scan` | `<table\|dataset\|test> <name>` | `--kind <kind>`（`coverage` 默认 / `storage` / 测试器：`bucket_returns` `factor_returns` `bucket_turnover` `autocorrelation` `ic`）；`<name>` 单位置 + `--kind <测试器>` 简写 → test 目标 | JsonData（StatScanReport） |
@@ -169,7 +169,8 @@ HealthRequest {}                                   HealthResponse { status, vers
 > `panel`（原 dataset）：`panel add <name> <index> [member[:join]...]` 实时 join 视图（index 左表），
 > 每个 member 可带 `:asof`/`:left` 指定 join 方式（**缺省 asof**，asof 按 datetime 键就近匹配、
 > left 为精确等值 join）；边 `role=member` 带 `detail.join`（`asof_join`/`left_join`）。
-> 无物化分区概念；`dataset` 为旧别名转发同一实现。
+> 物化分区策略见 §3.5：panel/fieldset/factor/test 统一继承 index 的 `materialize_partition`
+> 按时间桶落盘（与 index 物理是否分区无关），对外读取剔除 part 列；`dataset` 为旧别名转发同一实现。
 
 ### 3.2 `table get` / `index get` / `panel get` 的 ArrowTable.meta
 
@@ -448,7 +449,7 @@ pending → running → succeeded
 | `stkoe feature <action> <args...>` | feature 命令（add/set/meta/list/delete/test；纯定义，无物化） |
 | `stkoe factor <action> <args...>` | factor 命令（add/get/meta/list/set/check/scan/delete；可物化） |
 | `stkoe test <action> <args...>` | test 命令（add/get/meta/list/set/check/scan/delete；因子测试数据集） |
-| `stkoe mock demo` | 生成演示源表 index + m1（默认 300 只 × 500 日，写 `table/`，需 `table add` 注册） |
+| `stkoe mock demo` | 生成演示源表 index + m1（默认 300 只 × 500 日，写 `index/index` + `table/m1`，需 `index add`/`table add` 注册） |
 | `stkoe mock gen <name> --kind <kind>` | 参数化生成单张表（tdcal/common/index/feature/klday/m1） |
 | `stkoe task list [--state <state>]` | 任务列表 |
 | `stkoe graph lineage [--node <type:name>] [--depth N]` | 血缘图（Cytoscape elements JSON，与 `e:graph ...` 一致） |
@@ -547,47 +548,47 @@ t:<task_id>
 
 ## 9. 典型工作流
 
+全流程可复制演练见 **example.md**（mock 造数 → 物化 → 测试器 → 清理）。此处为精简主干：
+
 ```bash
-# mock 造数（生成演示 parquet 到 table/，替代 scripts/gen_example_data.py）
+# mock 造数（写 index/index + table/m1，不注册）
 stkoe mock demo
-# 建表/索引（发现资产；index 为独立资产主体）
-stkoe table add index
+# 发现源头资产（index 独立资产；materialize_partition 默认 yearly，见 §3.5）
 stkoe index add index --symbol-col sym --datetime-col date
 stkoe table add m1
-# 建逻辑数据集（panel 实时 join index+m1 on keys；keys 由 index 推断，member 可配 join）
+# 逻辑数据集（panel：index + 成员表 join，keys 由 index 推断）
 stkoe panel add ds1 index m1
-# 统计覆盖率（all + 每个索引列一个分组文件）
-stkoe stat scan dataset ds1
-# 衍生指标集（基于 panel 计算新字段，check 通过后标记 validated）
+stkoe panel update ds1                      # 物化 panel/ds1/part=<YYYY>[/<MM>[/<DD>]]/
+# 衍生指标集（check 通过 → validated；update 物化 keys + 已校验指标）
 stkoe fieldset add fs1 --dataset ds1
-stkoe fieldset add fs1 ma5 --formula "price.rolling_mean(5)"
-stkoe fieldset check fs1 ma5
-# 样本池（基于 fieldset 视图过滤，无物化）
-stkoe sample add sp1 --fieldset fs1 --formula "(date>='2026-01-01')&(price>0)"
+stkoe fieldset add fs1 x2 --formula "x * 2.0"
+stkoe fieldset check fs1 x2
+stkoe fieldset update fs1
+# 样本池（基于 fieldset 视图过滤，无物化）+ 因子定义库（命名公式，无物化）
+stkoe sample add sp1 --fieldset fs1 --formula "(date >= '2024-01-02') & (x > 1.0)"
 stkoe sample check sp1
-# 因子定义库（命名公式，test 在样本池视图上求值）
-stkoe feature add ma5 --formula "price.rolling_mean(5)" --unit "元"
+stkoe sample update sp1
+stkoe feature add ma5 --formula "x * 2.0"
 stkoe feature test ma5 --sample sp1
-# 最终因子（在样本池视图上算因子列 + pipeline 变换，可物化）
+stkoe feature update ma5
+# 最终因子（物化 factor/fac1/part=<v>/）+ 测试数据集（物化 factor_test/t1/part=<v>/）
 stkoe factor add fac1 --feature ma5 --sample sp1 --pipeline "nothing()"
 stkoe factor check fac1
-stkoe factor scan fac1
-# 因子测试数据集（要求 sample 含 date/sym/returns/groupby/marketcap 列）+ 测试器
+stkoe factor update fac1
 stkoe test add t1 --factor fac1 --returns r --groupby ic --marketcap fv
 stkoe test check t1
-stkoe test scan t1
+stkoe test update t1
+# 因子测试器（stat 集成；单位置简写 → test 目标）
 stkoe stat scan t1 --kind ic
-gclient> e:stat get t1 --kind ic --partition_by ic_d1
-# gRPC 读取
+# gRPC 读取（物化且 curated 读物化 parquet，对外列不含 part）
 gclient> e:panel get ds1 --where "date >= 2024-01-01" --limit 100
-gclient> e:fieldset get fs1 --columns k,ma5 --limit 100
+gclient> e:fieldset get fs1 --limit 100
 gclient> e:sample get sp1 --limit 100
-gclient> e:feature test ma5 --sample sp1
 gclient> e:factor get fac1 --limit 100
 gclient> e:test get t1 --limit 100
-gclient> e:stat get panel ds1 --partition_by all
-# 后台物化 + 订阅进度
-gclient> s:fieldset scan fs1
+gclient> e:stat get t1 --kind ic --partition_by ic_d1
+# 后台物化 + 订阅进度（任务版；scan 为旧名别名）
+gclient> s:fieldset update fs1
 gclient> t:<task_id>
 ```
 

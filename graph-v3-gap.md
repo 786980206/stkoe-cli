@@ -64,7 +64,7 @@
 
 ### E6【已修 ✅】version_list 无限增长、无裁剪
 
-- **定义**：未定义裁剪策略；README 路线图 **"version_list 裁剪"** 已列为待办。
+- **定义**：未定义裁剪策略，version_list 无限增长（README 路线图曾列为待办，现已 ✅）。
 - **当前（已修）**：`_bump` 铸版本后顺带 `_prune_version_list`——按所有下游边
   `required_version` 的 min 裁剪：`version <= min_rv` 的事件已被全部下游消费，可安全删除；
   `> min_rv` 保留（`accumulate` 仍可取到未消费事件）。测试
@@ -85,7 +85,7 @@
 | G1 | Handler 的 `get`"物化且有效时才返回物理数据" | handler `get` 返回节点元数据（示例占位）；物理数据读取走 service 的 `xxx_get`（实时视图 / 物化 parquet） | 形态分工差异，行为正确 |
 | G2 | `IndexHandler.add` 校验 symbol/datetime 列**唯一性** | ✅ 已修：`_check_index_unique`（symbol+datetime 组合唯一校验） | 已修（P2-2） |
 | G3 | `PanelHandler.get` 物化+有效才返回 | ✅ panel 物化 + get 三态（物化且 curated 读物化，否则报错提示 update） | 已修（P2） |
-| G4 | `FieldsetHandler.on_change` 输出 {upsert, delete} 供消费 | `ctrl.accumulated` 存在，但 service 层无消费方（物化全量重算） | 接口空转，属 E3 的一部分 |
+| G4 | `FieldsetHandler.on_change` 输出 {upsert, delete} 供消费 | `ctrl.accumulated` 存在；service 沿链增量物化经 `_upstream_scope` 消费直接依赖积累事件（见 E3，已覆盖全部物化资产） | 已收敛（E3 落地） |
 | G5 | `GraphHandler.scan()` 空定义 | graph 命令为 lineage/nodes/stats | 语义不同，无实质出入 |
 | G6 | `AssetNode.version: str` | `int`（time_ns 时间戳，可直接排序比较） | 类型改进 ✓ |
 | G7 | 节点列存 `columns: dict[str, ColumnsMeta]` | 平铺 `columns` 列表 + `_norm_cols` 规范化 | 形态差异，行为等价 |

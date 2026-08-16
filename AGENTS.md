@@ -233,6 +233,22 @@ portal 前端"血缘关系"抽屉/完整页已联调（见 README.md / graph-des
 
 ## 近期变更记录
 
+### 2026-08 docs: example.md 更新为 v0.7.1 全量模拟案例 + 文档残留清理
+
+- **example.md 重写**：全流程演练对齐 v0.7.1 语义——物化按 index.materialize_partition
+  时间桶分区（`part=<YYYY>[/<MM>[/<DD>]]` 布局 + 对外剔除 part 列 + `--partition` 按桶读取）、
+  update 主推 / get 三态、增量更新演示（追加 2026 数据 → 沿链 update → 新桶 part=2026 出现）、
+  stat 测试器、任务版 + graph 血缘可视化；修正 demo 写盘路径（`index/index`）、
+  原案例会失败的 m2 成员表（补 `mock gen m2` 步骤）、
+  补 `sample update`/`feature update` 传导就绪步骤（factor update 有上游未就绪拦截，端到端验证暴露）
+- **graph-v3-gap.md 残留清理**：E6 定义行（README 路线图 version_list 裁剪已 ✅）、
+  G4 行（"物化全量重算" → 已收敛 E3 增量消费）
+- **api.md 残留清理**：mock demo 写 `index/index` + `table/m1`（§3.1/§4.1）、
+  panel update 描述补物化（§3.1）、panel 分区继承下注（§3.1）、§9 典型工作流重写为
+  当前语义（修 `table add index` 重复 / `price`、`k` 列不存在的错误示例）
+- 验证：example.md 全链路命令在临时目录端到端跑通（mock→panel→fieldset→sample→
+  feature→factor→test→stat→增量→graph，跨年双桶 + 增量新桶断言）
+
 ### 2026-08 版本 0.7.1（tag v0.7.1）：下游物化按 index.materialize_partition 时间桶分区
 
 - **pyproject 版本 0.7.0 → 0.7.1**：发布下游继承物化粒度（panel/fieldset/factor/test

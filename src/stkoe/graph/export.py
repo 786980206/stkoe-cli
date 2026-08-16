@@ -68,7 +68,13 @@ def build_payload(store, center: str | None = None, depth: int | None = None,
 def column_payload(store, column_id: str, depth: int | None = None,
                    with_meta: bool = True) -> dict:
     """列级血缘子图：以某列（``column:<资产 id>.<列名>``）为中心，
-    上游来源列（DERIVES 出边）+ 下游派生列（DERIVES 入边）；附带所属资产节点作上下文。"""
+    上游来源列（DERIVES 出边）+ 下游派生列（DERIVES 入边）；附带所属资产节点作上下文。
+
+    ``column_id`` 可省略 ``column:`` 前缀（命令层习惯写 ``<type:name.col>``，
+    自动补全为完整列节点 id）。
+    """
+    if not column_id.startswith("column:"):
+        column_id = f"column:{column_id}"
     empty = {
         "graph": {"exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                   "center": column_id, "node_count": 0, "edge_count": 0,

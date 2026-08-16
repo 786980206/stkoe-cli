@@ -1064,6 +1064,12 @@ class TestColumnLineage:
                                  data_dir=base)[0].data)
         assert cp["graph"]["center"] == "column:fieldset:fs1.x2"
         assert cp["elements"]["nodes"]
+        # 省略 column: 前缀（命令层习惯 <type:name.col>）→ 自动补全
+        cp2 = json.loads(dispatch("graph", "lineage",
+                                  ["--column", "fieldset:fs1.x2"],
+                                  data_dir=base)[0].data)
+        assert cp2["graph"]["center"] == "column:fieldset:fs1.x2"
+        assert cp2["elements"]["nodes"]
 
 
 class TestWindowScope:

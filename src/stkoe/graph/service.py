@@ -87,6 +87,8 @@ def _asof_join(left: pl.LazyFrame, right: pl.LazyFrame, keys: list[str]) -> pl.L
 
     on 键为 String 日期形态（如 "2024-01-01"）时 cast 成 Date 做 asof，
     结果列 cast 回 String 保持输出类型（panel 下游公式依赖字符串日期比较）。
+    两侧已显式 ``sort(on)``，故 ``check_sortedness=False`` 跳过重复校验
+    （by 分组场景 polars 无法校验，会触发 UserWarning）。
     """
     on = keys[-1]
     by = [k for k in keys if k != on]
@@ -95,11 +97,13 @@ def _asof_join(left: pl.LazyFrame, right: pl.LazyFrame, keys: list[str]) -> pl.L
     if is_str:
         l = left.with_columns(pl.col(on).str.to_date().alias(on)).sort(on)
         r = right.with_columns(pl.col(on).str.to_date().alias(on)).sort(on)
-        out = l.join_asof(r, on=on, by=by, strategy="backward")
+        out = l.join_asof(r, on=on, by=by, strategy="backward",
+                          check_sortedness=False)
         return out.with_columns(pl.col(on).dt.strftime("%Y-%m-%d").alias(on))
     l = left.sort(on)
     r = right.sort(on)
-    return l.join_asof(r, on=on, by=by, strategy="backward")
+    return l.join_asof(r, on=on, by=by, strategy="backward",
+                       check_sortedness=False)
 
 
 class GraphService:

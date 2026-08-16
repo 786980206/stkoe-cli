@@ -138,7 +138,9 @@ src/stkoe/
 - 幂等 materialized 读位置：`resolve` 把 materialized 放节点顶层而非 extra → 幂等判断用
   `node.get("materialized") or extra.get("materialized")`
 - polars：`is_between` 需 `pl.lit()` 包裹；多文件 dtype 不一致用 `vertical_relaxed`
-- asof join：String 日期先 cast Date 再 `join_asof`，结果 cast 回 String（触发 UserWarning 无碍）
+- asof join：String 日期先 cast Date 再 `join_asof`（结果 cast 回 String）；
+  两侧先 `sort(on)` 并传 `check_sortedness=False`（by 分组场景 polars 无法校验
+  sortedness，曾触发 UserWarning，已消除）
 
 ### 双命令路径：Execute 与 SubmitTask 各自注册
 

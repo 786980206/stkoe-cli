@@ -996,4 +996,5 @@ src/stkoe/
 - **本文件（README.md）**：唯一入口——数据资产与图设计（§2）、对外 API 全量说明
   （§5-§13）、配置、存储布局、测试、路线图
 - [`example.md`](example.md)：全流程演练（mock 造数 → 因子测试）
+- [`data_process.md`](data_process.md)：数据处理文档（各类资产增量/全量物化方法）
 - `AGENTS.md`：开发指南（目录结构/架构要点/变更记录）
